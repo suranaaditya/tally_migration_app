@@ -51,10 +51,15 @@ from rgi_migration.mapper.rule_source import (
     Rule,
     RuleSource,
 )
+from rgi_migration.mapper.supplier_source import Supplier, SupplierSource
 from rgi_migration.mapper.tier1_rules import (
     find_matching_anti_pattern,
     find_matching_positive_rule,
     resolve_exact_name,
+)
+from rgi_migration.mapper.tier1_supplier import (
+    is_vendor_party_ledger,
+    resolve_supplier,
 )
 from rgi_migration.mapper.validators import (
     ValidatorOutcome,
@@ -120,6 +125,14 @@ class MappedDecision:
     new_account_root_type: str | None = None
     new_account_is_group: bool = False
 
+    # Supplier-resolution payload (set when party ledger routed through
+    # tier1_supplier). Mutually exclusive with the account fields.
+    proposed_supplier: str | None = None       # Supplier ERPNext doc ID
+    supplier_match_score: float = 0.0          # 0.0-1.0
+    matched_alias_rule: str | None = None      # Supplier Alias Rule name, if any
+    requires_supplier_creation: bool = False
+    new_supplier_name: str | None = None       # Candidate supplier_name for review
+
 
 # ---------------------------------------------------------------------------
 # Orchestrator
@@ -141,11 +154,16 @@ class Mapper:
         coa: dict[str, CoaAccount],
         abbr: str,
         entity_type: str = "*",
+        *,
+        supplier_source: SupplierSource | None = None,
+        supplier_fuzzy_threshold: float = 85.0,
     ):
         self.rule_source = rule_source
         self.coa = coa
         self.abbr = abbr
         self.entity_type = entity_type
+        self.supplier_source = supplier_source
+        self.supplier_fuzzy_threshold = supplier_fuzzy_threshold
         self._positive: list[Rule] = rule_source.positive_rules(entity_type)
         self._anti: list[Rule] = rule_source.anti_pattern_rules(entity_type)
 
@@ -156,6 +174,14 @@ class Mapper:
         pnl = pnl_root_type_exclusion(ledger)
         if pnl:
             return self._excluded(ledger, pnl, tier="excluded_pnl")
+
+        # 1b. Party-ledger routing (vendor/creditor → supplier resolution).
+        # Only engaged when the Mapper was constructed with a supplier_source.
+        # Without a source, party ledgers flow through the account-mapping
+        # pathway (and typically land in `unmapped` — matches pre-Work-Item-6
+        # behavior).
+        if self.supplier_source is not None and is_vendor_party_ledger(ledger):
+            return self._resolve_party(ledger)
 
         # 2. Anti-pattern lookup (does not short-circuit by itself)
         anti = find_matching_anti_pattern(ledger, self._anti)
@@ -450,6 +476,52 @@ class Mapper:
             confidence=0.0,
         )
 
+    def _resolve_party(self, ledger: Any) -> MappedDecision:
+        """Party-ledger (Sundry Creditors descendant) → Supplier."""
+        assert self.supplier_source is not None  # caller guards
+        tier, supplier, score, alias_rule = resolve_supplier(
+            ledger,
+            self.supplier_source,
+            fuzzy_threshold=self.supplier_fuzzy_threshold,
+        )
+
+        base = dict(
+            tally_name=ledger.name,
+            tally_id=ledger.tally_id,
+            tally_root_type=ledger.root_type,
+            opening_dr=ledger.opening_dr,
+            opening_cr=ledger.opening_cr,
+        )
+
+        if tier == "pending_supplier_creation":
+            # No match at any layer — emit a Supplier Creation Request stub.
+            # new_supplier_name carries the cleaned Tally ledger name as the
+            # reviewer's suggested starting point; reviewer edits as needed.
+            from rgi_migration.mapper.tier1_supplier import _clean
+            return MappedDecision(
+                **base,
+                tier="pending_supplier_creation",
+                proposed_account=None,
+                review_action="Pending Supplier Creation",
+                matched_rule=None,
+                confidence=0.0,
+                requires_supplier_creation=True,
+                new_supplier_name=_clean(ledger.name),
+            )
+
+        # Matched (exact, alias, or fuzzy)
+        return MappedDecision(
+            **base,
+            tier=tier,
+            proposed_account=None,
+            review_action="Pending",
+            matched_rule=None,
+            confidence=score,
+            proposed_supplier=supplier.name if supplier else None,
+            supplier_match_score=score,
+            matched_alias_rule=alias_rule,
+        )
+
     def _anti_pattern_only(self, ledger: Any, anti: Rule) -> MappedDecision:
         """Anti-pattern matched but no positive rule produced a target and
         exact-name fallback did not hit. Treat the forbidden template as the
@@ -482,13 +554,25 @@ def summarize(decisions: list[MappedDecision]) -> dict[str, Any]:
     total = len(decisions)
     unmapped = by_tier.get("unmapped", 0)
     anti = sum(1 for d in decisions if d.anti_pattern_blocked)
-    creations = sum(1 for d in decisions if d.requires_account_creation)
+    account_creations = sum(1 for d in decisions if d.requires_account_creation)
+    supplier_creations = sum(1 for d in decisions if d.requires_supplier_creation)
+    party_ledgers = sum(
+        1 for d in decisions
+        if d.tier in (
+            "tier1_supplier_exact",
+            "tier1_supplier_alias",
+            "tier1_supplier_fuzzy",
+            "pending_supplier_creation",
+        )
+    )
     return {
         "total": total,
         "by_tier": dict(by_tier),
         "by_review_action": dict(by_action),
         "anti_pattern_blocked_count": anti,
-        "account_creation_requests": creations,
+        "account_creation_requests": account_creations,
+        "supplier_creation_requests": supplier_creations,
+        "party_ledgers_routed": party_ledgers,
         "hit_rate": round((total - unmapped) / max(1, total), 3),
     }
 
@@ -607,6 +691,14 @@ def _cli(argv: list[str] | None = None) -> int:
     p.add_argument("--entity-type", default="*", metavar="TYPE",
                    help="Entity-type filter (college | hostel | society | "
                         "university | hospital | * ). Default: *.")
+    p.add_argument("--suppliers", metavar="PATH", default=None,
+                   help="Optional: Supplier master CSV (e.g. "
+                        "rgi_migration/tests/fixtures/jewonline_suppliers_real.csv). "
+                        "When provided, party ledgers (Sundry Creditors descendants) "
+                        "are routed through Tier-1 supplier resolution.")
+    p.add_argument("--supplier-fuzzy-threshold", type=float, default=85.0,
+                   help="Fuzzy-match threshold for the Layer-3 general supplier "
+                        "fallback (default 85.0).")
     src = p.add_mutually_exclusive_group(required=True)
     src.add_argument("--xml", metavar="PATH", help="Tally All Masters XML to parse.")
     src.add_argument("--excel", metavar="PATH", help="Tally opening-TB Excel to parse.")
@@ -641,7 +733,21 @@ def _cli(argv: list[str] | None = None) -> int:
         len(tb.ledgers), len(tb.student_ledgers), len(tb.system_ledgers),
     )
 
-    mapper = Mapper(rules, coa, abbr=args.abbr, entity_type=args.entity_type)
+    supplier_source = None
+    if args.suppliers:
+        from rgi_migration.mapper.supplier_source import CsvFileSupplierSource
+        supplier_source = CsvFileSupplierSource(args.suppliers)
+        LOG.info(
+            "Loaded %d suppliers from %s (fuzzy threshold %.1f)",
+            len(supplier_source.get_all_suppliers()),
+            args.suppliers, args.supplier_fuzzy_threshold,
+        )
+
+    mapper = Mapper(
+        rules, coa, abbr=args.abbr, entity_type=args.entity_type,
+        supplier_source=supplier_source,
+        supplier_fuzzy_threshold=args.supplier_fuzzy_threshold,
+    )
     decisions = mapper.map_all(tb.ledgers)
     summary = summarize(decisions)
     print(json.dumps(summary, indent=2, ensure_ascii=False))

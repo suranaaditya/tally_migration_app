@@ -204,7 +204,7 @@ class FrappeSupplierSource:
         raise NotImplementedError(
             "FrappeSupplierSource is a Work Item 6 stub. Use "
             "CsvFileSupplierSource against "
-            "rgi_migration/tests/fixtures/erpnext_suppliers_real.csv "
+            "rgi_migration/tests/fixtures/jewonline_suppliers_real.csv "
             "until Work Item 6 lands the live Frappe read path."
         )
 

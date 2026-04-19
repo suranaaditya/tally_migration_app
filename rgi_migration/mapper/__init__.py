@@ -36,17 +36,29 @@ from rgi_migration.mapper.rule_source import (
     Rule,
     RuleSource,
 )
+from rgi_migration.mapper.supplier_source import (
+    CsvFileSupplierSource,
+    FrappeSupplierSource,
+    InMemorySupplierSource,
+    Supplier,
+    SupplierSource,
+)
 
 __all__ = [
     "AlternatePattern",
     "CoaAccount",
+    "CsvFileSupplierSource",
     "FrappeRuleSource",
+    "FrappeSupplierSource",
     "InMemoryRuleSource",
+    "InMemorySupplierSource",
     "JsonFileRuleSource",
     "MappedDecision",
     "Mapper",
     "Rule",
     "RuleSource",
+    "Supplier",
+    "SupplierSource",
     "load_coa",
     "summarize",
 ]
