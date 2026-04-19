@@ -48,7 +48,8 @@
   "observability_section",
   "times_applied",
   "cb_obs",
-  "last_applied_at"
+  "last_applied_at",
+  "created_via_session"
  ],
  "fields": [
   {
@@ -313,12 +314,19 @@
    "fieldtype": "Datetime",
    "label": "Last Applied At",
    "read_only": 1
+  },
+  {
+   "description": "Set when a reviewer promotes a session decision into a reusable Mapping Rule.",
+   "fieldname": "created_via_session",
+   "fieldtype": "Link",
+   "label": "Created Via Session",
+   "options": "Tally Migration Session"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-04-19 19:41:21.329665",
+ "modified": "2026-04-19 20:00:23.159781",
  "modified_by": "Administrator",
  "module": "Rgi Migration",
  "name": "Mapping Rule",

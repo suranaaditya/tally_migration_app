@@ -1,0 +1,228 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-04-19 19:56:19.668303",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "tally_name",
+  "tally_id",
+  "tally_parent_chain",
+  "tally_root_type",
+  "opening_dr",
+  "opening_cr",
+  "net_amount",
+  "net_side",
+  "is_pnl_closed_zero",
+  "is_student_ledger",
+  "is_system_account",
+  "sb_proposal",
+  "tier",
+  "proposed_account",
+  "matched_rule",
+  "confidence",
+  "proposed_dr",
+  "proposed_cr",
+  "anti_pattern_blocked",
+  "anti_pattern_rule",
+  "anti_pattern_message",
+  "sb_review",
+  "review_action",
+  "final_account",
+  "final_dr",
+  "final_cr",
+  "reviewer_notes",
+  "excluded_reason",
+  "flagged_for_email",
+  "promoted_to_rule"
+ ],
+ "fields": [
+  {
+   "fieldname": "tally_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Tally Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "tally_id",
+   "fieldtype": "Data",
+   "label": "Tally ID"
+  },
+  {
+   "fieldname": "tally_parent_chain",
+   "fieldtype": "Small Text",
+   "label": "Tally Parent Chain"
+  },
+  {
+   "fieldname": "tally_root_type",
+   "fieldtype": "Select",
+   "label": "Root Type",
+   "options": "\nAsset\nLiability\nEquity\nIncome\nExpense"
+  },
+  {
+   "fieldname": "opening_dr",
+   "fieldtype": "Currency",
+   "label": "Opening Dr"
+  },
+  {
+   "fieldname": "opening_cr",
+   "fieldtype": "Currency",
+   "label": "Opening Cr"
+  },
+  {
+   "fieldname": "net_amount",
+   "fieldtype": "Currency",
+   "label": "Net Amount (signed)"
+  },
+  {
+   "fieldname": "net_side",
+   "fieldtype": "Select",
+   "label": "Net Side",
+   "options": "\nDr\nCr\nZero"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_pnl_closed_zero",
+   "fieldtype": "Check",
+   "label": "Is PnL Closed Zero"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_student_ledger",
+   "fieldtype": "Check",
+   "label": "Is Student Ledger"
+  },
+  {
+   "default": "0",
+   "fieldname": "is_system_account",
+   "fieldtype": "Check",
+   "label": "Is System Account"
+  },
+  {
+   "fieldname": "sb_proposal",
+   "fieldtype": "Section Break",
+   "label": "Mapper Proposal"
+  },
+  {
+   "fieldname": "tier",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Tier",
+   "options": "tier1_exact\ntier1_rule\ntier1_pattern\ntier2_fuzzy\ntier3_claude\nunmapped\nexcluded_pnl\ngroup_refused\nanti_pattern_blocked\npending_account_creation"
+  },
+  {
+   "fieldname": "proposed_account",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Proposed Account",
+   "options": "Account"
+  },
+  {
+   "fieldname": "matched_rule",
+   "fieldtype": "Link",
+   "label": "Matched Rule",
+   "options": "Mapping Rule"
+  },
+  {
+   "fieldname": "confidence",
+   "fieldtype": "Float",
+   "label": "Confidence"
+  },
+  {
+   "fieldname": "proposed_dr",
+   "fieldtype": "Currency",
+   "label": "Proposed Dr"
+  },
+  {
+   "fieldname": "proposed_cr",
+   "fieldtype": "Currency",
+   "label": "Proposed Cr"
+  },
+  {
+   "default": "0",
+   "fieldname": "anti_pattern_blocked",
+   "fieldtype": "Check",
+   "label": "Anti-Pattern Blocked"
+  },
+  {
+   "fieldname": "anti_pattern_rule",
+   "fieldtype": "Link",
+   "label": "Anti-Pattern Rule",
+   "options": "Mapping Rule"
+  },
+  {
+   "fieldname": "anti_pattern_message",
+   "fieldtype": "Small Text",
+   "label": "Anti-Pattern Message"
+  },
+  {
+   "fieldname": "sb_review",
+   "fieldtype": "Section Break",
+   "label": "Reviewer Decision"
+  },
+  {
+   "default": "Pending",
+   "fieldname": "review_action",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Review Action",
+   "options": "Pending\nApproved\nRejected\nManual Override\nDeferred\nSkipped\nExcluded (P&L)\nPending Account Creation\nPending Group Account Resolution\nPending Supplier Creation",
+   "reqd": 1
+  },
+  {
+   "fieldname": "final_account",
+   "fieldtype": "Link",
+   "label": "Final Account",
+   "options": "Account"
+  },
+  {
+   "fieldname": "final_dr",
+   "fieldtype": "Currency",
+   "label": "Final Dr"
+  },
+  {
+   "fieldname": "final_cr",
+   "fieldtype": "Currency",
+   "label": "Final Cr"
+  },
+  {
+   "fieldname": "reviewer_notes",
+   "fieldtype": "Small Text",
+   "label": "Reviewer Notes"
+  },
+  {
+   "fieldname": "excluded_reason",
+   "fieldtype": "Small Text",
+   "label": "Excluded Reason"
+  },
+  {
+   "default": "0",
+   "fieldname": "flagged_for_email",
+   "fieldtype": "Check",
+   "label": "Flagged For Email"
+  },
+  {
+   "fieldname": "promoted_to_rule",
+   "fieldtype": "Link",
+   "label": "Promoted To Rule",
+   "options": "Mapping Rule"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-04-19 19:56:19.668303",
+ "modified_by": "Administrator",
+ "module": "Rgi Migration",
+ "name": "Mapping Decision",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}

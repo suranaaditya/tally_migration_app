@@ -1,0 +1,381 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "format:TMS-{company_abbr}-{fiscal_year_short}-.###",
+ "creation": "2026-04-19 20:00:21.999928",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "company_abbr",
+  "erpnext_company",
+  "fiscal_year",
+  "fiscal_year_short",
+  "tb_date",
+  "sb_input",
+  "source_format",
+  "source_file",
+  "source_file_server_path",
+  "source_file_size_mb",
+  "source_file_sha256",
+  "sb_state",
+  "status",
+  "started_at",
+  "completed_at",
+  "error_log",
+  "sb_parse",
+  "parsed_company_name",
+  "ledger_count",
+  "student_ledger_count",
+  "group_count",
+  "total_dr",
+  "total_cr",
+  "is_balanced",
+  "parse_warnings",
+  "parse_summary_json",
+  "sb_map_counts",
+  "tier1_exact_count",
+  "tier1_rule_count",
+  "tier1_pattern_count",
+  "tier2_fuzzy_count",
+  "tier3_claude_count",
+  "unmapped_count",
+  "pnl_excluded_count",
+  "group_account_refused_count",
+  "anti_pattern_blocked_count",
+  "sb_output",
+  "generated_je_reference",
+  "generated_je_draft",
+  "generated_oit_file",
+  "student_ledger_file",
+  "temp_opening_amount",
+  "sb_notes",
+  "reviewer_notes",
+  "sb_children",
+  "mapping_decisions",
+  "account_creation_requests",
+  "supplier_creation_requests"
+ ],
+ "fields": [
+  {
+   "fieldname": "company_abbr",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "Company Abbreviation",
+   "options": "Company Abbreviation",
+   "reqd": 1
+  },
+  {
+   "fieldname": "erpnext_company",
+   "fieldtype": "Link",
+   "label": "ERPNext Company",
+   "options": "Company"
+  },
+  {
+   "description": "e.g. '2026-2027' (the ERPNext FY receiving the opening balance).",
+   "fieldname": "fiscal_year",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Fiscal Year",
+   "reqd": 1
+  },
+  {
+   "fieldname": "fiscal_year_short",
+   "fieldtype": "Data",
+   "hidden": 1,
+   "label": "FY Short (for autoname)",
+   "read_only": 1
+  },
+  {
+   "description": "As-of date for the opening balance snapshot.",
+   "fieldname": "tb_date",
+   "fieldtype": "Date",
+   "label": "TB Date",
+   "reqd": 1
+  },
+  {
+   "fieldname": "sb_input",
+   "fieldtype": "Section Break",
+   "label": "Input"
+  },
+  {
+   "default": "xml",
+   "fieldname": "source_format",
+   "fieldtype": "Select",
+   "label": "Source Format",
+   "options": "xml\nexcel",
+   "reqd": 1
+  },
+  {
+   "fieldname": "source_file",
+   "fieldtype": "Attach",
+   "label": "Source File (Lane B, under 50 MB)"
+  },
+  {
+   "fieldname": "source_file_server_path",
+   "fieldtype": "Data",
+   "label": "Source File Server Path (Lane A, full file)"
+  },
+  {
+   "fieldname": "source_file_size_mb",
+   "fieldtype": "Float",
+   "label": "Source File Size (MB)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "source_file_sha256",
+   "fieldtype": "Data",
+   "label": "Source File SHA-256",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sb_state",
+   "fieldtype": "Section Break",
+   "label": "Status"
+  },
+  {
+   "default": "Draft",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Draft\nParsing\nParsed\nMapping\nReviewing\nGenerating\nGenerated\nSubmitted\nCancelled\nFailed",
+   "reqd": 1
+  },
+  {
+   "fieldname": "started_at",
+   "fieldtype": "Datetime",
+   "label": "Started At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "completed_at",
+   "fieldtype": "Datetime",
+   "label": "Completed At",
+   "read_only": 1
+  },
+  {
+   "fieldname": "error_log",
+   "fieldtype": "Long Text",
+   "label": "Error Log"
+  },
+  {
+   "fieldname": "sb_parse",
+   "fieldtype": "Section Break",
+   "label": "Parse Snapshot"
+  },
+  {
+   "fieldname": "parsed_company_name",
+   "fieldtype": "Data",
+   "label": "Parsed Company Name",
+   "read_only": 1
+  },
+  {
+   "fieldname": "ledger_count",
+   "fieldtype": "Int",
+   "label": "Ledger Count (main)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "student_ledger_count",
+   "fieldtype": "Int",
+   "label": "Student Ledger Count",
+   "read_only": 1
+  },
+  {
+   "fieldname": "group_count",
+   "fieldtype": "Int",
+   "label": "Group Count",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_dr",
+   "fieldtype": "Currency",
+   "label": "Total Dr",
+   "read_only": 1
+  },
+  {
+   "fieldname": "total_cr",
+   "fieldtype": "Currency",
+   "label": "Total Cr",
+   "read_only": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "is_balanced",
+   "fieldtype": "Check",
+   "label": "Is Balanced (within 1%)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "parse_warnings",
+   "fieldtype": "Long Text",
+   "label": "Parse Warnings (JSON)",
+   "read_only": 1
+  },
+  {
+   "description": "Full ParsedTallyTB dump; review UI reads via session.get_parse_summary().",
+   "fieldname": "parse_summary_json",
+   "fieldtype": "Attach",
+   "label": "Parse Summary JSON (attached file)"
+  },
+  {
+   "fieldname": "sb_map_counts",
+   "fieldtype": "Section Break",
+   "label": "Mapper Snapshot"
+  },
+  {
+   "fieldname": "tier1_exact_count",
+   "fieldtype": "Int",
+   "label": "Tier 1 Exact",
+   "read_only": 1
+  },
+  {
+   "fieldname": "tier1_rule_count",
+   "fieldtype": "Int",
+   "label": "Tier 1 Rule",
+   "read_only": 1
+  },
+  {
+   "fieldname": "tier1_pattern_count",
+   "fieldtype": "Int",
+   "label": "Tier 1 Pattern",
+   "read_only": 1
+  },
+  {
+   "fieldname": "tier2_fuzzy_count",
+   "fieldtype": "Int",
+   "label": "Tier 2 Fuzzy",
+   "read_only": 1
+  },
+  {
+   "fieldname": "tier3_claude_count",
+   "fieldtype": "Int",
+   "label": "Tier 3 Claude",
+   "read_only": 1
+  },
+  {
+   "fieldname": "unmapped_count",
+   "fieldtype": "Int",
+   "label": "Unmapped",
+   "read_only": 1
+  },
+  {
+   "fieldname": "pnl_excluded_count",
+   "fieldtype": "Int",
+   "label": "P&L Excluded",
+   "read_only": 1
+  },
+  {
+   "fieldname": "group_account_refused_count",
+   "fieldtype": "Int",
+   "label": "Group Account Refused",
+   "read_only": 1
+  },
+  {
+   "fieldname": "anti_pattern_blocked_count",
+   "fieldtype": "Int",
+   "label": "Anti-Pattern Blocked",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sb_output",
+   "fieldtype": "Section Break",
+   "label": "Output Artifacts"
+  },
+  {
+   "description": "e.g. 'OB-CACSPU-2026-01' per RGI rules sec 6.2.",
+   "fieldname": "generated_je_reference",
+   "fieldtype": "Data",
+   "label": "Generated JE Reference"
+  },
+  {
+   "description": "Draft Journal Entry; reviewer submits in ERPNext after preview.",
+   "fieldname": "generated_je_draft",
+   "fieldtype": "Link",
+   "label": "Generated JE Draft",
+   "options": "Journal Entry"
+  },
+  {
+   "fieldname": "generated_oit_file",
+   "fieldtype": "Attach",
+   "label": "Generated OIT CSV"
+  },
+  {
+   "description": "4-column CSV: student_name, tally_id, debit_amount, credit_amount. Consumed by dux_voucher's Ex Student Opening Batch.",
+   "fieldname": "student_ledger_file",
+   "fieldtype": "Attach",
+   "label": "Student Ledger CSV (dux_voucher handoff)"
+  },
+  {
+   "description": "Residual absorbed into 'Temporary Opening - {ABBR}'; large value diagnoses historical imbalance in source Tally data.",
+   "fieldname": "temp_opening_amount",
+   "fieldtype": "Currency",
+   "label": "Temp Opening Amount (signed)",
+   "read_only": 1
+  },
+  {
+   "fieldname": "sb_notes",
+   "fieldtype": "Section Break",
+   "label": "Notes"
+  },
+  {
+   "fieldname": "reviewer_notes",
+   "fieldtype": "Long Text",
+   "label": "Reviewer Notes"
+  },
+  {
+   "fieldname": "sb_children",
+   "fieldtype": "Section Break",
+   "label": "Child Tables"
+  },
+  {
+   "fieldname": "mapping_decisions",
+   "fieldtype": "Table",
+   "label": "Mapping Decisions",
+   "options": "Mapping Decision"
+  },
+  {
+   "fieldname": "account_creation_requests",
+   "fieldtype": "Table",
+   "label": "Account Creation Requests",
+   "options": "Account Creation Request"
+  },
+  {
+   "fieldname": "supplier_creation_requests",
+   "fieldtype": "Table",
+   "label": "Supplier Creation Requests",
+   "options": "Supplier Creation Request"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-04-19 20:00:22.949344",
+ "modified_by": "Administrator",
+ "module": "Rgi Migration",
+ "name": "Tally Migration Session",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "company_abbr",
+ "track_changes": 1
+}

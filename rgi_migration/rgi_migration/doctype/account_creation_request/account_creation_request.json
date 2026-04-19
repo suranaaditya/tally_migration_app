@@ -1,0 +1,105 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-04-19 19:56:19.717624",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "status",
+  "proposed_account_name",
+  "proposed_parent",
+  "proposed_root_type",
+  "proposed_is_group",
+  "reason",
+  "source_rules",
+  "source_decisions",
+  "reviewer_notes",
+  "created_account",
+  "error_log"
+ ],
+ "fields": [
+  {
+   "default": "Pending",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Status",
+   "options": "Pending\nCreated\nSkipped\nFailed",
+   "reqd": 1
+  },
+  {
+   "fieldname": "proposed_account_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Proposed Account Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "proposed_parent",
+   "fieldtype": "Data",
+   "label": "Proposed Parent",
+   "reqd": 1
+  },
+  {
+   "fieldname": "proposed_root_type",
+   "fieldtype": "Select",
+   "label": "Proposed Root Type",
+   "options": "Asset\nLiability\nEquity\nIncome\nExpense",
+   "reqd": 1
+  },
+  {
+   "default": "0",
+   "fieldname": "proposed_is_group",
+   "fieldtype": "Check",
+   "label": "Proposed Is Group"
+  },
+  {
+   "fieldname": "reason",
+   "fieldtype": "Small Text",
+   "label": "Reason"
+  },
+  {
+   "fieldname": "source_rules",
+   "fieldtype": "Table",
+   "label": "Source Rules (audit trail)",
+   "options": "Account Creation Source"
+  },
+  {
+   "fieldname": "source_decisions",
+   "fieldtype": "Small Text",
+   "label": "Source Decision IDXs (CSV)"
+  },
+  {
+   "fieldname": "reviewer_notes",
+   "fieldtype": "Small Text",
+   "label": "Reviewer Notes"
+  },
+  {
+   "fieldname": "created_account",
+   "fieldtype": "Link",
+   "label": "Created Account",
+   "options": "Account"
+  },
+  {
+   "fieldname": "error_log",
+   "fieldtype": "Small Text",
+   "label": "Error Log"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-04-19 19:56:19.717624",
+ "modified_by": "Administrator",
+ "module": "Rgi Migration",
+ "name": "Account Creation Request",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": []
+}
