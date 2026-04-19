@@ -1,0 +1,361 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "format:MR-{#####}",
+ "creation": "2026-04-19 19:41:21.329665",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "identity_section",
+  "rule_name",
+  "cb_identity",
+  "is_anti_pattern",
+  "status",
+  "source_section",
+  "source_section_ref",
+  "source_hash",
+  "cb_source",
+  "source_entities",
+  "created_from",
+  "tally_section",
+  "tally_pattern",
+  "tally_match_mode",
+  "cb_tally",
+  "applicable_root_type",
+  "tally_parent_contains",
+  "tally_alternates_section",
+  "tally_pattern_alternates",
+  "erp_target_section",
+  "erpnext_account_template",
+  "cb_erp_target",
+  "combine_amounts",
+  "account_creation_section",
+  "creates_erpnext_account",
+  "new_account_name_template",
+  "new_account_parent",
+  "cb_creation",
+  "new_account_root_type",
+  "new_account_is_group",
+  "anti_pattern_section",
+  "forbidden_erpnext_template",
+  "suggested_alternative_template",
+  "anti_pattern_reason",
+  "scope_section",
+  "applies_to_entity_types",
+  "cb_scope",
+  "paired_rules",
+  "observability_section",
+  "times_applied",
+  "cb_obs",
+  "last_applied_at"
+ ],
+ "fields": [
+  {
+   "fieldname": "identity_section",
+   "fieldtype": "Section Break",
+   "label": "Identity"
+  },
+  {
+   "description": "Human-readable label, e.g. 'GHRIET -> GHRCE branch merge'",
+   "fieldname": "rule_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Rule Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "cb_identity",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "description": "If checked, this rule REFUSES the forbidden match instead of proposing one",
+   "fieldname": "is_anti_pattern",
+   "fieldtype": "Check",
+   "in_list_view": 1,
+   "label": "Is Anti-Pattern"
+  },
+  {
+   "default": "confirmed",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "confirmed\ntentative\npaused\ndeprecated",
+   "reqd": 1
+  },
+  {
+   "fieldname": "source_section",
+   "fieldtype": "Section Break",
+   "label": "Source"
+  },
+  {
+   "description": "e.g. sec 4.1, sec 11, session-MR-0042",
+   "fieldname": "source_section_ref",
+   "fieldtype": "Data",
+   "label": "Source Section"
+  },
+  {
+   "description": "SHA1 of (source_section, is_anti_pattern, tally_pattern) - idempotency key for re-seeds",
+   "fieldname": "source_hash",
+   "fieldtype": "Data",
+   "label": "Source Hash",
+   "read_only": 1,
+   "unique": 1
+  },
+  {
+   "fieldname": "cb_source",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "CSV of entity abbrs where the rule was observed",
+   "fieldname": "source_entities",
+   "fieldtype": "Small Text",
+   "label": "Source Entities"
+  },
+  {
+   "default": "manual",
+   "fieldname": "created_from",
+   "fieldtype": "Select",
+   "label": "Created From",
+   "options": "seed\nsession_review\nmanual",
+   "read_only": 1
+  },
+  {
+   "fieldname": "tally_section",
+   "fieldtype": "Section Break",
+   "label": "Tally-Side Matching"
+  },
+  {
+   "description": "Primary Tally ledger name to match",
+   "fieldname": "tally_pattern",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Tally Pattern",
+   "reqd": 1
+  },
+  {
+   "default": "exact_ci",
+   "fieldname": "tally_match_mode",
+   "fieldtype": "Select",
+   "label": "Match Mode",
+   "options": "exact_ci\nprefix_ci\nsuffix_ci\ncontains_ci\nregex",
+   "reqd": 1
+  },
+  {
+   "fieldname": "cb_tally",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "Any",
+   "description": "Guardrail - refuse match if Tally side has a different root type",
+   "fieldname": "applicable_root_type",
+   "fieldtype": "Select",
+   "label": "Applicable Root Type",
+   "options": "Any\nAsset\nLiability\nEquity\nIncome\nExpense"
+  },
+  {
+   "description": "Optional - narrows rule to match only under a specific parent chain",
+   "fieldname": "tally_parent_contains",
+   "fieldtype": "Data",
+   "label": "Tally Parent Chain Contains"
+  },
+  {
+   "fieldname": "tally_alternates_section",
+   "fieldtype": "Section Break",
+   "label": "Alternate Tally Patterns"
+  },
+  {
+   "fieldname": "tally_pattern_alternates",
+   "fieldtype": "Table",
+   "label": "Tally Pattern Alternates",
+   "options": "Mapping Rule Alternate Pattern"
+  },
+  {
+   "fieldname": "erp_target_section",
+   "fieldtype": "Section Break",
+   "label": "ERPNext Target (Positive Rules)"
+  },
+  {
+   "description": "Use {ABBR} placeholder, e.g. 'GH Raisoni College Of Engineering - {ABBR}'",
+   "fieldname": "erpnext_account_template",
+   "fieldtype": "Data",
+   "label": "ERPNext Account Template"
+  },
+  {
+   "fieldname": "cb_erp_target",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "0",
+   "description": "Sum Dr/Cr when multiple ledgers match rules pointing at the same ERP account",
+   "fieldname": "combine_amounts",
+   "fieldtype": "Check",
+   "label": "Combine Amounts"
+  },
+  {
+   "fieldname": "account_creation_section",
+   "fieldtype": "Section Break",
+   "label": "Account Creation"
+  },
+  {
+   "default": "0",
+   "description": "If checked, emit Account Creation Request instead of proposing directly",
+   "fieldname": "creates_erpnext_account",
+   "fieldtype": "Check",
+   "label": "Creates ERPNext Account"
+  },
+  {
+   "depends_on": "eval:doc.creates_erpnext_account",
+   "description": "Supports {ABBR}",
+   "fieldname": "new_account_name_template",
+   "fieldtype": "Data",
+   "label": "New Account Name Template",
+   "mandatory_depends_on": "eval:doc.creates_erpnext_account"
+  },
+  {
+   "depends_on": "eval:doc.creates_erpnext_account",
+   "description": "ERPNext parent account name without {ABBR}",
+   "fieldname": "new_account_parent",
+   "fieldtype": "Data",
+   "label": "New Account Parent",
+   "mandatory_depends_on": "eval:doc.creates_erpnext_account"
+  },
+  {
+   "fieldname": "cb_creation",
+   "fieldtype": "Column Break"
+  },
+  {
+   "depends_on": "eval:doc.creates_erpnext_account",
+   "fieldname": "new_account_root_type",
+   "fieldtype": "Select",
+   "label": "New Account Root Type",
+   "mandatory_depends_on": "eval:doc.creates_erpnext_account",
+   "options": "\nAsset\nLiability\nEquity\nIncome\nExpense"
+  },
+  {
+   "default": "0",
+   "depends_on": "eval:doc.creates_erpnext_account",
+   "fieldname": "new_account_is_group",
+   "fieldtype": "Check",
+   "label": "New Account Is Group"
+  },
+  {
+   "depends_on": "eval:doc.is_anti_pattern",
+   "fieldname": "anti_pattern_section",
+   "fieldtype": "Section Break",
+   "label": "Anti-Pattern Fields"
+  },
+  {
+   "depends_on": "eval:doc.is_anti_pattern",
+   "description": "The ERP account the mapper must NOT pick",
+   "fieldname": "forbidden_erpnext_template",
+   "fieldtype": "Data",
+   "label": "Forbidden ERPNext Template",
+   "mandatory_depends_on": "eval:doc.is_anti_pattern"
+  },
+  {
+   "depends_on": "eval:doc.is_anti_pattern",
+   "fieldname": "suggested_alternative_template",
+   "fieldtype": "Data",
+   "label": "Suggested Alternative Template"
+  },
+  {
+   "depends_on": "eval:doc.is_anti_pattern",
+   "fieldname": "anti_pattern_reason",
+   "fieldtype": "Small Text",
+   "label": "Anti-Pattern Reason",
+   "mandatory_depends_on": "eval:doc.is_anti_pattern"
+  },
+  {
+   "fieldname": "scope_section",
+   "fieldtype": "Section Break",
+   "label": "Scope & Pairing"
+  },
+  {
+   "default": "*",
+   "description": "CSV of entity types (college, hostel, ...) or * for all",
+   "fieldname": "applies_to_entity_types",
+   "fieldtype": "Small Text",
+   "label": "Applies To Entity Types"
+  },
+  {
+   "fieldname": "cb_scope",
+   "fieldtype": "Column Break"
+  },
+  {
+   "description": "CSV of Mapping Rule IDs logically paired",
+   "fieldname": "paired_rules",
+   "fieldtype": "Small Text",
+   "label": "Paired Rules"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "observability_section",
+   "fieldtype": "Section Break",
+   "label": "Observability"
+  },
+  {
+   "default": "0",
+   "fieldname": "times_applied",
+   "fieldtype": "Int",
+   "label": "Times Applied",
+   "read_only": 1
+  },
+  {
+   "fieldname": "cb_obs",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "last_applied_at",
+   "fieldtype": "Datetime",
+   "label": "Last Applied At",
+   "read_only": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-04-19 19:41:21.329665",
+ "modified_by": "Administrator",
+ "module": "Rgi Migration",
+ "name": "Mapping Rule",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "search_fields": "rule_name,tally_pattern,erpnext_account_template",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "rule_name",
+ "track_changes": 1
+}

@@ -1,0 +1,137 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "format:SAR-{#####}",
+ "creation": "2026-04-19 19:41:57.421308",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "tally_name_pattern",
+  "tally_match_mode",
+  "erpnext_supplier",
+  "cb_1",
+  "status",
+  "created_from",
+  "applies_to_entity_types",
+  "sb_observability",
+  "times_applied",
+  "last_applied_at"
+ ],
+ "fields": [
+  {
+   "description": "Stripped Tally vendor name without the -V####/-S####/-SX####/-P#### suffix",
+   "fieldname": "tally_name_pattern",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Tally Name Pattern",
+   "reqd": 1
+  },
+  {
+   "default": "exact_ci",
+   "fieldname": "tally_match_mode",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Match Mode",
+   "options": "exact_ci\nfuzzy_85\nfuzzy_90",
+   "reqd": 1
+  },
+  {
+   "fieldname": "erpnext_supplier",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "label": "ERPNext Supplier",
+   "options": "Supplier",
+   "reqd": 1
+  },
+  {
+   "fieldname": "cb_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "default": "confirmed",
+   "fieldname": "status",
+   "fieldtype": "Select",
+   "in_standard_filter": 1,
+   "label": "Status",
+   "options": "confirmed\npaused\ndeprecated",
+   "reqd": 1
+  },
+  {
+   "default": "manual",
+   "fieldname": "created_from",
+   "fieldtype": "Select",
+   "label": "Created From",
+   "options": "seed\nsession_review\nmanual",
+   "read_only": 1
+  },
+  {
+   "default": "*",
+   "fieldname": "applies_to_entity_types",
+   "fieldtype": "Small Text",
+   "label": "Applies To Entity Types"
+  },
+  {
+   "collapsible": 1,
+   "fieldname": "sb_observability",
+   "fieldtype": "Section Break",
+   "label": "Observability"
+  },
+  {
+   "default": "0",
+   "fieldname": "times_applied",
+   "fieldtype": "Int",
+   "label": "Times Applied",
+   "read_only": 1
+  },
+  {
+   "fieldname": "last_applied_at",
+   "fieldtype": "Datetime",
+   "label": "Last Applied At",
+   "read_only": 1
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-04-19 19:41:57.421308",
+ "modified_by": "Administrator",
+ "module": "Rgi Migration",
+ "name": "Supplier Alias Rule",
+ "naming_rule": "Expression (old style)",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "search_fields": "tally_name_pattern,erpnext_supplier",
+ "sort_field": "modified",
+ "sort_order": "DESC",
+ "states": [],
+ "title_field": "tally_name_pattern",
+ "track_changes": 1
+}
