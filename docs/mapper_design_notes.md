@@ -230,6 +230,39 @@ Concretely, Tier-1 will encounter group/ledger names like `GHRCACS` or
 will flow to `review_action="Pending"` as unmapped. That is correct
 behaviour; the reviewer decides.
 
+### P&L A/c routing — combine with I&E reserve at migration time
+
+Tally distinguishes two accounts that ERPNext does not:
+
+- **`Profit & Loss A/c`** — a Tally system accumulator holding current
+  FY (2025-26) net surplus. Carries no `<PARENT>` tag in the XML export
+  and is flagged `is_system_account=True` by the parser.
+- **`Income Expenditure A/c`** — a user-created reserve holding
+  accumulated prior-year surpluses. Ordinary Equity ledger, under
+  `Reserves & Surplus` in Tally.
+
+In Tally these are separate because Tally's year-end close moves the P&L
+A/c balance into I&E at fiscal-year rollover. ERPNext has no equivalent
+permanent ledger — it handles retained earnings via its own period-close
+mechanism, not as a user-facing chart account. **At migration time, both
+Tally accounts collapse to a single ERPNext account:** `Income
+Expenditure A/c - {ABBR}`, with amounts combined.
+
+This is encoded as a single seeded rule (`source_section = "§3.3 +
+derived"`) with `tally_pattern="Profit & Loss A/c"`, one alternate
+`"Income Expenditure A/c"`, `combine_amounts=1`, target template
+`"Income Expenditure A/c - {ABBR}"`.
+
+**Principle for future entities.** Different entities carry different
+shapes of retained earnings — a pure-deficit entity with no reserve, an
+entity with multiple named reserves, or an entity mid-way through an
+unbooked close. The principle the rule encodes is: *ERPNext's retained-
+earnings model uses one net account; collapse Tally's dual accumulators
+into that one account at migration time.* When an entity's shape doesn't
+match §4.12's two-account pattern (e.g. deficit entities where
+I&E is Dr and there's no P&L carry), the reviewer promotes a per-entity
+variant of this rule rather than trying to match this one structurally.
+
 ---
 
 ## 5. Change log
@@ -239,3 +272,4 @@ behaviour; the reviewer decides.
 | 2026-04-19 | Initial draft. Anti-pattern seeding test + account creation policy. |
 | 2026-04-19 | Added §2 Tier-1 structural checks (P&L exclusion + group-account refusal). Moved §11 R5/R6/R7/R10 out of the seed plan into structural/process categories. Worked Example B (FDR group) added to §1. `Account Creation Request` audit trail switched from single Link to `source_rules` child table. |
 | 2026-04-19 | §4 Known data quirks section added. Documents the CACSPU-vs-GHRCACS Tally-internal-name quirk — Tally source names are opaque and must not be sanitised to match ERP conventions. |
+| 2026-04-19 | §4 P&L A/c routing added. Tally's Profit & Loss A/c + Income Expenditure A/c collapse to one ERP account (`Income Expenditure A/c - {ABBR}`) with combine_amounts=1. Seeded as "§3.3 + derived" positive rule. |

@@ -1,6 +1,6 @@
 {
-  "total": 22,
-  "positive_count": 19,
+  "total": 23,
+  "positive_count": 20,
   "anti_pattern_count": 3,
   "creates_erpnext_account_count": 5,
   "positive_rules": [
@@ -409,6 +409,30 @@
       "applies_to_entity_types": "*",
       "created_from": "seed",
       "source_hash": "1ecbd887de68217c13a21cb57415f6ccadd3ac1f"
+    },
+    {
+      "source_section": "§3.3 + derived",
+      "rule_name": "Profit & Loss A/c + Income Expenditure A/c → combined I&E",
+      "tally_pattern": "Profit & Loss A/c",
+      "tally_match_mode": "exact_ci",
+      "tally_pattern_alternates": [
+        {
+          "tally_pattern": "Income Expenditure A/c",
+          "tally_match_mode": "exact_ci"
+        }
+      ],
+      "applicable_root_type": "Any",
+      "tally_parent_contains": null,
+      "erpnext_account_template": "Income Expenditure A/c - {ABBR}",
+      "combine_amounts": 1,
+      "creates_erpnext_account": 0,
+      "source_entities": "CACSPU",
+      "doctype": "Mapping Rule",
+      "is_anti_pattern": 0,
+      "status": "confirmed",
+      "applies_to_entity_types": "*",
+      "created_from": "seed",
+      "source_hash": "660526816530f3c5926420917f019215b28605d0"
     }
   ],
   "anti_pattern_rules": [

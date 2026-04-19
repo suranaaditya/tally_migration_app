@@ -350,6 +350,28 @@ POSITIVE_RULES: list[dict[str, Any]] = [
         "creates_erpnext_account": 0,
         "source_entities": "ASSHST",
     },
+    {
+        # §3.3 + derived — Tally's Profit & Loss A/c (current-year system
+        # accumulator) and Income Expenditure A/c (user-created prior-year
+        # reserve) are distinct in Tally but collapse to a single retained-
+        # earnings account in ERPNext. The Tally year-end-close machinery
+        # that distinguishes them isn't meaningful in ERPNext's COA, so
+        # both land in `Income Expenditure A/c - {ABBR}` with combined
+        # amounts. See docs/mapper_design_notes.md §4 "P&L A/c routing".
+        "source_section": "§3.3 + derived",
+        "rule_name": "Profit & Loss A/c + Income Expenditure A/c → combined I&E",
+        "tally_pattern": "Profit & Loss A/c",
+        "tally_match_mode": "exact_ci",
+        "tally_pattern_alternates": [
+            {"tally_pattern": "Income Expenditure A/c", "tally_match_mode": "exact_ci"},
+        ],
+        "applicable_root_type": "Any",
+        "tally_parent_contains": None,
+        "erpnext_account_template": "Income Expenditure A/c - {ABBR}",
+        "combine_amounts": 1,
+        "creates_erpnext_account": 0,
+        "source_entities": "CACSPU",
+    },
 ]
 
 
