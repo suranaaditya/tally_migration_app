@@ -1,60 +1,87 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.egg-info/
-*.egg
-build/
-dist/
-.eggs/
-
-# Virtual environments
-.venv/
-venv/
-env/
-
+!rgi_migration/tests/fixtures/*_masters_sample.xml
+!rgi_migration/tests/fixtures/expected_*.json
+!rgi_migration/tests/fixtures/sample_*.xlsx
+!rgi_migration/tests/fixtures/sample_*.xml
+# Aider AI Chat
+# Byte-compiled / optimized / DLL files
+# Defensive catch-all: full Tally "All Masters" exports are ~220 MB and by
+# Dependency directories
+# Distribution / packaging
+# Editors
+# Environments
+# Generated / one-off outputs from diagnostic scripts (don't check in)
+# Helix Editor
+# IDEs and editors
+# If one ever ends up inside fixtures/ by accident it must not be committed.
+# Local env
+# OS
+# Per-developer Claude Code state (permission allow-list, etc.).  The
 # Pytest / coverage
-.pytest_cache/
+# Python
+# Real client data — only anonymized / sampled fixtures go in git
+# This glob fires on any ``*_masters.xml`` that isn't the sampled subset;
+# Virtual environments
+# ``!sample_*.xml`` rule above.
+# repo policy live OUTSIDE the repo (see fixtures/README.md + RGI_FULL_XML_PATH).
+# team-shared ``.claude/settings.json`` (if any) is allowed; the ``.local``
+# the sample name ends in ``_masters_sample.xml`` and stays allowed by the
+# variant is personal and should never be committed.
+*$py.class
+*.DS_Store
+*.comp.js
+*.egg
+*.egg-info/
+*.kdev4
+*.py[cod]
+*.pyc
+*.py~
+*.swo
+*.swp
+*debug.log
+.DS_Store
+.Python
+.aider*
+.claude/settings.local.json
 .coverage
 .coverage.*
-htmlcov/
-
-# Editors
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# Local env
+.eggs/
 .env
 .env.local
-
-# Per-developer Claude Code state (permission allow-list, etc.).  The
-# team-shared ``.claude/settings.json`` (if any) is allowed; the ``.local``
-# variant is personal and should never be committed.
-.claude/settings.local.json
-
-# Real client data — only anonymized / sampled fixtures go in git
-rgi_migration/tests/fixtures/*.xml
-rgi_migration/tests/fixtures/*.xlsx
-rgi_migration/tests/fixtures/*.xls
-!rgi_migration/tests/fixtures/sample_*.xml
-!rgi_migration/tests/fixtures/sample_*.xlsx
-!rgi_migration/tests/fixtures/expected_*.json
-
-# Defensive catch-all: full Tally "All Masters" exports are ~220 MB and by
-# repo policy live OUTSIDE the repo (see fixtures/README.md + RGI_FULL_XML_PATH).
-# If one ever ends up inside fixtures/ by accident it must not be committed.
-# This glob fires on any ``*_masters.xml`` that isn't the sampled subset;
-# the sample name ends in ``_masters_sample.xml`` and stays allowed by the
-# ``!sample_*.xml`` rule above.
-rgi_migration/tests/fixtures/*_masters.xml
-!rgi_migration/tests/fixtures/*_masters_sample.xml
-
-# Generated / one-off outputs from diagnostic scripts (don't check in)
+.helix/
+.idea/
+.installed.cfg
+.kdev4/
+.pytest_cache/
+.venv
+.venv/
+.vs/
+.vscode/
+.wnf-lang-status
+ENV/
+MANIFEST
+Thumbs.db
+__pycache__/
+build/
+desktop.ini
+develop-eggs/
+dist/
+downloads/
+eggs/
+env.bak/
+env/
+htmlcov/
+jspm_packages/
+lib64/
+node_modules/
 parsed_output/
+parts/
+rgi_migration/tests/fixtures/*.xls
+rgi_migration/tests/fixtures/*.xlsx
+rgi_migration/tests/fixtures/*.xml
+rgi_migration/tests/fixtures/*_masters.xml
+sdist/
+tags
+var/
+venv.bak/
+venv/
+wheels/
