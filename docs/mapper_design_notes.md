@@ -359,7 +359,103 @@ around; kept as a known quirk rather than chased to root cause.
 
 ---
 
-## 6. Change log
+## 6. Supplier matching (Tier-1)
+
+Operational notes on vendor/party-ledger routing and supplier resolution.
+Applies to any ledger whose Tally parent chain indicates Sundry-Creditors
+lineage, subject to the exclusions in §6.2 and §6.3 below.
+
+### 6.1 Rule-first ordering
+
+**Principle.** Positive §4 rules are the primary classification signal.
+Parent-chain-based routing (like party-ledger detection) is a **fallback**
+for unclassified ledgers, never a pre-empt of rule matching.
+
+`Mapper.resolve()` evaluates positive rules **before** the party branch.
+If any positive rule fires, the rule's account proposal wins — regardless
+of parent chain. The party branch is only reached for ledgers that no
+rule matched.
+
+**Why it matters.** §4 includes rules whose targets live under Sundry
+Creditors in Tally: §4.6 `Unpaid Expenditure Account → Unpaid Expenditure
+Provision - {ABBR}`, §4.7 `Payable A/c → Payable Account - {ABBR}`.
+Without rule-first ordering, the party branch short-circuits these
+rules to `pending_supplier_creation` and the Work-Item-3 JE builder
+emits incorrect output (account-level balance attempted as party-wise
+JE with no matching supplier).
+
+**Regression finding (Week 3, Work Item 6).** The initial Work Item 6
+implementation ran the party branch before rule matching. Between the
+Week-2 baseline and the initial Work Item 6 run on the full 221 MB
+CACSPU export, `tier1_rule` dropped from 11 to 10 — exactly the §4.6
+Unpaid Expenditure Account match being diverted. Caught at prose-review
+time before the fix shipped; corrected in commit `8449ee5` by swapping
+the party branch to run AFTER the rule lookup.
+
+### 6.2 Party-ledger detection
+
+A ledger is treated as a Sundry-Creditors vendor (and routed through
+supplier resolution) when **both** conditions hold:
+
+1. Its parent chain (case-insensitive substring match) contains
+   `sundry creditors`.
+2. Its cleaned name does NOT match any control-account pattern (§6.3).
+
+Sundry **Debtors** descendants are NOT routed here — those are students
+on RGI entities, handled by the dux_voucher ex-student workflow per
+`docs/dux_voucher_integration.md`.
+
+### 6.3 Control-account pattern list
+
+Names matching any of these 8 hardcoded patterns stay in the main JE
+flow (account-level balances), even when they live under Sundry
+Creditors. They are pseudo-accounts for Tally bookkeeping mechanics,
+not vendors, and should never produce a Supplier Creation Request.
+
+All patterns are case-insensitive and anchored (`^`) at the start of
+the cleaned ledger name. Patterns live in
+`rgi_migration/mapper/tier1_supplier.py`:
+
+| Pattern | Rationale | Example matches |
+|---|---|---|
+| `^Advances?\s+Received\b` | Accrual bucket under Sundry Creditors; no vendor counterparty | `Advances Received For Expenses`, `Advance Received` |
+| `^TDS\s+Payable\b` | Statutory liability; Government is not a Supplier master entry | `TDS Payable 194C`, `TDS Payable On Rent` |
+| `^(GST\s+)?Tax\s+Collected\b` | GST output liability; anchored to avoid matching vendor names containing "Tax" | `Tax Collected at Source`, `GST Tax Collected` |
+| `^Provision\s+for\b` | Period-end accrual, not vendor-linked | `Provision for Expenses`, `Provision for Audit Fees` |
+| `^Suspense\s+A/c\b` | Clearing account; slash required to avoid ambiguity with `Ac` as a prefix | `Suspense A/c` |
+| `^Unadjusted\b` | Reconciliation-pending items, not vendor obligations | `Unadjusted Receipts`, `Unadjusted Advance from Customer` |
+| `^GST\s+(Payable\|Input\|Output)\b` | GST control accounts common in Indian ERP Tally setups | `GST Payable`, `GST Input`, `GST Output` |
+| `^Round(ing)?\s+off\b` | Mechanical rounding pseudo-account (often classified P&L anyway, but defend-in-depth) | `Round off`, `Rounding off` |
+
+**Observed on full 221 MB CACSPU export (post-fix verification):** 5
+ledgers matched control patterns. Two of those were previously in the
+party branch; the rest were already excluded by the P&L validator or
+sat outside Sundry Creditors. Party routing dropped from 345 to 343.
+
+**Adding patterns.** For Week 3 scope, patterns are hardcoded here and
+edited via a code commit. See §6.4 for deferred work.
+
+### 6.4 Deferred — Control Account Pattern DocType (Week 4+)
+
+Operational staff will eventually need to add control-account patterns
+without a code edit. Scope for Week 4+:
+
+- New DocType `Control Account Pattern` with fields `pattern` (Data,
+  regex), `description` (Small Text), `is_active` (Check), `source`
+  (Select: seed | manual | session_review).
+- `is_control_account(ledger)` reads the DocType at runtime instead
+  of from the hardcoded `_CONTROL_ACCOUNT_PATTERNS` list, with the
+  same compile-once cache semantics.
+- Seed the 8 Week-3 patterns on first migrate.
+
+Not doing this today because (a) the 8 patterns cover observed real
+data adequately, (b) Week 3 is already large, (c) pattern additions
+during Week 3 are done via a code commit + push cycle that's
+acceptable for the small number of edits we expect.
+
+---
+
+## 7. Change log
 
 | Date | Change |
 |------|--------|
@@ -368,3 +464,4 @@ around; kept as a known quirk rather than chased to root cause.
 | 2026-04-19 | §4 Known data quirks section added. Documents the CACSPU-vs-GHRCACS Tally-internal-name quirk — Tally source names are opaque and must not be sanitised to match ERP conventions. |
 | 2026-04-19 | §4 P&L A/c routing added. Tally's Profit & Loss A/c + Income Expenditure A/c collapse to one ERP account (`Income Expenditure A/c - {ABBR}`) with combine_amounts=1. Seeded as "§3.3 + derived" positive rule. |
 | 2026-04-19 | §5 Schema mutation recipes added. Captures operational lessons from the Week-3 DocType audit iteration: DocField rename pattern, orphan column cleanup, v16 API gotchas, bench-console-heredoc as the preferred execution surface. |
+| 2026-04-19 | §6 Supplier matching added. Documents rule-first ordering, the 8-pattern control-account exclusion list, and the §4.6 regression finding caught at prose-review time during Work Item 6. Control Account Pattern DocType deferred to Week 4+. |
