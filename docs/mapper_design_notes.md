@@ -265,7 +265,101 @@ variant of this rule rather than trying to match this one structurally.
 
 ---
 
-## 5. Change log
+## 5. Schema mutation recipes (Frappe v16 / erp.jewonline.in)
+
+Operational notes captured from the Week-3 DocType audit iteration.
+Recording here so the next schema change doesn't rediscover these
+painfully. All recipes tested on the bench at `erp.jewonline.in`
+(Frappe 16.12 / ERPNext 16.10).
+
+### DocField rename (fieldname change)
+
+Modify the DocType.fields list in place, then `save()`:
+
+```python
+dt = frappe.get_doc("DocType", "<Some DocType>")
+for f in dt.fields:
+    if f.fieldname == "old_name":
+        f.fieldname = "new_name"
+dt.save(ignore_permissions=True)
+```
+
+`save()` adds the new column to `tab<DocType>`. It does **not** drop the
+old column — the old column becomes an orphan and has to be cleaned up
+separately (next recipe). On a table with existing data, this means
+the data lands only in the NEW column; the old column keeps its old
+values until dropped. Plan migration accordingly.
+
+### Orphan SQL column cleanup
+
+Raw DDL (`ALTER TABLE … DROP COLUMN`) inside a transaction with pending
+writes raises `ImplicitCommitError` in v16. Flank the DDL with explicit
+commits:
+
+```python
+frappe.db.commit()                        # flush pending transaction writes
+frappe.db.sql(
+    "ALTER TABLE `tab<DocType>` DROP COLUMN `orphan_column_name`"
+)
+frappe.db.commit()
+```
+
+Same pattern for any DDL: `ADD COLUMN`, `CHANGE COLUMN`, etc.
+
+### Section Break / Data field fieldname collision
+
+When two fields on the same DocType both claim the same fieldname (e.g.
+a Section Break at `source_section` and a Data field also wanting
+`source_section`), Frappe silently renames the later one with a suffix
+(we saw `_ref` appended). Rename the Section Break out of the way
+*first*, save, then rename the Data field in. Two sequential saves.
+
+### APIs that are **not** available in v16
+
+- `frappe.model.rename_doc.rename_field` — removed. Use
+  DocType.fields-in-place edit + `save()` instead.
+- `frappe.db.rename_field` — does not exist on this bench.
+- Raw `ALTER CHANGE COLUMN` inside a transaction — blocked by
+  `ImplicitCommitError`; use commit-flanked DDL.
+
+### Execution surface — prefer bench console heredoc
+
+```bash
+bench --site erp.jewonline.in console <<EOF
+import frappe
+# ... your patch code ...
+EOF
+```
+
+`bench console` with a Python heredoc is the most reliable execution
+surface on this bench. Clear output, full interactive-Python error
+messages, reliable module imports.
+
+**Avoid** `bench --site X execute <dotted.path.to.func>` for anything
+non-trivial. It has a fallback-to-`eval()` path (see
+`frappe/commands/utils.py:288`) that triggers a spurious
+`NameError: name '<app>' is not defined` when the primary
+`frappe.get_attr()` import fails for any reason. Seen on this bench
+with the setup module's `run_audit_patches` function despite the
+module importing cleanly via `python -c`. Reproduced and worked
+around; kept as a known quirk rather than chased to root cause.
+
+### Testing protocol for schema patches
+
+1. **Probe** current DocField metadata and SQL column state via
+   `bench --site X console` heredoc before writing the patch.
+2. **Idempotent patch** — always check-before-change (`frappe.db.exists`,
+   `frappe.db.has_column`, existing-fieldname lookups).
+3. **Run patch** via console heredoc. Re-probe. Confirm.
+4. **`bench migrate`**. No rgi_migration-related errors.
+5. **Bridge-commit** the generated JSON changes from server to GitHub
+   via the local-as-bridge pattern
+   (`git fetch frappe@…:frappe-bench/apps/rgi_migration …`, then
+   `git push origin`).
+
+---
+
+## 6. Change log
 
 | Date | Change |
 |------|--------|
@@ -273,3 +367,4 @@ variant of this rule rather than trying to match this one structurally.
 | 2026-04-19 | Added §2 Tier-1 structural checks (P&L exclusion + group-account refusal). Moved §11 R5/R6/R7/R10 out of the seed plan into structural/process categories. Worked Example B (FDR group) added to §1. `Account Creation Request` audit trail switched from single Link to `source_rules` child table. |
 | 2026-04-19 | §4 Known data quirks section added. Documents the CACSPU-vs-GHRCACS Tally-internal-name quirk — Tally source names are opaque and must not be sanitised to match ERP conventions. |
 | 2026-04-19 | §4 P&L A/c routing added. Tally's Profit & Loss A/c + Income Expenditure A/c collapse to one ERP account (`Income Expenditure A/c - {ABBR}`) with combine_amounts=1. Seeded as "§3.3 + derived" positive rule. |
+| 2026-04-19 | §5 Schema mutation recipes added. Captures operational lessons from the Week-3 DocType audit iteration: DocField rename pattern, orphan column cleanup, v16 API gotchas, bench-console-heredoc as the preferred execution surface. |
