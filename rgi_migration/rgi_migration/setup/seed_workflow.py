@@ -31,7 +31,10 @@ import frappe
 
 # scripts/ is a sibling of the app package on disk; put it on sys.path so
 # we can import the seed data + helpers without duplicating them here.
-_APP_ROOT = Path(frappe.get_app_path("rgi_migration")).parent.parent
+# frappe.get_app_path returns the inner Python package dir:
+#   /home/.../apps/rgi_migration/rgi_migration
+# so ONE .parent reaches the git-repo root (/home/.../apps/rgi_migration).
+_APP_ROOT = Path(frappe.get_app_path("rgi_migration")).parent
 _SCRIPTS = _APP_ROOT / "scripts"
 if str(_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SCRIPTS))
