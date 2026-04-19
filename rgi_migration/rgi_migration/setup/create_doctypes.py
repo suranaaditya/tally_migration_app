@@ -617,21 +617,18 @@ def audit_phase_3_patches() -> dict:
         "; ".join(mr_changes) if mr_changes else "no change (already correct)"
     )
 
-    # Belt-and-braces: rename the SQL column directly too, in case
-    # DocType.save() doesn't trigger a column rename on migrate. 0-row
-    # table, so dropping and recreating would also be safe.
+    # After DocType.save() completes, Frappe has added the new `source_section`
+    # column but left the old `source_section_ref` as an orphan (Frappe adds
+    # but doesn't drop). Clean it up with an explicit DROP, flanked by
+    # db.commit() to sidestep the v16 ImplicitCommitError guard that fires
+    # when DDL runs mid-transaction.
     if frappe.db.has_column("Mapping Rule", "source_section_ref"):
-        col_info = frappe.db.sql(
-            "SHOW COLUMNS FROM `tabMapping Rule` "
-            "WHERE Field = 'source_section_ref'",
-            as_dict=True,
-        )
-        col_type = col_info[0]["Type"] if col_info else "varchar(140)"
+        frappe.db.commit()
         frappe.db.sql(
-            f"ALTER TABLE `tabMapping Rule` "
-            f"CHANGE COLUMN `source_section_ref` `source_section` {col_type}"
+            "ALTER TABLE `tabMapping Rule` DROP COLUMN `source_section_ref`"
         )
-        results["Mapping Rule"] += "; SQL column renamed"
+        frappe.db.commit()
+        results["Mapping Rule"] += "; dropped orphan SQL column source_section_ref"
 
     # ---- Mapping Decision: add requires_combine + combine_with ----
     decision = frappe.get_doc("DocType", "Mapping Decision")
