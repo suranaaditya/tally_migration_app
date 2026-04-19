@@ -28,6 +28,7 @@ Tier-1 supplier matching).
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from rapidfuzz import fuzz, process
@@ -45,15 +46,63 @@ _VENDOR_PARENT_MARKERS = (
     "sundry creditors",
 )
 
+# Control-account name patterns that short-circuit party routing even when
+# a ledger lives under Sundry Creditors. These are either (a) rules-library
+# candidates that haven't been seeded yet or (b) pseudo-accounts that exist
+# for Tally bookkeeping mechanics (GST, TDS, rounding, provisions). They
+# stay in the main JE flow — NOT routed to OIT / Supplier Creation Request.
+#
+# All patterns are case-insensitive and anchored (^) at the start of the
+# cleaned ledger name. Word-boundary (\b) at the end prevents partial-prefix
+# matches against vendor names that happen to start with similar tokens.
+#
+# Future work (Week 4+): make this extensible via a `Control Account
+# Pattern` DocType so ops staff can add entries without code edits. For
+# Week 3 scope, patterns are hardcoded here and documented in
+# docs/mapper_design_notes.md sec 6.
+_CONTROL_ACCOUNT_PATTERNS = [
+    r"^Advances?\s+Received\b",             # Advance Received, Advances Received (For Expenses|...)
+    r"^TDS\s+Payable\b",                    # TDS Payable, TDS Payable 194C, TDS Payable On Rent
+    r"^(GST\s+)?Tax\s+Collected\b",         # Tax Collected at Source, GST Tax Collected (...)
+    r"^Provision\s+for\b",                  # Provision for Expenses, Provision for Audit Fees
+    r"^Suspense\s+A/c\b",                   # Suspense A/c (slash required — Ac alone is ambiguous)
+    r"^Unadjusted\b",                       # Unadjusted Advance, Unadjusted Receipts
+    r"^GST\s+(Payable|Input|Output)\b",     # GST Payable, GST Input, GST Output
+    r"^Round(ing)?\s+off\b",                # Round off, Rounding off
+]
+_COMPILED_CONTROL_PATTERNS = [
+    re.compile(pat, re.IGNORECASE) for pat in _CONTROL_ACCOUNT_PATTERNS
+]
+
+
+def is_control_account(ledger: Any) -> bool:
+    """True if the ledger name matches any hardcoded control-account
+    pattern. Control accounts stay in the main JE flow (account-level
+    balances), never route to Supplier Creation Request even when
+    they live under Sundry Creditors.
+    """
+    name = str(getattr(ledger, "name", "") or "").strip()
+    if not name:
+        return False
+    for pat in _COMPILED_CONTROL_PATTERNS:
+        if pat.search(name):
+            return True
+    return False
+
 
 def is_vendor_party_ledger(ledger: Any) -> bool:
-    """True if the ledger's parent chain indicates a Sundry-Creditors vendor.
+    """True if the ledger's parent chain indicates a Sundry-Creditors vendor
+    AND the ledger name is not a control-account pattern.
 
-    Uses only the parser-emitted parent_chain, which is authoritative.
-    The legacy `-V###` / `-S###` suffix heuristic is not used here —
-    parent chain is strictly more reliable and the suffix pattern
-    varies across the 59 entities.
+    Control accounts (GST, TDS, Provisions, Rounding, etc.) live under
+    Sundry Creditors in Tally but aren't vendors — they're bookkeeping
+    mechanics for which no Supplier master entry should ever exist.
+    Excluding them here keeps them out of the Supplier Creation Request
+    pipeline and lets them flow through normal rule / exact-name matching
+    in the main JE path.
     """
+    if is_control_account(ledger):
+        return False
     chain = getattr(ledger, "parent_chain", None) or []
     chain_lc = [str(p).lower() for p in chain]
     for marker in _VENDOR_PARENT_MARKERS:

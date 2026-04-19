@@ -25,10 +25,12 @@ from rgi_migration.mapper import (
     Mapper,
     Supplier,
 )
+from rgi_migration.mapper.rule_source import Rule
 from rgi_migration.mapper.tier1_supplier import (
     _clean,
     find_exact_supplier,
     find_fuzzy_supplier,
+    is_control_account,
     is_vendor_party_ledger,
     resolve_supplier,
 )
@@ -277,3 +279,165 @@ def test_mapper_without_supplier_source_ignores_party_path():
     d = m.resolve(ledger)
     assert d.tier == "unmapped"
     assert d.proposed_supplier is None
+
+
+# ---------------------------------------------------------------------------
+# Control-account pattern list (Layer 2 of the control-account fix)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("name,expect_control", [
+    # Should match — these are control accounts, not vendors
+    ("Advances Received For Expenses", True),
+    ("Advance Received", True),
+    ("TDS Payable 194C", True),
+    ("TDS Payable On Rent", True),
+    ("Tax Collected at Source", True),
+    ("GST Tax Collected", True),
+    ("Provision for Expenses", True),
+    ("Provision for Audit Fees", True),
+    ("Suspense A/c", True),
+    ("Unadjusted Receipts", True),
+    ("Unadjusted Advance from Customer", True),
+    ("GST Payable", True),
+    ("GST Input", True),
+    ("GST Output", True),
+    ("Round off", True),
+    ("Rounding off", True),
+    # Should NOT match — these are genuine vendor-name patterns
+    ("Nilesh Traders", False),
+    ("AARNA SOLUTION", False),
+    ("Best Advances Trading Co", False),     # doesn't start with "Advances Received"
+    ("Suspense Ac", False),                   # slash required — prevents ambiguity with Ac*
+    ("Suspense Account", False),              # separate full-word form; not in our 8-pattern list
+    ("Gulab Hardware", False),
+    ("Amit", False),
+])
+def test_control_account_pattern_detection(name, expect_control):
+    ledger = StubLedger(name=name, root_type="Liability",
+                        parent_chain=["Sundry Creditors"])
+    assert is_control_account(ledger) is expect_control
+
+
+def test_control_account_under_sundry_creditors_not_flagged_as_party():
+    # Even though parent chain says Sundry Creditors, the control-account
+    # name pattern short-circuits party classification.
+    ledger = StubLedger(
+        name="Advances Received For Expenses",
+        root_type="Liability",
+        parent_chain=["Current Liabilities", "Sundry Creditors"],
+    )
+    assert is_vendor_party_ledger(ledger) is False
+
+
+def test_control_account_stays_in_main_flow_via_mapper():
+    # Integration: control account under Sundry Creditors should flow
+    # through account-mapping (rule/exact/unmapped), not supplier path.
+    supplier_source = InMemorySupplierSource(SUPPLIERS)
+    m = Mapper(_trivial_rules(), _empty_coa(), abbr="TEST",
+               supplier_source=supplier_source)
+    ledger = StubLedger(
+        name="TDS Payable 194C",
+        root_type="Liability",
+        parent_chain=["Current Liabilities", "Sundry Creditors"],
+        opening_cr=10500.0,
+    )
+    d = m.resolve(ledger)
+    # No rule, no COA match -> unmapped. NOT pending_supplier_creation.
+    assert d.tier == "unmapped"
+    assert d.proposed_supplier is None
+    assert d.requires_supplier_creation is False
+
+
+# ---------------------------------------------------------------------------
+# Rule-first ordering (Layer 1 of the control-account fix)
+# ---------------------------------------------------------------------------
+
+
+def _positive_rule(**overrides) -> Rule:
+    """Minimal positive-rule factory for tests."""
+    defaults: dict = dict(
+        source_section="§TEST",
+        source_hash="hash-test",
+        rule_name="test",
+        is_anti_pattern=False,
+        status="confirmed",
+        applies_to_entity_types="*",
+        tally_pattern="",
+        tally_match_mode="exact_ci",
+        tally_pattern_alternates=(),
+        applicable_root_type="Any",
+        tally_parent_contains=None,
+        erpnext_account_template=None,
+        combine_amounts=False,
+        forbidden_erpnext_template=None,
+        anti_pattern_reason=None,
+        suggested_alternative_template=None,
+        creates_erpnext_account=False,
+        new_account_name_template=None,
+        new_account_parent=None,
+        new_account_root_type=None,
+        new_account_is_group=False,
+    )
+    defaults.update(overrides)
+    return Rule(**defaults)
+
+
+def test_rule_first_ordering_beats_party_branch():
+    """A ledger under Sundry Creditors whose name matches a positive rule
+    resolves via the rule, NOT via supplier resolution. This is the
+    §4.6 / §4.7 regression fix — rules live-under-party-parent must
+    still fire before party routing."""
+    # Rule mimicking §4.6 Unpaid Expenditure Account
+    rules = InMemoryRuleSource([
+        _positive_rule(
+            source_section="§4.6",
+            source_hash="hash-sec46",
+            rule_name="Unpaid Expenditure Account (test)",
+            tally_pattern="Unpaid Expenditure Account",
+            tally_match_mode="exact_ci",
+            applicable_root_type="Liability",
+            erpnext_account_template="Unpaid Expenditure Provision - {ABBR}",
+        ),
+    ])
+    coa = {
+        "Unpaid Expenditure Provision - TEST": CoaAccount(
+            name="Unpaid Expenditure Provision - TEST",
+            parent_account="Other Liabilities - TEST",
+            root_type="Liability",
+            is_group=False,
+            company_abbr="TEST",
+        ),
+    }
+    supplier_source = InMemorySupplierSource(SUPPLIERS)
+    m = Mapper(rules, coa, abbr="TEST", supplier_source=supplier_source)
+
+    ledger = StubLedger(
+        name="Unpaid Expenditure Account",
+        root_type="Liability",
+        parent_chain=["Current Liabilities", "Sundry Creditors"],
+        opening_cr=500000.0,
+    )
+    d = m.resolve(ledger)
+    # Should match the rule, NOT route to supplier
+    assert d.tier == "tier1_rule"
+    assert d.matched_rule == "§4.6"
+    assert d.proposed_account == "Unpaid Expenditure Provision - TEST"
+    assert d.proposed_supplier is None
+
+
+def test_vendor_ledger_without_matching_rule_still_routes_to_supplier():
+    """Regression guard: reordering must not break the normal supplier
+    path. A vendor ledger whose name does NOT match any rule still
+    flows through supplier resolution as before."""
+    supplier_source = InMemorySupplierSource(SUPPLIERS)
+    m = Mapper(_trivial_rules(), _empty_coa(), abbr="TEST",
+               supplier_source=supplier_source)
+    ledger = StubLedger(
+        name="Abhi Tria",
+        root_type="Liability",
+        parent_chain=["Current Liabilities", "Sundry Creditors"],
+    )
+    d = m.resolve(ledger)
+    assert d.tier == "tier1_supplier_exact"
+    assert d.proposed_supplier == "SUP-0002"

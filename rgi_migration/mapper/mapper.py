@@ -175,35 +175,40 @@ class Mapper:
         if pnl:
             return self._excluded(ledger, pnl, tier="excluded_pnl")
 
-        # 1b. Party-ledger routing (vendor/creditor → supplier resolution).
-        # Only engaged when the Mapper was constructed with a supplier_source.
-        # Without a source, party ledgers flow through the account-mapping
-        # pathway (and typically land in `unmapped` — matches pre-Work-Item-6
-        # behavior).
-        if self.supplier_source is not None and is_vendor_party_ledger(ledger):
-            return self._resolve_party(ledger)
-
         # 2. Anti-pattern lookup (does not short-circuit by itself)
         anti = find_matching_anti_pattern(ledger, self._anti)
 
-        # 3. Positive rules (Layers 1 + 2)
+        # 3. Positive rules — RUN FIRST, before party routing. §4 includes
+        #    rules whose targets live under Sundry Creditors in Tally
+        #    (§4.6 Unpaid Expenditure Account, §4.7 Payable A/c). If the
+        #    party branch ran first, those rules would silently stop
+        #    matching between runs. Positive-rule match is the primary
+        #    classification signal; parent-chain-based routing is a
+        #    fallback for unclassified ledgers.
         rule_match = find_matching_positive_rule(ledger, self._positive)
         if rule_match:
             rule, tier = rule_match
             return self._resolve_with_rule(ledger, rule, tier, anti)
 
-        # 4. Exact-name fallback (Layer 3)
+        # 4. Party-ledger routing (vendor/creditor → supplier resolution).
+        #    Only engaged when the Mapper was constructed with a
+        #    supplier_source AND the ledger is a vendor party (excludes
+        #    control accounts per tier1_supplier.is_control_account).
+        if self.supplier_source is not None and is_vendor_party_ledger(ledger):
+            return self._resolve_party(ledger)
+
+        # 5. Exact-name fallback (Layer 3 of account-mapping)
         exact = resolve_exact_name(ledger, self.coa, self.abbr)
         if exact:
             return self._resolve_with_candidate(ledger, exact, matched_rule=None,
                                                 tier="tier1_exact", anti=anti,
                                                 confidence=1.0)
 
-        # 5. Anti-pattern matched but no positive target emerged
+        # 6. Anti-pattern matched but no positive target emerged
         if anti:
             return self._anti_pattern_only(ledger, anti)
 
-        # 6. Unmapped
+        # 7. Unmapped
         return MappedDecision(
             tally_name=ledger.name,
             tally_id=ledger.tally_id,
