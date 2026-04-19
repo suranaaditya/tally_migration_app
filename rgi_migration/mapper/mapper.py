@@ -506,14 +506,36 @@ def _truthy(value: Any) -> bool:
     return str(value).strip() in ("1", "True", "true", "yes", "Yes")
 
 
+def _pick(row: dict[str, Any], *keys: str) -> Any:
+    """First non-empty value among the given keys (case-sensitive match on
+    whatever the source file supplied)."""
+    for k in keys:
+        if k in row:
+            v = row[k]
+            if v is None:
+                continue
+            if isinstance(v, str) and not v.strip():
+                continue
+            return v
+    return ""
+
+
 def load_coa(path: Path) -> dict[str, CoaAccount]:
     """Load the target company's ERPNext COA from CSV or XLSX.
 
-    Expected columns: account_name, parent_account, root_type, is_group,
-    company_abbr. (Order doesn't matter; matched by header name.)
+    Accepts two header schemas so both the hand-built stub and a raw
+    ERPNext export can be used directly (no munging step):
 
-    Both stub (sample_cacspu_erpnext_coa.csv) and real (…_real.csv or
-    …_real.xlsx) COA files share this schema.
+    Internal / stub schema:
+        account_name, parent_account, root_type, is_group, company_abbr
+
+    ERPNext native export schema (Desk → Accounts → Export):
+        ID, Account Name, Company, Parent Account, Is Group, Root Type,
+        Account Category, Account Type
+
+    In the native schema, the fully-qualified account name (what the mapper
+    keys on) lives in the `ID` column — `Account Name` is the base name
+    without the `- {ABBR}` suffix. Extra columns are ignored.
     """
     path = Path(path)
     suffix = path.suffix.lower()
@@ -535,23 +557,28 @@ def load_coa(path: Path) -> dict[str, CoaAccount]:
                 header[i]: ("" if v is None else v)
                 for i, v in enumerate(r) if i < len(header)
             }
-            if not str(row.get("account_name") or "").strip():
-                continue
             rows.append(row)
     else:
         raise ValueError(f"Unsupported COA file extension: {suffix}")
 
     out: dict[str, CoaAccount] = {}
     for r in rows:
-        name = str(r.get("account_name") or "").strip()
+        # Fully-qualified account name: `account_name` (internal) or `ID` (ERPNext export)
+        name = str(_pick(r, "account_name", "ID", "id")).strip()
         if not name:
             continue
+        parent = str(_pick(r, "parent_account", "Parent Account")).strip() or None
+        root = str(_pick(r, "root_type", "Root Type")).strip()
+        is_group_raw = _pick(r, "is_group", "Is Group")
+        # ERPNext export uses "Company" (full name); stub uses "company_abbr" (short).
+        # Either is fine as metadata; mapper takes the abbr from the --abbr CLI flag.
+        company_abbr = str(_pick(r, "company_abbr", "Company")).strip()
         out[name] = CoaAccount(
             name=name,
-            parent_account=(str(r.get("parent_account") or "").strip() or None),
-            root_type=str(r.get("root_type") or "").strip(),
-            is_group=_truthy(r.get("is_group")),
-            company_abbr=str(r.get("company_abbr") or "").strip(),
+            parent_account=parent,
+            root_type=root,
+            is_group=_truthy(is_group_raw),
+            company_abbr=company_abbr,
         )
     return out
 
