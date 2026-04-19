@@ -597,37 +597,41 @@ def audit_phase_3_patches() -> dict:
     results: dict = {}
 
     # ---- Mapping Rule: rename Section Break + rename data field ----
+    # v16 has no frappe.model.rename_doc.rename_field helper anymore.
+    # Direct-edit DocType.fields and save; Frappe's migrate-on-save
+    # handles the tabMapping Rule column schema update. Safe because
+    # tabMapping Rule has 0 rows at this point (seed not yet run).
     rule = frappe.get_doc("DocType", "Mapping Rule")
-    fields_by_name = {f.fieldname: f for f in rule.fields}
     mr_changes: list = []
-
-    # Step 1. Free the name `source_section`: rename the Section Break to
-    # `sb_source`. Idempotent — checks current fieldname first.
-    sb_candidate = fields_by_name.get("source_section")
-    if sb_candidate and sb_candidate.fieldtype == "Section Break":
-        sb_candidate.fieldname = "sb_source"
-        sb_candidate.label = "Source"  # keep the label consistent
+    for f in rule.fields:
+        if f.fieldname == "source_section" and f.fieldtype == "Section Break":
+            f.fieldname = "sb_source"
+            f.label = "Source"
+            mr_changes.append("section break: source_section -> sb_source")
+        elif f.fieldname == "source_section_ref":
+            f.fieldname = "source_section"
+            mr_changes.append("data field: source_section_ref -> source_section")
+    if mr_changes:
         rule.save(ignore_permissions=True)
-        mr_changes.append(
-            "section break: source_section -> sb_source"
-        )
-        # Re-fetch so we see post-save field order
-        rule = frappe.get_doc("DocType", "Mapping Rule")
-        fields_by_name = {f.fieldname: f for f in rule.fields}
-
-    # Step 2. Rename data field `source_section_ref` -> `source_section`.
-    # rename_field handles the SQL column rename on tabMapping Rule.
-    # Idempotent — only runs if the old fieldname still exists.
-    if "source_section_ref" in fields_by_name:
-        from frappe.model.rename_doc import rename_field
-        rename_field("Mapping Rule", "source_section_ref", "source_section")
-        mr_changes.append(
-            "data field: source_section_ref -> source_section"
-        )
-
     results["Mapping Rule"] = (
         "; ".join(mr_changes) if mr_changes else "no change (already correct)"
     )
+
+    # Belt-and-braces: rename the SQL column directly too, in case
+    # DocType.save() doesn't trigger a column rename on migrate. 0-row
+    # table, so dropping and recreating would also be safe.
+    if frappe.db.has_column("Mapping Rule", "source_section_ref"):
+        col_info = frappe.db.sql(
+            "SHOW COLUMNS FROM `tabMapping Rule` "
+            "WHERE Field = 'source_section_ref'",
+            as_dict=True,
+        )
+        col_type = col_info[0]["Type"] if col_info else "varchar(140)"
+        frappe.db.sql(
+            f"ALTER TABLE `tabMapping Rule` "
+            f"CHANGE COLUMN `source_section_ref` `source_section` {col_type}"
+        )
+        results["Mapping Rule"] += "; SQL column renamed"
 
     # ---- Mapping Decision: add requires_combine + combine_with ----
     decision = frappe.get_doc("DocType", "Mapping Decision")
