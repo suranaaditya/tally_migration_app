@@ -2,6 +2,14 @@
 """
 seed_mapping_rules.py — seed the Mapping Rule DocType from RGI_Migration_Rules.md.
 
+Schema contract: rule dicts key on 'source_section' (Data field).
+A post-Batch-4 audit patch renamed the deployed Mapping Rule field from
+'source_section_ref' to 'source_section' so the seed here and the DocType
+stay aligned. See docs/mapper_design_notes.md "Schema mutation recipes"
+for context. Do NOT "fix" this to source_section_ref based on older
+DocType JSON dumps — that name is the stale one.
+
+
 Seeds §4 (CONFIRMED positive rules: 19) and §11 rows 2/3/4 (CONFIRMED anti-patterns
 with specific Tally patterns: 3). Total: 22 rows.
 
