@@ -682,38 +682,91 @@ def dry_run(plan: dict[str, Any]) -> None:
     print(f"  Plan JSON: {DRY_RUN_PLAN.relative_to(REPO_ROOT)}")
 
 
-def real_seed(plan: dict[str, Any], purge: bool = False) -> int:
-    try:
-        import frappe  # type: ignore[import]
-    except ImportError:
-        print("ERROR: --insert mode requires Frappe bench context.", file=sys.stderr)
-        print("Run via: bench --site <site> execute "
-              "rgi_migration.scripts.seed_mapping_rules.main -- --insert", file=sys.stderr)
-        print("Frappe bench for this app is scaffolded in Week 2 step 1; until then, "
-              "only --dry-run is supported.", file=sys.stderr)
-        return 2
+def validate_deployed_schema(plan: dict[str, Any]) -> list[str]:
+    """Preview check — every dict key in the plan's rules must resolve to a
+    real field on the deployed Mapping Rule DocType.
 
-    # Implementation for post-scaffold (Week 2 step 1). Structure:
-    #
-    #   if purge:
-    #       frappe.db.delete("Mapping Rule", {"created_from": "seed"})
-    #   for row in plan["positive_rules"] + plan["anti_pattern_rules"]:
-    #       existing = frappe.db.exists("Mapping Rule", {"source_hash": row["source_hash"]})
-    #       if existing:
-    #           doc = frappe.get_doc("Mapping Rule", existing)
-    #           for k, v in row.items():
-    #               if k in {"times_applied", "last_applied_at", "created_via_session"}:
-    #                   continue
-    #               doc.set(k, v)
-    #           doc.save()
-    #       else:
-    #           frappe.get_doc(row).insert()
-    #   frappe.db.commit()
-    raise NotImplementedError(
-        "Real seed wired up after Frappe bench scaffolding + Mapping Rule DocType JSON "
-        "(Week 2 step 1). Dry-run + TENTATIVE_RULES.md + fixtures are the Week 2 "
-        "deliverable; bench execute lands them in the DB."
+    Returns a list of error strings (empty list = OK). Requires Frappe
+    context. Catches the class of bug the Week-3 audit surfaced, where
+    a spec key like `source_section` would silently drop if the
+    DocType's data field was actually named `source_section_ref`.
+    """
+    import frappe  # type: ignore[import]
+
+    deployed_fields = {
+        f.fieldname
+        for f in frappe.get_doc("DocType", "Mapping Rule").fields
+    }
+    # Frappe implicit / meta fields the ORM accepts on insert
+    implicit = {
+        "doctype", "name", "parent", "parenttype", "parentfield",
+        "idx", "owner", "creation", "modified", "modified_by", "docstatus",
+    }
+    known = deployed_fields | implicit
+
+    errors: list[str] = []
+    for cat in ("positive_rules", "anti_pattern_rules"):
+        for rule in plan[cat]:
+            unknown = [k for k in rule.keys() if k not in known]
+            if unknown:
+                errors.append(
+                    f"  {rule['source_section']} ({rule['rule_name']}): "
+                    f"unknown field keys {unknown}"
+                )
+    return errors
+
+
+def real_seed(plan: dict[str, Any], purge: bool = False) -> dict[str, Any]:
+    """Insert all rules into the Mapping Rule DocType, idempotent by
+    source_hash. Returns a counts dict (inserted / skipped / errors).
+
+    Requires Frappe context. Invoke via bench console heredoc (preferred
+    over bench execute per docs/mapper_design_notes.md §5).
+    """
+    import frappe  # type: ignore[import]
+
+    summary: dict[str, Any] = {
+        "inserted": 0,
+        "skipped": 0,
+        "errors": 0,
+        "error_details": [],
+    }
+
+    if purge:
+        purged = frappe.db.count("Mapping Rule", {"created_from": "seed"})
+        if purged:
+            frappe.db.delete("Mapping Rule", {"created_from": "seed"})
+            frappe.db.commit()
+            print(f"PURGED {purged} rows where created_from='seed'")
+
+    all_rules = plan["positive_rules"] + plan["anti_pattern_rules"]
+
+    for rule in all_rules:
+        sh = rule["source_hash"]
+        rule_name = rule["rule_name"]
+        existing = frappe.db.exists("Mapping Rule", {"source_hash": sh})
+        if existing:
+            print(f"SKIP  {sh[:8]}  {rule_name}  (exists as {existing})")
+            summary["skipped"] += 1
+            continue
+        try:
+            doc = frappe.get_doc(rule).insert(ignore_permissions=True)
+            print(f"OK    {sh[:8]}  {rule_name}  -> {doc.name}")
+            summary["inserted"] += 1
+        except Exception as e:
+            msg = f"{type(e).__name__}: {e}"
+            print(f"ERROR {sh[:8]}  {rule_name}: {msg}")
+            summary["errors"] += 1
+            summary["error_details"].append({
+                "source_hash": sh, "rule_name": rule_name, "error": msg,
+            })
+
+    frappe.db.commit()
+    print(
+        f"\nSummary: inserted={summary['inserted']} "
+        f"skipped={summary['skipped']} errors={summary['errors']}"
     )
+    return summary
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -742,7 +795,22 @@ def main(argv: list[str] | None = None) -> int:
         dry_run(plan)
         return 0
 
-    return real_seed(plan, purge=args.purge_seeded)
+    # Preflight: verify schema alignment before attempting any insert
+    try:
+        schema_errors = validate_deployed_schema(plan)
+    except ImportError:
+        print("ERROR: --insert mode requires Frappe bench context. "
+              "Run via bench console heredoc per "
+              "docs/mapper_design_notes.md §5.", file=sys.stderr)
+        return 2
+    if schema_errors:
+        print("Schema validation FAILED:", file=sys.stderr)
+        for e in schema_errors:
+            print(e, file=sys.stderr)
+        return 2
+
+    summary = real_seed(plan, purge=args.purge_seeded)
+    return 0 if summary["errors"] == 0 else 2
 
 
 if __name__ == "__main__":
