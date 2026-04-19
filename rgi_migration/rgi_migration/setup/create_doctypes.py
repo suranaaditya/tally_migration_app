@@ -572,6 +572,125 @@ def run_phase2() -> dict:
 # =========================================================================
 
 
+# =========================================================================
+# Audit phase 3 — post-Batch-4 schema drift corrections
+# =========================================================================
+#
+# Reasons:
+#   - Batch-2's Mapping Rule put a Section Break at fieldname
+#     `source_section` and the data field at `source_section_ref`. The seed
+#     script (scripts/seed_mapping_rules.py) uses `source_section` as the
+#     dict key when inserting Mapping Rule rows; Frappe would silently drop
+#     the unknown field. Rename needed.
+#   - Mapping Decision was missing `requires_combine` and `combine_with`
+#     (Week 2 prose had them; my phase-1 spec dropped them). Needed to
+#     track combine_amounts=1 rule firings.
+#
+# Idempotent via name-based existence checks. Safe to re-run.
+
+
+def audit_phase_3_patches() -> dict:
+    """Schema drift corrections from post-Batch-4 audit.
+
+    Returns a dict of {doctype_name: human-readable outcome}.
+    """
+    results: dict = {}
+
+    # ---- Mapping Rule: rename Section Break + rename data field ----
+    rule = frappe.get_doc("DocType", "Mapping Rule")
+    fields_by_name = {f.fieldname: f for f in rule.fields}
+    mr_changes: list = []
+
+    # Step 1. Free the name `source_section`: rename the Section Break to
+    # `sb_source`. Idempotent — checks current fieldname first.
+    sb_candidate = fields_by_name.get("source_section")
+    if sb_candidate and sb_candidate.fieldtype == "Section Break":
+        sb_candidate.fieldname = "sb_source"
+        sb_candidate.label = "Source"  # keep the label consistent
+        rule.save(ignore_permissions=True)
+        mr_changes.append(
+            "section break: source_section -> sb_source"
+        )
+        # Re-fetch so we see post-save field order
+        rule = frappe.get_doc("DocType", "Mapping Rule")
+        fields_by_name = {f.fieldname: f for f in rule.fields}
+
+    # Step 2. Rename data field `source_section_ref` -> `source_section`.
+    # rename_field handles the SQL column rename on tabMapping Rule.
+    # Idempotent — only runs if the old fieldname still exists.
+    if "source_section_ref" in fields_by_name:
+        from frappe.model.rename_doc import rename_field
+        rename_field("Mapping Rule", "source_section_ref", "source_section")
+        mr_changes.append(
+            "data field: source_section_ref -> source_section"
+        )
+
+    results["Mapping Rule"] = (
+        "; ".join(mr_changes) if mr_changes else "no change (already correct)"
+    )
+
+    # ---- Mapping Decision: add requires_combine + combine_with ----
+    decision = frappe.get_doc("DocType", "Mapping Decision")
+    existing_decision = {f.fieldname for f in decision.fields}
+    added_decision: list = []
+    to_add_on_decision = [
+        (
+            "requires_combine",
+            "Requires Combine (with sibling decisions)",
+            "Check",
+            {"default": "0"},
+        ),
+        (
+            "combine_with",
+            "Combine With (sibling decision idxs, CSV)",
+            "Small Text",
+            {},
+        ),
+    ]
+    for fn, lab, ft, kwargs in to_add_on_decision:
+        if fn in existing_decision:
+            continue
+        decision.append(
+            "fields",
+            {"fieldname": fn, "label": lab, "fieldtype": ft, **kwargs},
+        )
+        added_decision.append(fn)
+    if added_decision:
+        decision.save(ignore_permissions=True)
+        results["Mapping Decision"] = f"added: {', '.join(added_decision)}"
+    else:
+        results["Mapping Decision"] = "no change (already present)"
+
+    # ---- Informational: no drift worth patching this pass ----
+    results["Company Abbreviation"] = "no drift"
+    results["Account Creation Request"] = "no drift"
+    results["Supplier Alias Rule"] = (
+        "checklist clean (naming divergence with my spec is Aditya's "
+        "Batch-2 design choice, honored)"
+    )
+    results["Tally Migration Session"] = (
+        "state-transition description omitted (cosmetic only)"
+    )
+
+    frappe.db.commit()
+    return results
+
+
+def run_audit_patches() -> dict:
+    """Entry point for the post-Batch-4 audit patches."""
+    print()
+    print("=" * 70)
+    print("rgi_migration audit patches (phase 3, post-Batch-4)")
+    print("=" * 70)
+    print()
+    r = audit_phase_3_patches()
+    for n, s in r.items():
+        print(f"  {n:<40s} {s}")
+    print()
+    print("Done. Run: bench --site <site> migrate")
+    return r
+
+
 def run_all() -> dict:
     """Entry point. Phase 1 then Phase 2. Prints a plain-text summary."""
     print()
