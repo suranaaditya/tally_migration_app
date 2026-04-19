@@ -54,13 +54,21 @@ def _perms_admin() -> list:
     System Manager has full CRUD. Additional roles can be granted via
     Role Permission Manager in the UI after install; baked-in perms
     stay minimal to avoid permission-surface drift between dev / prod.
+
+    NOTE: `import` is deliberately omitted. Frappe gates that permission
+    behind the DocType's own `allow_import=1` flag; granting it without
+    the flag raises ValidationError at insert time. If a specific DocType
+    later needs bulk-import support (e.g. Company Abbreviation seeded from
+    sec 1.2 of RGI_Migration_Rules.md), set `allow_import=1` on the
+    DocType via extra={"allow_import": 1} and add `"import": 1` to its
+    permission block.
     """
     return [
         {
             "role": "System Manager",
             "read": 1, "write": 1, "create": 1, "delete": 1,
             "submit": 0, "cancel": 0, "amend": 0,
-            "report": 1, "export": 1, "import": 1,
+            "report": 1, "export": 1,
         },
     ]
 
