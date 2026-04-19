@@ -1,0 +1,115 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "autoname": "field:abbr",
+ "creation": "2026-04-19 19:33:55.698514",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "abbr",
+  "full_name",
+  "trust_group",
+  "entity_type",
+  "erpnext_company",
+  "is_active",
+  "notes"
+ ],
+ "fields": [
+  {
+   "description": "Entity abbreviation as used in ERPNext (e.g., CACSPU, GHRCE, ASSHST)",
+   "fieldname": "abbr",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Abbreviation",
+   "reqd": 1,
+   "unique": 1
+  },
+  {
+   "description": "Full entity name (e.g., GH Raisoni College Of Arts Commerce & Science)",
+   "fieldname": "full_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Full Name",
+   "reqd": 1
+  },
+  {
+   "fieldname": "trust_group",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Trust Group",
+   "options": "\nASS\nGHREMF\nGHREF\nGHRF\nCBS\nSGR\nGHRUA\nGHRSTU\nGHRISTU\nGHRUS",
+   "reqd": 1
+  },
+  {
+   "default": "college",
+   "description": "Drives mapper rule filtering via Mapping Rule.applies_to_entity_types",
+   "fieldname": "entity_type",
+   "fieldtype": "Select",
+   "label": "Entity Type",
+   "options": "\ncollege\nhostel\nsociety\nuniversity\nhospital\nother",
+   "reqd": 1
+  },
+  {
+   "description": "Bound once an ERPNext Company record exists; null until then",
+   "fieldname": "erpnext_company",
+   "fieldtype": "Link",
+   "label": "ERPNext Company",
+   "options": "Company"
+  },
+  {
+   "default": "1",
+   "description": "Dormant entities stay in the table but can be filtered out",
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "label": "Is Active"
+  },
+  {
+   "fieldname": "notes",
+   "fieldtype": "Small Text",
+   "label": "Notes"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "links": [],
+ "modified": "2026-04-19 19:33:55.698514",
+ "modified_by": "Administrator",
+ "module": "Rgi Migration",
+ "name": "Company Abbreviation",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "Accounts Manager",
+   "share": 1,
+   "write": 1
+  }
+ ],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "abbr",
+ "sort_order": "ASC",
+ "states": [],
+ "track_changes": 1
+}
