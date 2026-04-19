@@ -12,8 +12,8 @@
   "cb_identity",
   "is_anti_pattern",
   "status",
+  "sb_source",
   "source_section",
-  "source_section_ref",
   "source_hash",
   "cb_source",
   "source_entities",
@@ -86,17 +86,6 @@
    "label": "Status",
    "options": "confirmed\ntentative\npaused\ndeprecated",
    "reqd": 1
-  },
-  {
-   "fieldname": "source_section",
-   "fieldtype": "Section Break",
-   "label": "Source"
-  },
-  {
-   "description": "e.g. sec 4.1, sec 11, session-MR-0042",
-   "fieldname": "source_section_ref",
-   "fieldtype": "Data",
-   "label": "Source Section"
   },
   {
    "description": "SHA1 of (source_section, is_anti_pattern, tally_pattern) - idempotency key for re-seeds",
@@ -321,12 +310,23 @@
    "fieldtype": "Link",
    "label": "Created Via Session",
    "options": "Tally Migration Session"
+  },
+  {
+   "fieldname": "sb_source",
+   "fieldtype": "Section Break",
+   "label": "Source"
+  },
+  {
+   "description": "e.g. sec 4.1, sec 11, session-MR-0042",
+   "fieldname": "source_section",
+   "fieldtype": "Data",
+   "label": "Source Section"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-04-19 20:00:23.159781",
+ "modified": "2026-04-19 20:17:26.052477",
  "modified_by": "Administrator",
  "module": "Rgi Migration",
  "name": "Mapping Rule",

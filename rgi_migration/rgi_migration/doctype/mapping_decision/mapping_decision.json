@@ -35,7 +35,9 @@
   "reviewer_notes",
   "excluded_reason",
   "flagged_for_email",
-  "promoted_to_rule"
+  "promoted_to_rule",
+  "requires_combine",
+  "combine_with"
  ],
  "fields": [
   {
@@ -208,13 +210,24 @@
    "fieldtype": "Link",
    "label": "Promoted To Rule",
    "options": "Mapping Rule"
+  },
+  {
+   "default": "0",
+   "fieldname": "requires_combine",
+   "fieldtype": "Check",
+   "label": "Requires Combine (with sibling decisions)"
+  },
+  {
+   "fieldname": "combine_with",
+   "fieldtype": "Small Text",
+   "label": "Combine With (sibling decision idxs, CSV)"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-04-19 19:56:19.668303",
+ "modified": "2026-04-19 20:19:29.524546",
  "modified_by": "Administrator",
  "module": "Rgi Migration",
  "name": "Mapping Decision",
