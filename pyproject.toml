@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rgi_migration"
+version = "0.1.0"
+description = "RGI Tally to ERPNext opening balance migration (Frappe custom app)."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Aditya Surana", email = "aditya.surana@jewonline.in" }]
+license = { text = "Proprietary" }
+
+dependencies = [
+    "lxml>=5.0",
+    "openpyxl>=3.1",
+    "rapidfuzz>=3.6",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["rgi_migration*"]
+
+[tool.pytest.ini_options]
+testpaths = ["rgi_migration/tests"]
+python_files = ["test_*.py"]
+addopts = "-ra --strict-markers"
