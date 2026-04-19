@@ -23,8 +23,8 @@ from pathlib import Path
 from lxml import etree
 from openpyxl import load_workbook
 
-XML_PATH = "rgi_migration/tests/fixtures/sample_ghrcacs_masters.xml"
-XLSX_PATH = "rgi_migration/tests/fixtures/sample_ghrcacs_opening_tb.xlsx"
+XML_PATH = "rgi_migration/tests/fixtures/sample_cacspu_masters.xml"
+XLSX_PATH = "rgi_migration/tests/fixtures/sample_cacspu_opening_tb.xlsx"
 TOL = 1.0  # ₹1 tolerance
 
 

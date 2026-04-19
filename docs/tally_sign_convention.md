@@ -2,7 +2,7 @@
 
 This document is the authoritative reference for how the parser interprets the
 `<OPENINGBALANCE>` field in a Tally *All Masters* XML export. Every rule
-below is derived from real fixture data (GHRCACS-PUNE, FY 2025-26) and
+below is derived from real fixture data (CACSPU-PUNE, FY 2025-26) and
 cross-verified against Tally's official integration documentation.
 
 ---
@@ -33,7 +33,7 @@ an asset with a positive (Dr) book value is stored as a **negative** number
 in the XML. Treat the storage as "the positive direction is Cr for every
 account type."
 
-### Evidence table (11 ledgers cross-checked against the GHRCACS opening TB Excel)
+### Evidence table (11 ledgers cross-checked against the CACSPU opening TB Excel)
 
 | Ledger                          | Group / nature              | `<OPENINGBALANCE>` | Excel says | Fits rule |
 | ------------------------------- | --------------------------- | ------------------ | ---------- | --------- |
@@ -49,7 +49,7 @@ account type."
 | AADESH — student                | STUDENTS (under S. Debtors) | −18,740.00         | Dr         | ✓         |
 | Aarati (student, bill-wise)     | CYBERVIDYA-BSc-3rd YEAR     | bills net to 0     | 0          | ✓         |
 
-Zero counter-examples found across the full GHRCACS fixture (6,027 ledgers).
+Zero counter-examples found across the full CACSPU fixture (6,027 ledgers).
 
 ---
 
@@ -69,7 +69,7 @@ opening balance for FY 2026-27.
 A diagnostic script (`scripts/check_xml_date_source.py`) classifies every
 common ledger as `matches_opening`, `matches_closing`, `matches_both`, or
 `matches_neither` against the reference opening TB Excel
-(`sample_ghrcacs_opening_tb.xlsx`), which has explicit separate Opening and
+(`sample_cacspu_opening_tb.xlsx`), which has explicit separate Opening and
 Closing columns. Only ledgers where Opening ≠ Closing in Excel count as
 discriminating evidence:
 
@@ -215,9 +215,9 @@ without closing off the other diagnoses a future user might need.
 
 ---
 
-## 6. Known edge cases — 2 ledgers on the GHRCACS fixture
+## 6. Known edge cases — 2 ledgers on the CACSPU fixture
 
-Two ledgers in the GHRCACS fixture carry a small XML-side balance that is
+Two ledgers in the CACSPU fixture carry a small XML-side balance that is
 not reflected in the Excel TB. Both are bill-wise party accounts with no
 direct `<OPENINGBALANCE>` — the XML value is computed by summing the
 `<OPENINGBALANCE>` of each outstanding bill inside `<BILLALLOCATIONS.LIST>`.
@@ -257,12 +257,12 @@ entry and remain non-blocking. The amounts are immaterial (₹1,851 and
 
 ### § 6.1 Raw-XML residual and Temp Opening
 
-The GHRCACS fixture's raw XML sums to **₹−342,358.48** (Dr excess) across
+The CACSPU fixture's raw XML sums to **₹−342,358.48** (Dr excess) across
 all `<OPENINGBALANCE>` values. This is **not** a parser artifact — it is
 baked into the source Tally company's data and is faithfully preserved by
 the "Export closing balances as opening balance" mechanism.
 
-Known contributors identified on GHRCACS (~₹46,881 of the ₹342,358
+Known contributors identified on CACSPU (~₹46,881 of the ₹342,358
 accounted for):
 
 | Ledger                                     | Parent                   | Contribution |
@@ -356,4 +356,4 @@ consumers have to replicate.
 
 | Date       | Author       | Change |
 | ---------- | ------------ | ------ |
-| 2026-04-19 | Claude Code + Aditya | Initial draft after GHRCACS diagnostic (sign bug + closing-as-opening verification). Reviewed and approved by Aditya. |
+| 2026-04-19 | Claude Code + Aditya | Initial draft after CACSPU diagnostic (sign bug + closing-as-opening verification). Reviewed and approved by Aditya. |

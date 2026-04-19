@@ -1,15 +1,15 @@
 """Regression gate for the Tally XML and Excel parsers.
 
 Default fixture: the 500+ledger *sample* XML
-(``sample_ghrcacs_masters_sample.xml``, committed) plus the full opening-TB
-Excel (``sample_ghrcacs_opening_tb.xlsx``, committed).  The full 221 MB
+(``sample_cacspu_masters_sample.xml``, committed) plus the full opening-TB
+Excel (``sample_cacspu_opening_tb.xlsx``, committed).  The full 221 MB
 masters XML is NOT committed and NOT inside the repo -- it lives wherever
 the developer chose when regenerating (convention: ``~/tally-exports/``).
 To run against it, set ``RGI_FULL_XML_PATH`` to its absolute path, e.g.::
 
-    RGI_FULL_XML_PATH=~/tally-exports/ghrcacs_masters.xml pytest ...
+    RGI_FULL_XML_PATH=~/tally-exports/cacspu_masters.xml pytest ...
 
-Asserts, against the GHRCACS reference fixtures, that:
+Asserts, against the CACSPU reference fixtures, that:
 
 XML parser:
 1. (full only) ``main_ledgers + student_ledgers`` balance within 1% of
@@ -41,7 +41,7 @@ mask the others.
 -------------------------------------------------------------------------
 Why these specific ledger names appear in the assertions
 -------------------------------------------------------------------------
-The committed sample XML is a curated subset of the full GHRCACS All
+The committed sample XML is a curated subset of the full CACSPU All
 Masters export.  Beyond the first 500 LEDGER elements in document order,
 the sample unconditionally includes the 13 ledgers listed below (the
 ``MUST_INCLUDE`` set in ``scripts/build_sample_masters_xml.py``).  Each
@@ -93,12 +93,12 @@ FIXTURES = Path(__file__).parent / "fixtures"
 # Full-file runs are opt-in: set RGI_FULL_XML_PATH to the absolute path of
 # your locally-stored full Tally export (which lives OUTSIDE this repo;
 # see fixtures/README.md).
-_SAMPLE_XML = FIXTURES / "sample_ghrcacs_masters_sample.xml"
+_SAMPLE_XML = FIXTURES / "sample_cacspu_masters_sample.xml"
 _full_path_env = os.getenv("RGI_FULL_XML_PATH", "")
 _full_path = Path(os.path.expanduser(_full_path_env)) if _full_path_env else None
 XML_PATH = _full_path if (_full_path and _full_path.exists()) else _SAMPLE_XML
 
-XLSX_PATH = FIXTURES / "sample_ghrcacs_opening_tb.xlsx"
+XLSX_PATH = FIXTURES / "sample_cacspu_opening_tb.xlsx"
 
 TOL = 1.0  # ₹1 tolerance, same as the diagnostic
 
@@ -118,7 +118,7 @@ _IS_SAMPLE = XML_PATH == _SAMPLE_XML
 
 @pytest.fixture(scope="module")
 def tb():
-    """Parsed ParsedTallyTB for GHRCACS from the XML (module-scoped;
+    """Parsed ParsedTallyTB for CACSPU from the XML (module-scoped;
     220 MB XML is slow)."""
     assert XML_PATH.exists(), f"XML fixture missing: {XML_PATH}"
     return parse_xml(str(XML_PATH))
@@ -126,7 +126,7 @@ def tb():
 
 @pytest.fixture(scope="module")
 def xl_tb(tb):
-    """Parsed ParsedTallyTB for GHRCACS from the Excel, hierarchy-informed
+    """Parsed ParsedTallyTB for CACSPU from the Excel, hierarchy-informed
     by the companion XML parse."""
     assert XLSX_PATH.exists(), f"Excel fixture missing: {XLSX_PATH}"
     known_groups, known_leaf_parents = hierarchy_from_parsed_tb(tb)
@@ -170,7 +170,7 @@ def excel_ledgers() -> dict[str, tuple[float, float, float, float]]:
     _IS_SAMPLE,
     reason=(
         "The 500+ledger sample fixture is a curated subset and does not "
-        "balance; set RGI_FULL_XML_PATH=/path/to/ghrcacs_masters.xml "
+        "balance; set RGI_FULL_XML_PATH=/path/to/cacspu_masters.xml "
         "(the full 221 MB export, stored outside the repo) to exercise "
         "this assertion.  Balance correctness is preserved indirectly on "
         "the sample via the sign-flip and partition-disjoint assertions."
@@ -182,7 +182,7 @@ def test_main_plus_students_balance_raw_tb(tb):
 
     Tolerance rationale (see docs/tally_sign_convention.md §6.1):
 
-    * The raw Tally XML carries a real residual (₹342,358.48 on GHRCACS —
+    * The raw Tally XML carries a real residual (₹342,358.48 on CACSPU —
       ~0.2% of grand total) that is baked into the source company's data,
       not introduced by the parser.  A ₹5K absolute tolerance we initially
       considered is too tight for real-world entities.
@@ -260,7 +260,7 @@ DIAGNOSTIC_SIDES = {
 
 def test_diagnostic_ledgers_on_correct_side(tb):
     """Direct side check on the 9 diagnostic ledgers whose expected Dr/Cr
-    is known from the GHRCACS opening-TB Excel.  A regression in the sign
+    is known from the CACSPU opening-TB Excel.  A regression in the sign
     rule would flip one or more of these.
     """
     all_leaves = tb.ledgers + tb.student_ledgers + tb.system_ledgers
@@ -369,7 +369,7 @@ def test_no_ledger_is_in_two_partitions(tb):
     name while having distinct numeric IDs; this is a legitimate real-world
     condition, not a data anomaly.
 
-    Example from GHRCACS:
+    Example from CACSPU:
         * ``Sachin  Gawande-52926``, parent=``Personal Advance`` — staff cash
           advance; lives in ``main_ledgers``.
         * ``Sachin  Gawande-30``, parent=``STUDENTS`` — student ledger;

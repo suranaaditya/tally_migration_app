@@ -1,0 +1,47 @@
+account_name,parent_account,root_type,is_group,company_abbr
+Application of Funds (Assets) - CACSPU,,Asset,1,CACSPU
+Sources of Funds (Liabilities) - CACSPU,,Liability,1,CACSPU
+Equity - CACSPU,,Equity,1,CACSPU
+Income - CACSPU,,Income,1,CACSPU
+Expenses - CACSPU,,Expense,1,CACSPU
+Fixed Assets - CACSPU,Application of Funds (Assets) - CACSPU,Asset,1,CACSPU
+Current Assets - CACSPU,Application of Funds (Assets) - CACSPU,Asset,1,CACSPU
+Branch & Division - CACSPU,Application of Funds (Assets) - CACSPU,Asset,1,CACSPU
+Current Liabilities - CACSPU,Sources of Funds (Liabilities) - CACSPU,Liability,1,CACSPU
+Reserves & Surplus - CACSPU,Equity - CACSPU,Equity,1,CACSPU
+Direct Incomes - CACSPU,Income - CACSPU,Income,1,CACSPU
+Immovable Properties - CACSPU,Fixed Assets - CACSPU,Asset,1,CACSPU
+Movable Properties - CACSPU,Fixed Assets - CACSPU,Asset,1,CACSPU
+Bank Accounts - CACSPU,Current Assets - CACSPU,Asset,1,CACSPU
+Fixed Deposits with Bank - CACSPU,Current Assets - CACSPU,Asset,1,CACSPU
+Sundry Debtors - CACSPU,Current Assets - CACSPU,Asset,1,CACSPU
+Loans & Advances - CACSPU,Current Assets - CACSPU,Asset,1,CACSPU
+Sundry Creditors - CACSPU,Current Liabilities - CACSPU,Liability,1,CACSPU
+Liability For Students - CACSPU,Current Liabilities - CACSPU,Liability,1,CACSPU
+Other Liabilities - CACSPU,Current Liabilities - CACSPU,Liability,1,CACSPU
+Canara Bank FDR - CACSPU,Fixed Deposits with Bank - CACSPU,Asset,1,CACSPU
+Building Revaluation (Asset) - CACSPU,Immovable Properties - CACSPU,Asset,0,CACSPU
+Computer & Accessories - CACSPU,Movable Properties - CACSPU,Asset,0,CACSPU
+Furniture & fixture - CACSPU,Movable Properties - CACSPU,Asset,0,CACSPU
+Office equipment - CACSPU,Movable Properties - CACSPU,Asset,0,CACSPU
+Electrical equipment - CACSPU,Movable Properties - CACSPU,Asset,0,CACSPU
+Kitchen Equipment (Club House) - CACSPU,Movable Properties - CACSPU,Asset,0,CACSPU
+Sports equipment - CACSPU,Movable Properties - CACSPU,Asset,0,CACSPU
+Badminton Court (Club House) - CACSPU,Movable Properties - CACSPU,Asset,0,CACSPU
+Bank of Maharashtra (Cap) - CACSPU,Bank Accounts - CACSPU,Asset,0,CACSPU
+FDR Canara Bank - CACSPU,Canara Bank FDR - CACSPU,Asset,0,CACSPU
+Security Deposit MSEB - CACSPU,Loans & Advances - CACSPU,Asset,0,CACSPU
+Scholarship & Freeship - CACSPU,Loans & Advances - CACSPU,Asset,0,CACSPU
+Student Fee Outstanding (Receivable) - CACSPU,Loans & Advances - CACSPU,Asset,0,CACSPU
+Caution Money £ - CACSPU,Loans & Advances - CACSPU,Asset,0,CACSPU
+GH Raisoni College Of Engineering - CACSPU,Branch & Division - CACSPU,Asset,0,CACSPU
+GHR Institute Of Life Science - CACSPU,Branch & Division - CACSPU,Asset,0,CACSPU
+Caution Money £ (Liability) - CACSPU,Liability For Students - CACSPU,Liability,0,CACSPU
+Unpaid Expenditure Provision - CACSPU,Other Liabilities - CACSPU,Liability,0,CACSPU
+Payable Account - CACSPU,Other Liabilities - CACSPU,Liability,0,CACSPU
+Hostel Fee Advance Payable - CACSPU,Other Liabilities - CACSPU,Liability,0,CACSPU
+Depreciation Fund - CACSPU,Reserves & Surplus - CACSPU,Equity,0,CACSPU
+Income Expenditure A/c - CACSPU,Reserves & Surplus - CACSPU,Equity,0,CACSPU
+Building Revaluation Reserve ( Old ) - CACSPU,Reserves & Surplus - CACSPU,Equity,0,CACSPU
+Temporary Opening - CACSPU,Equity - CACSPU,Equity,0,CACSPU
+Hostel Fee A/c - CACSPU,Direct Incomes - CACSPU,Income,0,CACSPU

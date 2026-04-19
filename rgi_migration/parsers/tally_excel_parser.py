@@ -1,8 +1,8 @@
 """Tally trial-balance Excel export parser -- 'opening TB' format with
 explicit Dr/Cr columns.
 
-Column layout (confirmed by the GHRCACS reference fixture
-``sample_ghrcacs_opening_tb.xlsx``):
+Column layout (confirmed by the CACSPU reference fixture
+``sample_cacspu_opening_tb.xlsx``):
 
     A = account name; hierarchy conveyed via ``cell.alignment.indent``
     B = Opening Balance -- Debit

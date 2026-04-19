@@ -1,4 +1,4 @@
-"""Build a size-reduced copy of the full GHRCACS All Masters XML for git.
+"""Build a size-reduced copy of the full CACSPU All Masters XML for git.
 
 Rationale (see fixtures README): the real Tally export is ~221 MB and too big
 to commit.  We need a smaller fixture that still exercises every assertion in
@@ -29,8 +29,8 @@ from pathlib import Path
 
 from lxml import etree
 
-SRC = Path("rgi_migration/tests/fixtures/sample_ghrcacs_masters.xml")
-DST = Path("rgi_migration/tests/fixtures/sample_ghrcacs_masters_sample.xml")
+SRC = Path("rgi_migration/tests/fixtures/sample_cacspu_masters.xml")
+DST = Path("rgi_migration/tests/fixtures/sample_cacspu_masters_sample.xml")
 LEDGER_LIMIT = 500
 
 # Diagnostic ledgers the regression test depends on -- always included
