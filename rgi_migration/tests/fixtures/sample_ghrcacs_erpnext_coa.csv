@@ -1,0 +1,47 @@
+account_name,parent_account,root_type,is_group,company_abbr
+Application of Funds (Assets) - GHRCACS,,Asset,1,GHRCACS
+Sources of Funds (Liabilities) - GHRCACS,,Liability,1,GHRCACS
+Equity - GHRCACS,,Equity,1,GHRCACS
+Income - GHRCACS,,Income,1,GHRCACS
+Expenses - GHRCACS,,Expense,1,GHRCACS
+Fixed Assets - GHRCACS,Application of Funds (Assets) - GHRCACS,Asset,1,GHRCACS
+Current Assets - GHRCACS,Application of Funds (Assets) - GHRCACS,Asset,1,GHRCACS
+Branch & Division - GHRCACS,Application of Funds (Assets) - GHRCACS,Asset,1,GHRCACS
+Current Liabilities - GHRCACS,Sources of Funds (Liabilities) - GHRCACS,Liability,1,GHRCACS
+Reserves & Surplus - GHRCACS,Equity - GHRCACS,Equity,1,GHRCACS
+Direct Incomes - GHRCACS,Income - GHRCACS,Income,1,GHRCACS
+Immovable Properties - GHRCACS,Fixed Assets - GHRCACS,Asset,1,GHRCACS
+Movable Properties - GHRCACS,Fixed Assets - GHRCACS,Asset,1,GHRCACS
+Bank Accounts - GHRCACS,Current Assets - GHRCACS,Asset,1,GHRCACS
+Fixed Deposits with Bank - GHRCACS,Current Assets - GHRCACS,Asset,1,GHRCACS
+Sundry Debtors - GHRCACS,Current Assets - GHRCACS,Asset,1,GHRCACS
+Loans & Advances - GHRCACS,Current Assets - GHRCACS,Asset,1,GHRCACS
+Sundry Creditors - GHRCACS,Current Liabilities - GHRCACS,Liability,1,GHRCACS
+Liability For Students - GHRCACS,Current Liabilities - GHRCACS,Liability,1,GHRCACS
+Other Liabilities - GHRCACS,Current Liabilities - GHRCACS,Liability,1,GHRCACS
+Canara Bank FDR - GHRCACS,Fixed Deposits with Bank - GHRCACS,Asset,1,GHRCACS
+Building Revaluation (Asset) - GHRCACS,Immovable Properties - GHRCACS,Asset,0,GHRCACS
+Computer & Accessories - GHRCACS,Movable Properties - GHRCACS,Asset,0,GHRCACS
+Furniture & fixture - GHRCACS,Movable Properties - GHRCACS,Asset,0,GHRCACS
+Office equipment - GHRCACS,Movable Properties - GHRCACS,Asset,0,GHRCACS
+Electrical equipment - GHRCACS,Movable Properties - GHRCACS,Asset,0,GHRCACS
+Kitchen Equipment (Club House) - GHRCACS,Movable Properties - GHRCACS,Asset,0,GHRCACS
+Sports equipment - GHRCACS,Movable Properties - GHRCACS,Asset,0,GHRCACS
+Badminton Court (Club House) - GHRCACS,Movable Properties - GHRCACS,Asset,0,GHRCACS
+Bank of Maharashtra (Cap) - GHRCACS,Bank Accounts - GHRCACS,Asset,0,GHRCACS
+FDR Canara Bank - GHRCACS,Canara Bank FDR - GHRCACS,Asset,0,GHRCACS
+Security Deposit MSEB - GHRCACS,Loans & Advances - GHRCACS,Asset,0,GHRCACS
+Scholarship & Freeship - GHRCACS,Loans & Advances - GHRCACS,Asset,0,GHRCACS
+Student Fee Outstanding (Receivable) - GHRCACS,Loans & Advances - GHRCACS,Asset,0,GHRCACS
+Caution Money £ - GHRCACS,Loans & Advances - GHRCACS,Asset,0,GHRCACS
+GH Raisoni College Of Engineering - GHRCACS,Branch & Division - GHRCACS,Asset,0,GHRCACS
+GHR Institute Of Life Science - GHRCACS,Branch & Division - GHRCACS,Asset,0,GHRCACS
+Caution Money £ (Liability) - GHRCACS,Liability For Students - GHRCACS,Liability,0,GHRCACS
+Unpaid Expenditure Provision - GHRCACS,Other Liabilities - GHRCACS,Liability,0,GHRCACS
+Payable Account - GHRCACS,Other Liabilities - GHRCACS,Liability,0,GHRCACS
+Hostel Fee Advance Payable - GHRCACS,Other Liabilities - GHRCACS,Liability,0,GHRCACS
+Depreciation Fund - GHRCACS,Reserves & Surplus - GHRCACS,Equity,0,GHRCACS
+Income Expenditure A/c - GHRCACS,Reserves & Surplus - GHRCACS,Equity,0,GHRCACS
+Building Revaluation Reserve ( Old ) - GHRCACS,Reserves & Surplus - GHRCACS,Equity,0,GHRCACS
+Temporary Opening - GHRCACS,Equity - GHRCACS,Equity,0,GHRCACS
+Hostel Fee A/c - GHRCACS,Direct Incomes - GHRCACS,Income,0,GHRCACS
