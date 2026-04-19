@@ -336,7 +336,9 @@ if diff < 0: Temp Opening = Dr (abs(diff))  # Cr heavy → need Dr balancer
 ### 4.10 Student Fee Outstanding Classification
 **Rule:** `Student Fee Outstanding` in Tally = Current Asset (receivable from students). In ERP it may be placed under `Liability For Students` — WRONG classification.
 **Action:** If ERP has it under Liabilities, create `Student Fee Outstanding (Receivable) - {ABBR}` under Current Assets instead.
-**Status:** CONFIRMED | **Source:** GHRCEMNMBA, GHRILS
+**Status:** PAUSED (was CONFIRMED) | **Source:** GHRCEMNMBA, GHRILS
+
+**Status update 2026-04:** Paused. `Student Fee Outstanding` in Tally is typically a GROUP containing per-student leaves, not a leaf ledger. Per-student receivables route through `dux_voucher`'s Ex Student Opening Batch via the CSV workflow (see `docs/dux_voucher_integration.md`). §4.10 remains in the library for entities where `Student Fee Outstanding` is used as an aggregate leaf ledger instead — rare but possible; reviewer un-pauses per entity when the condition is discovered. See `docs/mapper_design_notes.md` §7 "Leaf-only posting principle" for the underlying accounting principle.
 
 ### 4.11 Computer & Accessories
 **Rule:** Both `Computer & Accessories` and `Computer & Accessories Purchase A/c` Tally accounts map to `Computer & Accessories - {ABBR}` in ERP.

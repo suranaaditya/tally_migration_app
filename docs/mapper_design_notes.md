@@ -504,7 +504,64 @@ acceptable for the small number of edits we expect.
 
 ---
 
-## 7. Change log
+## 7. Leaf-only posting principle
+
+All accounting postings in both Tally and ERPNext happen at **leaf** level.
+Group accounts are containers whose balance equals the sum of their
+children — they are not postable in their own right. When `rgi_migration`
+migrates opening balances, it proposes **leaf-to-leaf** mappings only.
+
+The group-account refusal validator (§2(b)) enforces this at the mapper
+layer. It is not a defensive safety net but a **fundamental correctness
+requirement**: posting to a group account would create a split-brain
+between the group's children-summed balance and its manually-posted
+balance. Tally and ERPNext both forbid this structurally for the same
+reason.
+
+### Corollary for the rule library
+
+Rules targeting Tally names that represent **groups** in the source data
+can never fire — Tally never emits groups as `<LEDGER>` elements in its
+All Masters XML export, only leaves. Such rules are marked
+`status="paused"` in the library (not deprecated — they remain live for
+entities where the same name happens to be used as a leaf ledger).
+
+**First recorded example — §4.10 Student Fee Outstanding.**
+Paused 2026-04 after the CACSPU review. On educational entities the
+name typically refers to a Tally GROUP containing per-student leaves:
+
+- The group carries no `<LEDGER>` element in the XML export.
+- Per-student leaves carry individual `<LEDGER>` elements under the
+  `Sundry Debtors` / `Students` / `STUDENTS` tree and are routed via
+  `is_student_ledger=True` to the Phase-2 student CSV, not to §4.10.
+- §4.10 as originally written could never match a real Tally ledger on
+  these entities, regardless of threshold or fuzzy tuning — there's
+  simply no `<LEDGER name="Student Fee Outstanding">` in the export.
+
+The rule stays in the library as `paused` for the rare entity where
+`Student Fee Outstanding` is used as a control-**leaf** (aggregate
+without per-student tracking). Reviewer un-pauses per entity when that
+condition is discovered; base state is paused.
+
+### Corollary for the dux_voucher handoff
+
+Student receivables flow via the per-student leaf ledgers, routed to
+dux_voucher's `Ex Student Opening Batch` via the 4-column CSV handoff
+documented in `docs/dux_voucher_integration.md`. §4.10 in the rule
+library is a **fallback** for entities without per-student tracking,
+not the primary student-handling path.
+
+### How to identify future leaf-paused candidates
+
+When seeding or promoting a rule, ask: *"In the Tally XML export, will
+this name appear as a `<LEDGER>` element or a `<GROUP>` element?"* If
+the answer is "group in nearly all entities we care about", the rule
+should ship `status="paused"` with a note. Seeding as confirmed creates
+dead rules that look active in review UIs and mask real gaps.
+
+---
+
+## 8. Change log
 
 | Date | Change |
 |------|--------|
@@ -515,3 +572,4 @@ acceptable for the small number of edits we expect.
 | 2026-04-19 | §5 Schema mutation recipes added. Captures operational lessons from the Week-3 DocType audit iteration: DocField rename pattern, orphan column cleanup, v16 API gotchas, bench-console-heredoc as the preferred execution surface. |
 | 2026-04-19 | §6 Supplier matching added. Documents rule-first ordering, the 8-pattern control-account exclusion list, and the §4.6 regression finding caught at prose-review time during Work Item 6. Control Account Pattern DocType deferred to Week 4+. |
 | 2026-04-19 | §6.4 Fuzzy false-positive pattern added. Documents the 7 jewonline-dev-bench false positives from Work Item 6, the rule that threshold 85% stays as designed, and negative-alias-rule mitigation over threshold tightening. |
+| 2026-04-19 | §7 Leaf-only posting principle added. Articulates that all Tally/ERPNext postings happen at leaf level; group-account refusal in §2(b) is a correctness requirement, not a defensive check. First recorded example: §4.10 Student Fee Outstanding paused because the name is a group in Tally on educational entities, routing through dux_voucher's per-student CSV instead. |

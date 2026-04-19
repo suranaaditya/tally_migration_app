@@ -201,6 +201,7 @@
     {
       "source_section": "§4.10",
       "rule_name": "Student Fee Outstanding → Receivable asset (ERP may have on wrong BS side)",
+      "status": "paused",
       "tally_pattern": "Student Fee Outstanding",
       "tally_match_mode": "exact_ci",
       "tally_pattern_alternates": [],
@@ -216,7 +217,6 @@
       "source_entities": "GHRCEMNMBA, GHRILS",
       "doctype": "Mapping Rule",
       "is_anti_pattern": 0,
-      "status": "confirmed",
       "applies_to_entity_types": "*",
       "created_from": "seed",
       "source_hash": "c3c414f2d05b1ce98b6f9c320ef7523abfdee439"

@@ -202,9 +202,19 @@ POSITIVE_RULES: list[dict[str, Any]] = [
         "source_entities": "ASSCOE",
     },
     {
-        # §4.10 — Student Fee Outstanding → Receivable asset (conditional creation)
+        # §4.10 — Student Fee Outstanding — PAUSED by default.
+        # Per the leaf-only posting principle (docs/mapper_design_notes.md §7),
+        # 'Student Fee Outstanding' is typically a Tally GROUP containing per-
+        # student leaves. Tally never emits groups as <LEDGER> elements, so
+        # this rule can never fire against a student-debtors group. Per-student
+        # balances route through dux_voucher's Ex Student Opening Batch via
+        # the CSV handoff (docs/dux_voucher_integration.md).
+        # Kept in the library as status=paused for rare entities where the
+        # same name is used as an aggregate control-LEAF without per-student
+        # tracking — reviewer un-pauses per entity when discovered.
         "source_section": "§4.10",
         "rule_name": "Student Fee Outstanding → Receivable asset (ERP may have on wrong BS side)",
+        "status": "paused",
         "tally_pattern": "Student Fee Outstanding",
         "tally_match_mode": "exact_ci",
         "tally_pattern_alternates": [],
@@ -554,7 +564,9 @@ def finalize(rule: dict[str, Any], *, is_anti_pattern: bool) -> dict[str, Any]:
     r = dict(rule)
     r["doctype"] = "Mapping Rule"
     r["is_anti_pattern"] = 1 if is_anti_pattern else 0
-    r["status"] = "confirmed"
+    # Per-rule override via "status" key wins (e.g. §4.10 ships as paused);
+    # anything without an explicit status defaults to confirmed.
+    r.setdefault("status", "confirmed")
     r.setdefault("applies_to_entity_types", "*")
     r.setdefault("created_from", "seed")
     r["source_hash"] = source_hash(r["source_section"], is_anti_pattern, r["tally_pattern"])
