@@ -435,7 +435,56 @@ sat outside Sundry Creditors. Party routing dropped from 345 to 343.
 **Adding patterns.** For Week 3 scope, patterns are hardcoded here and
 edited via a code commit. See §6.4 for deferred work.
 
-### 6.4 Deferred — Control Account Pattern DocType (Week 4+)
+### 6.4 Fuzzy false-positive pattern against sparse supplier masters
+
+**Principle.** Dev-bench testing with a small, generic supplier master
+will produce fuzzy-layer false positives. This is expected mechanism
+behaviour, not a resolver bug. Against production-scale supplier
+masters (hundreds of longer, more distinctive names), coincidental
+prefix/token matches are outscored by the real match.
+
+**The rule**: threshold 85% stays as designed. Do not tighten based on
+dev-bench results. If future dev-bench testing consistently produces
+false positives, the right response is to **seed negative alias rules**
+(status=`paused` with a rejection reason via the `Supplier Alias Rule`
+table's Layer 2 workflow, once reviewer promotion is live in Week 4+),
+not to adjust the fuzzy threshold globally.
+
+**Why**: tightening the threshold hides legitimate near-miss matches on
+the eventual real supplier masters. Negative rules mark the specific
+"this Tally vendor is NOT that Supplier" pair without degrading the
+signal elsewhere.
+
+**Worked example — jewonline dev-bench baseline (Work Item 6).**
+
+Against the 10-entry `jewonline_suppliers_real.csv` + full 221 MB
+CACSPU Tally export, the fuzzy layer produced 7 matches at 85–90%.
+**All 7 are false positives** driven by the dev-bench master's short
+generic names (`Amit`, `Nilesh Traders`, `Gulab Hardware`) and common
+English tokens (`Hardware`, `Traders`):
+
+```
+Tally ledger                                Matched supplier    Score   Why it's a FP
+------------------------------------------  ------------------  ------  -----------------------
+Amita Marble & Granites-VA0044              Amit                0.900   4-char prefix coincidence
+Nilesh Travels                              Nilesh Traders      0.857   different business, same first word
+Bharat Hardware Store-SB0083                Gulab Hardware      0.855   shared "Hardware" token
+Mahavir Hardware And Electronics            Gulab Hardware      0.855   shared "Hardware" token
+Mahesh Hardware And Electricals             Gulab Hardware      0.855   shared "Hardware" token
+Om Electrical & Hardware-VO0006             Gulab Hardware      0.855   shared "Hardware" token
+Rajshree Hardware & Electricals-SR0167      Gulab Hardware      0.855   shared "Hardware" token
+```
+
+**Future debugging note.** If future runs against production supplier
+masters produce similar low-50s-score coincidences, DO NOT chase them
+as resolver bugs. Verify the WRatio output against real token overlap;
+in ~every case the explanation will be short generic supplier names in
+the master colliding with longer Tally vendor names. Mitigation is
+via reviewer-promoted negative rules or enriched supplier-name data
+(including registered business names, address fragments, GSTIN — all
+currently out of scope).
+
+### 6.5 Deferred — Control Account Pattern DocType (Week 4+)
 
 Operational staff will eventually need to add control-account patterns
 without a code edit. Scope for Week 4+:
@@ -465,3 +514,4 @@ acceptable for the small number of edits we expect.
 | 2026-04-19 | §4 P&L A/c routing added. Tally's Profit & Loss A/c + Income Expenditure A/c collapse to one ERP account (`Income Expenditure A/c - {ABBR}`) with combine_amounts=1. Seeded as "§3.3 + derived" positive rule. |
 | 2026-04-19 | §5 Schema mutation recipes added. Captures operational lessons from the Week-3 DocType audit iteration: DocField rename pattern, orphan column cleanup, v16 API gotchas, bench-console-heredoc as the preferred execution surface. |
 | 2026-04-19 | §6 Supplier matching added. Documents rule-first ordering, the 8-pattern control-account exclusion list, and the §4.6 regression finding caught at prose-review time during Work Item 6. Control Account Pattern DocType deferred to Week 4+. |
+| 2026-04-19 | §6.4 Fuzzy false-positive pattern added. Documents the 7 jewonline-dev-bench false positives from Work Item 6, the rule that threshold 85% stays as designed, and negative-alias-rule mitigation over threshold tightening. |
