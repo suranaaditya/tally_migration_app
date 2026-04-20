@@ -458,11 +458,13 @@ approving" / "Review action is still Pending — confirm via the
 Select above"), does NOT save, does NOT advance. The reviewer
 fixes the input and retries.
 
-`Ctrl+S` deliberately skips this validation. It's the "save what
-I have, warts and all" escape hatch — useful when a reviewer
-wants to persist partial `reviewer_notes` while still thinking
-about the right `final_account`. Discoverability: mentioned in
-the `?` shortcut dialog.
+`Ctrl+Shift+S` (and the **Save Without Advance** Actions menu item)
+is the "save what I have, warts and all" escape hatch — useful when
+a reviewer wants to persist partial `reviewer_notes` while still
+thinking about the right `final_account`. Discoverability:
+mentioned in the `?` shortcut dialog. Ctrl+S deliberately does NOT
+take this path — it's bound to the validating primary action per
+Frappe convention.
 
 Additional shortcuts:
 
@@ -965,7 +967,7 @@ which is the part carrying actual classification signal.
 **Before**: §1.12 carried a "refactor to bundle if file crosses
 3,000 lines" rule inline.
 
-**After**: rule moved to `docs/mapper_design_notes.md` (§11 in
+**After**: rule moved to `docs/mapper_design_notes.md` (§10 in
 that doc) with updated thresholds (2,500 lines **or** Item 6
 adds meaningful ranking logic). §1.12 references it.
 
