@@ -1,7 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
- "autoname": "format:TMS-{company_abbr}-{fiscal_year_short}-.###",
+ "autoname": "format:TMS-{company_abbr}-{fiscal_year_short}-{#####}",
  "creation": "2026-04-19 20:00:21.999928",
  "doctype": "DocType",
  "editable_grid": 1,
@@ -351,7 +351,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-04-19 20:00:22.949344",
+ "modified": "2026-04-20 08:04:47.509840",
  "modified_by": "Administrator",
  "module": "Rgi Migration",
  "name": "Tally Migration Session",
