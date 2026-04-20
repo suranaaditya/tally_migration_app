@@ -375,6 +375,70 @@ requirement isn't obvious from the user-facing DocType form, and I
 missed it in the schema-flip script. Fix: single `dt.save()` with
 the colon appended, no DDL needed.
 
+### Frappe Page name length limit — 20 characters at runtime insert
+
+Frappe's Page controller (`frappe/core/doctype/page/page.py:39-49`)
+hardcodes `[:20]` truncation in `autoname()`, despite the docstring
+claiming 30 characters. Pages created via
+`frappe.get_doc({"doctype": "Page", ...}).insert()` have their names
+silently truncated at 20 characters.
+
+Passing `name` explicitly alongside `page_name` does NOT bypass the
+truncation — the condition in `autoname()` still triggers during the
+insert pipeline.
+
+Pages with longer names on the bench (e.g. 26-char
+`warehouse-capacity-summary`) reached their full length via
+fixture-loading (`bench migrate` reading a pre-existing `.json`),
+which bypasses runtime `autoname()` entirely.
+
+**Practical guidance for this project**:
+
+- Keep Page names ≤ 20 characters, chosen intentionally.
+- Prefer short mnemonics matching existing naming conventions
+  (e.g. `md-review` matches the `MD-YYYY-NNNNN` `naming_series`
+  prefix for Mapping Decision records — the "MD" appears in both
+  the page route and the record names).
+- Don't rely on `rename_doc` workarounds — they introduce hidden
+  coupling on fresh-bench deploys (the rename has to run every
+  time someone installs the app on a new bench).
+- CSS class names and other internal identifiers can retain a
+  descriptive longer form (e.g. `.mapping-decision-review-app`) —
+  they're not constrained by the 20-char cap and they describe
+  the component's purpose rather than the URL identifier.
+
+Recorded after Week 4 Item 1 Commit 2 attempted to create
+`mapping-decision-review` (23 chars) and got silently truncated to
+`mapping-decision-rev` twice (once with explicit `name`, once
+without). Final landing: `md-review` (9 chars). Two-attempt sequence
++ investigation ≈ 45 min; a single sentence in this guardrail would
+have saved that time.
+
+### Pre-existing bench Socket.IO 404s on all Desk pages
+
+As of 2026-04-20, the `erp.jewonline.in` bench emits Socket.IO
+connection errors on every Desk page load:
+
+```
+GET /socket.io/?EIO=4&transport=polling  → 404 (Not Found)
+Error connecting to socket.io: xhr poll error
+```
+
+This affects real-time features (live comment pushes, assignment
+notifications, form-change broadcasts) but NOT normal page
+rendering or data operations. Our Week 4 review page uses
+`frappe.call` + `frappe.db.get_doc` exclusively (standard XHR),
+which is unaffected.
+
+Fix deferred to bench-ops work (likely requires `bench setup
+socketio` + `bench setup supervisor` reconfiguration on the
+Ubuntu host, or a `supervisorctl restart` of the frappe-web /
+frappe-socketio processes). Logged here rather than in the Week 4
+design doc because it's infrastructure state, not design.
+
+If browser verification of any custom Desk page surfaces only
+these Socket.IO errors + no other errors, treat as green.
+
 ### Section Break / Data field fieldname collision
 
 When two fields on the same DocType both claim the same fieldname (e.g.
@@ -829,3 +893,4 @@ from readability-at-scale the way JS does.
 | 2026-04-20 | **Generator #3 landed** — Party-wise Dr JE (`advance_je.py`). Per RGI §5.3, one Opening Entry JE per session carrying every net-Dr supplier balance with `is_advance="Yes"`, balanced by `Temporary Opening - {ABBR}`, reference `OB-{ABBR}-2026-02`. 11 unit tests, strict scope. Draft only, never auto-submit. Full-file smoke deferred to end-of-Week-3 integration across all 4 generators. |
 | 2026-04-22 | §10 Custom-page bundle-refactor threshold added. Rule: inline by default; refactor to a bundle when the page's JS file exceeds 2,500 lines OR when Item 6 (Tier-2 fuzzy) adds meaningful ranking logic. Change log renumbered §10 → §11. Origin: Week 4 Item 1+2 (Mapping Decision Review Page) prose refinement 7, see `docs/week4_review_ui_design.md §1.12`. |
 | 2026-04-22 | §5 expanded with two schema-mutation clarifications captured during Week 4 Item 1 Commit 1 schema-migration work: (a) `idx` is framework-universal and must NOT be dropped as a child-table orphan; (b) autoname mode string requires a trailing colon (`"naming_series:"`, not `"naming_series"`) per the Frappe naming dispatcher. Both learned the hard way; both now load-bearing guardrails for the next `istable` flip. |
+| 2026-04-22 | §5 expanded further during Week 4 Item 1 Commit 2 page-scaffolding work: (a) Frappe Page names are truncated to 20 characters at runtime autoname regardless of how `name` / `page_name` are passed — fixture-loading is the only path to longer names; (b) pre-existing Socket.IO 404s on this bench are orthogonal to our work and can be ignored during Desk-page browser verification. Guardrail for the next custom Page we create. |

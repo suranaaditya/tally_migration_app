@@ -18,6 +18,7 @@ and the 58 entities to follow?"
 | 2026-04-20 | Initial draft of §1 (list view) and §2 (detail view) as two separate Items — see commit `37831ca`. |
 | 2026-04-20 | Revised §1 to unified **Mapping Decision Review Page (master-detail)**. Items 1+2 merge into a single deliverable; §2 is retired. Items 3-9 unchanged in numbering. Driver: Aditya's call after research phase showed POS-style custom Page is the right shape for reviewer throughput. Build budget 8-10 hrs across 3-4 sessions. |
 | 2026-04-20 | Refinement pass on §1 — 7 tweaks from Aditya's review of `70241e5`, OQ1-6 resolutions embedded in relevant sections, Undo elevated from stretch to v1. Detail in §1.14. Prose now implementation-ready. |
+| 2026-04-20 | Route renamed from `/app/mapping-decision-review/...` to `/app/md-review/...` due to Frappe Page controller's hardcoded 20-char runtime autoname truncation (see `mapper_design_notes.md §5`). Python module path similarly shortened to `page/md_review/`. CSS class `.mapping-decision-review-app` retained — describes component purpose, not URL identifier. Functional design unchanged. |
 
 ---
 
@@ -43,7 +44,7 @@ blocking the OIT CSV and party-advance JE. 39 decisions total.
 2. At the top of the session form, he clicks the **Review
    Decisions** button.
 3. Browser navigates to
-   `/app/mapping-decision-review/CACSPU-2026-01`. Page loads in
+   `/app/md-review/CACSPU-2026-01`. Page loads in
    ~500 ms — empty page shell first, then master pane fills from
    one `frappe.desk.reportview.get` call, detail pane populates
    with the first row's full doc from `frappe.db.get_doc`.
@@ -97,7 +98,7 @@ blocking the OIT CSV and party-advance JE. 39 decisions total.
    clicks a row directly to jump. Mid-session, an
    `aditya@jewonline.in` coworker phone-pings asking about row
    #14 — he copies the URL
-   `/app/mapping-decision-review/CACSPU-2026-01#mapping-decision-0032`
+   `/app/md-review/CACSPU-2026-01#mapping-decision-0032`
    and shares it; coworker lands on the exact row.
 10. Last pending row resolved. Master pane empties to "All
     decisions in filter resolved — regenerate artefacts?" with
@@ -111,18 +112,18 @@ artefacts. Everything below serves this loop.
 
 ### §1.1 Route and entry point
 
-**Route**: `/app/mapping-decision-review/<session-name>` — session
+**Route**: `/app/md-review/<session-name>` — session
 name as a path segment. On session `CACSPU-2026-01` that resolves
-to `/app/mapping-decision-review/CACSPU-2026-01`. Frappe's Page
+to `/app/md-review/CACSPU-2026-01`. Frappe's Page
 framework routes this by registering a Page record with
-`page_name = "mapping-decision-review"` and reading `frappe.get_route()`
+`page_name = "md-review"` and reading `frappe.get_route()`
 for the `<session-name>` suffix.
 
 **Primary entry point**: a **Review Decisions** inner-button on the
 `Tally Migration Session` form view. Wired via the existing
 form-JS hook pattern (we'll add one in
 `rgi_migration/rgi_migration/doctype/tally_migration_session/tally_migration_session.js`).
-Click → `frappe.set_route("mapping-decision-review", frm.doc.name)`.
+Click → `frappe.set_route("md-review", frm.doc.name)`.
 
 **Secondary entry points** (no extra work, Desk provides):
 - Direct URL paste (Aditya shares a URL to a coworker).
@@ -132,11 +133,11 @@ Click → `frappe.set_route("mapping-decision-review", frm.doc.name)`.
 
 **Deep-link to a specific decision**: append
 `#<decision-name>` to the URL — e.g.
-`/app/mapping-decision-review/CACSPU-2026-01#mapping-decision-0032`.
+`/app/md-review/CACSPU-2026-01#mapping-decision-0032`.
 The page reads the hash on load and selects the matching row. See
 §1.8 for state management details.
 
-**No-session landing** (`/app/mapping-decision-review` without a
+**No-session landing** (`/app/md-review` without a
 path segment): auto-redirects to the user's last-viewed session
 recorded in `frappe.model.user_settings["Mapping Decision Review"].last_session`.
 If no recent session is tracked (fresh user or cleared settings),
@@ -508,7 +509,7 @@ bindings don't collide.
 On any successful save:
 
 1. Persist the decision via `frappe.call` →
-   `rgi_migration.rgi_migration.page.mapping_decision_review.mapping_decision_review.save_decision`
+   `rgi_migration.rgi_migration.page.md_review.md_review.save_decision`
    (custom whitelist method; see §1.10).
 2. Show a **5-second Undo** toast (Gmail-style) in the page
    head. Click (or `Ctrl+Z`) → revert `review_action`,
@@ -521,7 +522,7 @@ On any successful save:
 
    Implementation: client-side `frappe.show_alert` with a
    custom action handler that calls a separate
-   `rgi_migration.rgi_migration.page.mapping_decision_review.mapping_decision_review.undo_decision`
+   `rgi_migration.rgi_migration.page.md_review.md_review.undo_decision`
    whitelist method. The backend method uses a per-session
    in-memory `frappe.cache()` keyed by `<user>:<decision_name>`
    holding the pre-save doc snapshot with a 10-second TTL
@@ -550,7 +551,7 @@ they can save via Ctrl+S then press `↑` to go back. Good enough.
 ### §1.8 State management and URL
 
 **URL shape on load**:
-`/app/mapping-decision-review/<session-name>[#<decision-name>]`
+`/app/md-review/<session-name>[#<decision-name>]`
 
 - **Without hash**: page loads, selects the first row in the
   default filter.
@@ -568,7 +569,7 @@ breadcrumb (Frappe default).
 
 **Refresh behaviour**: reload the URL → re-selects the same row
 (hash is intact). Filter preset state is URL-encoded via query
-string: `/app/mapping-decision-review/CACSPU-2026-01?filter=all#mapping-decision-0032`.
+string: `/app/md-review/CACSPU-2026-01?filter=all#mapping-decision-0032`.
 Default filter is the absence of query param. Per-reviewer sort
 preferences persist via `frappe.model.user_settings`.
 
@@ -581,7 +582,7 @@ master-pane filter). No client-side session hot-swap in v1.
 Four distinct empty states, each with its own messaging and CTA:
 
 **1. Session name 404 (segment present but invalid)** —
-`/app/mapping-decision-review/<invalid>`:
+`/app/md-review/<invalid>`:
 
 > **Session not found.**
 >
@@ -593,7 +594,7 @@ Four distinct empty states, each with its own messaging and CTA:
 
 Rendered via `page.get_empty_state()` (Frappe's built-in).
 
-**1a. No session segment** — `/app/mapping-decision-review`:
+**1a. No session segment** — `/app/md-review`:
 auto-redirects to the user's last-viewed session via
 `frappe.model.user_settings["Mapping Decision Review"].last_session`
 (OQ5). If `last_session` is absent or the referenced session
@@ -707,10 +708,10 @@ distinctions are surfaced in the detail pane.
 
 | Layer | File | Expected LOC |
 |---|---|---|
-| Page registration | `rgi_migration/rgi_migration/page/mapping_decision_review/mapping_decision_review.json` | ~20 (JSON DocType record) |
-| Page entrypoint | `rgi_migration/rgi_migration/page/mapping_decision_review/mapping_decision_review.js` | ~1,500–2,000 (all panel classes inline, no bundle) |
-| Page styles | `rgi_migration/rgi_migration/page/mapping_decision_review/mapping_decision_review.css` | ~250–400 |
-| Backend mutations | `rgi_migration/rgi_migration/page/mapping_decision_review/mapping_decision_review.py` | ~200–400 (whitelist methods: `save_decision`, optionally `bulk_save_decisions`) |
+| Page registration | `rgi_migration/rgi_migration/page/md_review/md_review.json` | ~20 (JSON DocType record) |
+| Page entrypoint | `rgi_migration/rgi_migration/page/md_review/md_review.js` | ~1,500–2,000 (all panel classes inline, no bundle) |
+| Page styles | `rgi_migration/rgi_migration/page/md_review/md_review.css` | ~250–400 |
+| Backend mutations | `rgi_migration/rgi_migration/page/md_review/md_review.py` | ~200–400 (whitelist methods: `save_decision`, optionally `bulk_save_decisions`) |
 | Session form JS | `rgi_migration/rgi_migration/doctype/tally_migration_session/tally_migration_session.js` | +~15 lines (Review Decisions button wiring) |
 
 **No bundle in v1**. Unlike POS which splits 8 controller files
@@ -724,7 +725,7 @@ when Item 6 (Tier-2 fuzzy) adds meaningful ranking logic that
 warrants its own module.
 
 **Backend methods** (under
-`rgi_migration/rgi_migration/page/mapping_decision_review/mapping_decision_review.py`):
+`rgi_migration/rgi_migration/page/md_review/md_review.py`):
 
 - `get_session_decisions(session_name, filters, start, page_length, order_by)`
   — thin wrapper around `frappe.get_list` that validates the

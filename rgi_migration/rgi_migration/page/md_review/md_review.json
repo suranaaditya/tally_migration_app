@@ -1,0 +1,23 @@
+{
+ "content": null,
+ "creation": "2026-04-20 22:58:31.242030",
+ "docstatus": 0,
+ "doctype": "Page",
+ "idx": 0,
+ "modified": "2026-04-20 22:58:31.242030",
+ "modified_by": "Administrator",
+ "module": "Rgi Migration",
+ "name": "md-review",
+ "owner": "Administrator",
+ "page_name": "md-review",
+ "roles": [
+  {
+   "role": "System Manager"
+  }
+ ],
+ "script": null,
+ "standard": "Yes",
+ "style": null,
+ "system_page": 0,
+ "title": "Mapping Decision Review"
+}
