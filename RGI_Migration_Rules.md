@@ -334,11 +334,11 @@ if diff < 0: Temp Opening = Dr (abs(diff))  # Cr heavy → need Dr balancer
 **Status:** CONFIRMED | **Source:** ASSCOE
 
 ### 4.10 Student Fee Outstanding Classification
-**Rule:** `Student Fee Outstanding` in Tally = Current Asset (receivable from students). In ERP it may be placed under `Liability For Students` — WRONG classification.
-**Action:** If ERP has it under Liabilities, create `Student Fee Outstanding (Receivable) - {ABBR}` under Current Assets instead.
-**Status:** PAUSED (was CONFIRMED) | **Source:** GHRCEMNMBA, GHRILS
+**Status:** **Deprecated 2026-04.** `Student Fee Outstanding` and per-student ledgers route through `dux_voucher`'s Ex Student Opening Batch, not through `rgi_migration` rules. The parser flags these ledgers with `is_student_ledger=True` (via parent-chain marker for per-student leaves, or via the `AGGREGATE_STUDENT_ACCOUNT_NAMES` frozenset for aggregate control accounts); they flow to the students CSV and are consumed by `dux_voucher`. See `docs/dux_voucher_integration.md` and `docs/mapper_design_notes.md` §7 "Leaf-only posting principle".
 
-**Status update 2026-04:** Paused. `Student Fee Outstanding` in Tally is typically a GROUP containing per-student leaves, not a leaf ledger. Per-student receivables route through `dux_voucher`'s Ex Student Opening Batch via the CSV workflow (see `docs/dux_voucher_integration.md`). §4.10 remains in the library for entities where `Student Fee Outstanding` is used as an aggregate leaf ledger instead — rare but possible; reviewer un-pauses per entity when the condition is discovered. See `docs/mapper_design_notes.md` §7 "Leaf-only posting principle" for the underlying accounting principle.
+**Historical rule (superseded, kept for audit trail):** `Student Fee Outstanding` in Tally = Current Asset (receivable from students). ERP sometimes placed it under `Liability For Students` (wrong classification); the original rule created `Student Fee Outstanding (Receivable) - {ABBR}` under Current Assets instead. **This rule is no longer seeded into `Mapping Rule` — parser handling supersedes it.**
+
+**Original source:** GHRCEMNMBA, GHRILS (observed when rule was active).
 
 ### 4.11 Computer & Accessories
 **Rule:** Both `Computer & Accessories` and `Computer & Accessories Purchase A/c` Tally accounts map to `Computer & Accessories - {ABBR}` in ERP.

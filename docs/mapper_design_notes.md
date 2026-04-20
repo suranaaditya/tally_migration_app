@@ -526,38 +526,56 @@ All Masters XML export, only leaves. Such rules are marked
 `status="paused"` in the library (not deprecated — they remain live for
 entities where the same name happens to be used as a leaf ledger).
 
-**First recorded example — §4.10 Student Fee Outstanding.**
-Paused 2026-04 after the CACSPU review. On educational entities the
-name typically refers to a Tally GROUP containing per-student leaves:
+### Cross-app architectural boundary
 
-- The group carries no `<LEDGER>` element in the XML export.
-- Per-student leaves carry individual `<LEDGER>` elements under the
-  `Sundry Debtors` / `Students` / `STUDENTS` tree and are routed via
-  `is_student_ledger=True` to the Phase-2 student CSV, not to §4.10.
-- §4.10 as originally written could never match a real Tally ledger on
-  these entities, regardless of threshold or fuzzy tuning — there's
-  simply no `<LEDGER name="Student Fee Outstanding">` in the export.
+Some Tally ledger categories are handled by **sibling apps**, not
+`rgi_migration`. Student receivables flow through `dux_voucher`'s
+`Ex Student Opening Batch` per `docs/dux_voucher_integration.md`.
 
-The rule stays in the library as `paused` for the rare entity where
-`Student Fee Outstanding` is used as a control-**leaf** (aggregate
-without per-student tracking). Reviewer un-pauses per entity when that
-condition is discovered; base state is paused.
+The parser's `is_student_ledger=True` flag is the routing mechanism:
 
-### Corollary for the dux_voucher handoff
+- **Per-student leaves** — `parent_chain` contains a student-group
+  marker (`STUDENT`, `STUDENTS`, `CYBERVIDYA`, `PASSOUT`, `GHRIMR
+  STUDENT`, etc.). Existing behavior since Week 1.
+- **Aggregate control accounts** — cleaned name is an exact
+  (case-insensitive, whitespace-collapsed) member of
+  `AGGREGATE_STUDENT_ACCOUNT_NAMES` in
+  `rgi_migration/parsers/tally_xml_parser.py`. Added 2026-04 to
+  catch `Student Fee Outstanding` and any future same-shape names.
 
-Student receivables flow via the per-student leaf ledgers, routed to
-dux_voucher's `Ex Student Opening Batch` via the 4-column CSV handoff
-documented in `docs/dux_voucher_integration.md`. §4.10 in the rule
-library is a **fallback** for entities without per-student tracking,
-not the primary student-handling path.
+Both routes set the same flag; both result in the ledger being placed
+on `ParsedTallyTB.student_ledgers` and excluded from the main
+`ledgers` list. The downstream mapper never sees them.
 
-### How to identify future leaf-paused candidates
+These do NOT appear in the main `Mapping Rule` library because the
+routing is an architectural boundary, not per-entity business logic.
+The parser is the right layer — it owns the source-data
+classification.
 
-When seeding or promoting a rule, ask: *"In the Tally XML export, will
-this name appear as a `<LEDGER>` element or a `<GROUP>` element?"* If
-the answer is "group in nearly all entities we care about", the rule
-should ship `status="paused"` with a note. Seeding as confirmed creates
-dead rules that look active in review UIs and mask real gaps.
+**Original §4.10 Student Fee Outstanding — deprecated 2026-04.**
+Initially seeded as a confirmed rule; paused in a first pass, then
+fully removed from the seed library once the parser-level routing
+landed. Historical record lives in `RGI_Migration_Rules.md` §4.10 for
+audit-trail completeness. The rule was the wrong shape: a cross-app
+boundary can't be expressed as a per-entity `Mapping Rule` because
+the routing is uniform across all 59 entities.
+
+### How to identify future leaf-paused / parser-routed candidates
+
+When seeding or promoting a rule, ask two questions in order:
+
+1. *"Does this ledger belong to rgi_migration at all, or does a sibling
+   app (dux_voucher, future ones) own it?"* If sibling-owned, extend
+   the parser's classification (e.g. add to
+   `AGGREGATE_STUDENT_ACCOUNT_NAMES`); do NOT add a Mapping Rule.
+2. *"In the Tally XML export, will this name appear as a `<LEDGER>`
+   element or a `<GROUP>` element?"* If the answer is "group in nearly
+   all entities we care about", the rule would never fire. Ship it
+   as `status="paused"` with a note, or skip entirely if the routing
+   is architectural (answer 1 covers it).
+
+Seeding as confirmed when either answer points elsewhere creates dead
+rules that look active in review UIs and mask real gaps.
 
 ---
 
@@ -573,3 +591,4 @@ dead rules that look active in review UIs and mask real gaps.
 | 2026-04-19 | §6 Supplier matching added. Documents rule-first ordering, the 8-pattern control-account exclusion list, and the §4.6 regression finding caught at prose-review time during Work Item 6. Control Account Pattern DocType deferred to Week 4+. |
 | 2026-04-19 | §6.4 Fuzzy false-positive pattern added. Documents the 7 jewonline-dev-bench false positives from Work Item 6, the rule that threshold 85% stays as designed, and negative-alias-rule mitigation over threshold tightening. |
 | 2026-04-19 | §7 Leaf-only posting principle added. Articulates that all Tally/ERPNext postings happen at leaf level; group-account refusal in §2(b) is a correctness requirement, not a defensive check. First recorded example: §4.10 Student Fee Outstanding paused because the name is a group in Tally on educational entities, routing through dux_voucher's per-student CSV instead. |
+| 2026-04-20 | §7 extended with "Cross-app architectural boundary" subsection. §4.10 fully deprecated (removed from seed library; DocType row deleted). Parser extended with AGGREGATE_STUDENT_ACCOUNT_NAMES frozenset — aggregate student control accounts now flagged `is_student_ledger=True` alongside per-student leaves. Total seed count: 23 → 22. |

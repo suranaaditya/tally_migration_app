@@ -97,6 +97,35 @@ def _is_student(parent_chain: list[str]) -> bool:
     return False
 
 
+# AGGREGATE_STUDENT_ACCOUNT_NAMES — names that represent aggregate student
+# receivables (as opposed to per-student leaves under a student group).
+# These are routed to dux_voucher's Ex Student Opening Batch via the CSV
+# workflow, same as per-student leaves. Add entries here as other entities
+# surface similar aggregate account names. This is a parser-level exclusion,
+# not a Mapping Rule, because it's an architectural boundary between
+# rgi_migration and dux_voucher, not per-entity business logic.
+#
+# Matching is case-insensitive, whitespace-collapsed, exact equality. Do
+# NOT add patterns — if a variant surfaces on some entity, add the exact
+# cleaned name to this set.
+AGGREGATE_STUDENT_ACCOUNT_NAMES: frozenset[str] = frozenset({
+    "student fee outstanding",
+})
+
+
+def _is_aggregate_student_account(cleaned_name: str) -> bool:
+    """Return True if the ledger's cleaned name is a known aggregate
+    student-receivables control account (see AGGREGATE_STUDENT_ACCOUNT_NAMES).
+
+    Operates on the name AFTER the parser's `-{digits}` suffix strip, since
+    the set is defined against cleaned names.
+    """
+    if not cleaned_name:
+        return False
+    key = re.sub(r"\s+", " ", cleaned_name).strip().lower()
+    return key in AGGREGATE_STUDENT_ACCOUNT_NAMES
+
+
 def _norm(s: str) -> str:
     """Normalize a Tally account/group name for fuzzy key lookup.
 
@@ -564,7 +593,18 @@ def _parse_ledger_element(
         net_side = "Zero"
 
     # Diagnostic/routing flags (see docs/tally_sign_convention.md §4)
-    is_student_ledger = _is_student(parent_chain)
+    #
+    # Two routes to is_student_ledger=True:
+    #   1. Per-student leaves: parent chain contains a student-group marker.
+    #   2. Aggregate control accounts: cleaned name matches
+    #      AGGREGATE_STUDENT_ACCOUNT_NAMES.
+    # Both route to dux_voucher's Ex Student Opening Batch via the CSV
+    # handoff; neither flows through the main Mapping Rule library.
+    # See docs/mapper_design_notes.md §7 "Leaf-only posting principle".
+    is_student_ledger = (
+        _is_student(parent_chain)
+        or _is_aggregate_student_account(name)
+    )
     is_pnl_closed_zero = (
         root_type in ("Income", "Expense")
         and opening_dr == 0.0

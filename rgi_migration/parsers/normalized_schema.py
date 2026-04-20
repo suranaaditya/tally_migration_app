@@ -44,9 +44,18 @@ class Ledger:
         source_row:         Excel row number for debugging, None for XML.
         is_system_account:  Tally internal account (e.g. "Profit & Loss A/c" — no <PARENT>).
                             Excluded from ``total_dr`` / ``total_cr`` and from the migration ledger list.
-        is_student_ledger:  Ledger sits under a student sub-group of Sundry Debtors
-                            (STUDENTS / CYBERVIDYA-* / PASSOUT-* / GHRIMR STUDENT / etc.).
-                            Routed to the separate ``student_ledgers`` output instead of the main list.
+        is_student_ledger:  Ledger routes to the students CSV (consumed by
+                            dux_voucher's Ex Student Opening Batch) instead
+                            of the main ledger list. True in two cases:
+                              (a) Per-student leaf — parent_chain contains
+                                  a student-group marker (STUDENTS /
+                                  CYBERVIDYA-* / PASSOUT-* / GHRIMR STUDENT
+                                  / etc.).
+                              (b) Aggregate control account — cleaned name
+                                  matches AGGREGATE_STUDENT_ACCOUNT_NAMES
+                                  in tally_xml_parser (currently
+                                  "Student Fee Outstanding").
+                            See docs/mapper_design_notes.md §7.
         is_pnl_closed_zero: Diagnostic flag for the review UI. ``True`` when
                             ``root_type`` is Income|Expense AND ``opening_dr == 0 AND opening_cr == 0``
                             AND ``parent_chain`` includes one of Sales Accounts, Purchase Accounts,

@@ -57,6 +57,7 @@ from rgi_migration.parsers.tally_xml_parser import (
     TALLY_ROOT_TYPES,
     _PNL_ROOTS,
     _infer_root_type,
+    _is_aggregate_student_account,
     _is_student,
     strip_tally_id,
 )
@@ -534,7 +535,14 @@ def _classify_and_resolve(
             chain = parent_chain_of[i]
             parent_group = parent_of[i]
             root_type = root_type_of[i] or "Asset"
-            is_student = _is_student(chain) or _is_student([parent_group])
+            # Two routes to student-ledger routing (parallel to xml parser):
+            # parent-chain marker OR aggregate-name match. See
+            # docs/mapper_design_notes.md §7.
+            is_student = (
+                _is_student(chain)
+                or _is_student([parent_group])
+                or _is_aggregate_student_account(name_clean)
+            )
             is_pnl_zero = (
                 root_type in ("Income", "Expense")
                 and r.dr == 0.0

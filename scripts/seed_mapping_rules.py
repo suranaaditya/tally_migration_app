@@ -10,8 +10,19 @@ for context. Do NOT "fix" this to source_section_ref based on older
 DocType JSON dumps — that name is the stale one.
 
 
-Seeds §4 (CONFIRMED positive rules: 19) and §11 rows 2/3/4 (CONFIRMED anti-patterns
-with specific Tally patterns: 3). Total: 22 rows.
+Seeds §4 CONFIRMED rules (§4.1–§4.9, §4.11–§4.19: 18 rules — §4.10
+deprecated 2026-04, see below), plus one §3.3-derived rule (P&L A/c
+routing), plus 3 §11 anti-patterns with specific Tally patterns.
+Total: 22 rows (19 positive + 3 anti-pattern).
+
+§4.10 Student Fee Outstanding is NOT seeded. Student receivables —
+both per-student leaves and aggregate control accounts — are routed
+by the PARSER to the students CSV (consumed by dux_voucher's Ex
+Student Opening Batch). This is an architectural boundary between
+rgi_migration and dux_voucher, not per-entity business logic. The
+parser flags aggregate names via AGGREGATE_STUDENT_ACCOUNT_NAMES in
+rgi_migration/parsers/tally_xml_parser.py. See
+docs/mapper_design_notes.md §7 and docs/dux_voucher_integration.md.
 
 Other §11 rows are either process rules (OIT/JE builder invariants) or structural
 checks (Tier-1 code, not data) — see docs/mapper_design_notes.md §1 and §2.
@@ -201,34 +212,15 @@ POSITIVE_RULES: list[dict[str, Any]] = [
         "creates_erpnext_account": 0,  # §11 R2 anti-pattern owns creation
         "source_entities": "ASSCOE",
     },
-    {
-        # §4.10 — Student Fee Outstanding — PAUSED by default.
-        # Per the leaf-only posting principle (docs/mapper_design_notes.md §7),
-        # 'Student Fee Outstanding' is typically a Tally GROUP containing per-
-        # student leaves. Tally never emits groups as <LEDGER> elements, so
-        # this rule can never fire against a student-debtors group. Per-student
-        # balances route through dux_voucher's Ex Student Opening Batch via
-        # the CSV handoff (docs/dux_voucher_integration.md).
-        # Kept in the library as status=paused for rare entities where the
-        # same name is used as an aggregate control-LEAF without per-student
-        # tracking — reviewer un-pauses per entity when discovered.
-        "source_section": "§4.10",
-        "rule_name": "Student Fee Outstanding → Receivable asset (ERP may have on wrong BS side)",
-        "status": "paused",
-        "tally_pattern": "Student Fee Outstanding",
-        "tally_match_mode": "exact_ci",
-        "tally_pattern_alternates": [],
-        "applicable_root_type": "Asset",
-        "tally_parent_contains": "Current Assets",
-        "erpnext_account_template": "Student Fee Outstanding (Receivable) - {ABBR}",
-        "combine_amounts": 0,
-        "creates_erpnext_account": 1,
-        "new_account_name_template": "Student Fee Outstanding (Receivable) - {ABBR}",
-        "new_account_parent": "Loans & Advances",
-        "new_account_root_type": "Asset",
-        "new_account_is_group": 0,
-        "source_entities": "GHRCEMNMBA, GHRILS",
-    },
+    # §4.10 Student Fee Outstanding — DEPRECATED 2026-04. Removed from the
+    # seed library entirely. Architectural boundary, not per-entity business
+    # logic: student receivables (both per-student leaves and aggregate
+    # control accounts) are identified by the PARSER via is_student_ledger=True
+    # and routed to dux_voucher's Ex Student Opening Batch via the CSV
+    # handoff. The parser flags aggregate names via AGGREGATE_STUDENT_ACCOUNT_NAMES
+    # in rgi_migration/parsers/tally_xml_parser.py — add new aggregate names
+    # there, not here. See RGI_Migration_Rules.md §4.10 and
+    # docs/mapper_design_notes.md §7.
     {
         # §4.11 — Computer & Accessories (+ Purchase A/c variant) combined
         "source_section": "§4.11",

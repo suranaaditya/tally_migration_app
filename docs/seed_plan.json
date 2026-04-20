@@ -1,8 +1,8 @@
 {
-  "total": 23,
-  "positive_count": 20,
+  "total": 22,
+  "positive_count": 19,
   "anti_pattern_count": 3,
-  "creates_erpnext_account_count": 5,
+  "creates_erpnext_account_count": 4,
   "positive_rules": [
     {
       "source_section": "§4.1",
@@ -197,29 +197,6 @@
       "applies_to_entity_types": "*",
       "created_from": "seed",
       "source_hash": "65ec5992d876902ae85e5a2bd323ea2fbb6cc8b2"
-    },
-    {
-      "source_section": "§4.10",
-      "rule_name": "Student Fee Outstanding → Receivable asset (ERP may have on wrong BS side)",
-      "status": "paused",
-      "tally_pattern": "Student Fee Outstanding",
-      "tally_match_mode": "exact_ci",
-      "tally_pattern_alternates": [],
-      "applicable_root_type": "Asset",
-      "tally_parent_contains": "Current Assets",
-      "erpnext_account_template": "Student Fee Outstanding (Receivable) - {ABBR}",
-      "combine_amounts": 0,
-      "creates_erpnext_account": 1,
-      "new_account_name_template": "Student Fee Outstanding (Receivable) - {ABBR}",
-      "new_account_parent": "Loans & Advances",
-      "new_account_root_type": "Asset",
-      "new_account_is_group": 0,
-      "source_entities": "GHRCEMNMBA, GHRILS",
-      "doctype": "Mapping Rule",
-      "is_anti_pattern": 0,
-      "applies_to_entity_types": "*",
-      "created_from": "seed",
-      "source_hash": "c3c414f2d05b1ce98b6f9c320ef7523abfdee439"
     },
     {
       "source_section": "§4.11",
@@ -566,7 +543,6 @@
     "required": [
       "Fixed Deposits with Bank",
       "Liability For Students",
-      "Loans & Advances",
       "Other Liabilities",
       "Reserves & Surplus"
     ],
