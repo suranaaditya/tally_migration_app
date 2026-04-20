@@ -26,12 +26,15 @@ Does not mutate any DocType. Read-only.
 
 from __future__ import annotations
 
-import random
-from collections import Counter
-from pathlib import Path
-
 
 def run() -> None:
+    # All imports inside the function: this script is executed via
+    # IPython's exec(open(...).read()) path, which does not propagate
+    # module-level imports into nested function scopes reliably.
+    import random
+    from collections import Counter
+    from pathlib import Path
+
     import frappe  # type: ignore[import]
 
     from rgi_migration.mapper.mapper import CoaAccount, Mapper
