@@ -477,71 +477,118 @@ def _write_log(
 
 
 # ---------------------------------------------------------------------------
-# Driver
+# Public API — callable from Python code (tests, GUI) as well as the CLI
 # ---------------------------------------------------------------------------
 
-def _run(args: argparse.Namespace) -> tuple[int, RunSummary, str | None]:
-    """Execute one preprocessing run.  Returns (exit_code, summary, error_text)."""
-    input_path = Path(args.input).resolve()
-    output_path = Path(args.output).resolve()
+def _resolve_log_path(output_path: Path, log_path: Path | str | None) -> Path:
+    """Default log path is ``<output>.log`` next to the output file."""
+    if log_path is None:
+        return Path(str(output_path) + ".log").resolve()
+    return Path(log_path).resolve()
+
+
+def _write_log_safe(log_path: Path, summary: RunSummary, error_text: str | None) -> None:
+    """Best-effort log write — swallow OSError so a missing log directory
+    can't mask the underlying preprocessing error."""
+    try:
+        _write_log(log_path, summary, error_text)
+    except OSError as exc:
+        _log.warning("could not write sidecar log at %s: %s", log_path, exc)
+
+
+def preprocess(
+    input_path: str | Path,
+    output_path: str | Path,
+    *,
+    strict: bool = True,
+    log_path: str | Path | None = None,
+) -> RunSummary:
+    """Run one preprocessing pass; return the summary or raise on failure.
+
+    Always writes the sidecar log before returning or re-raising — the log
+    is the canonical run record whether success or failure.
+
+    Args:
+        input_path:  Full Tally All Masters XML to read.
+        output_path: Slim UTF-8 XML to write.
+        strict:      If True, re-parse the output via rgi_migration's parser
+                     and raise ``StrictValidationError`` if parsing fails.
+        log_path:    Sidecar log path (defaults to ``<output>.log``; always
+                     overwrite mode).
+
+    Returns:
+        ``RunSummary`` populated with input/output sizes, kept/dropped
+        entity counts, elapsed seconds, and strict-mode result.
+
+    Raises:
+        InputError:             Input file missing/unreadable, not a Tally
+                                All Masters XML, or produced zero entities.
+        StrictValidationError:  ``strict=True`` and the parser rejected the
+                                slim output.
+        Exception:              Unexpected failure — the sidecar log captures
+                                the traceback before the exception propagates.
+    """
+    input_p = Path(input_path).resolve()
+    output_p = Path(output_path).resolve()
+    log_p = _resolve_log_path(output_p, log_path)
+
     summary = RunSummary(
-        input_path=input_path,
-        output_path=output_path,
-        strict_mode=args.strict,
+        input_path=input_p,
+        output_path=output_p,
+        strict_mode=strict,
     )
     started = time.monotonic()
 
     try:
-        enc = _validate_input(input_path)
+        enc = _validate_input(input_p)
         summary.input_encoding = enc
-        summary.input_size = input_path.stat().st_size
+        summary.input_size = input_p.stat().st_size
 
-        _stream_and_filter(input_path, output_path, summary)
-        summary.output_size = output_path.stat().st_size if output_path.exists() else 0
+        _stream_and_filter(input_p, output_p, summary)
+        summary.output_size = output_p.stat().st_size if output_p.exists() else 0
 
-        if args.strict:
-            _run_strict_validation(output_path, summary)
+        if strict:
+            _run_strict_validation(output_p, summary)
         else:
             summary.strict_result = "skipped (--no-strict)"
-
-    except InputError as exc:
+    except (InputError, StrictValidationError) as exc:
         summary.elapsed_seconds = time.monotonic() - started
-        return EXIT_INPUT_ERROR, summary, str(exc)
-    except StrictValidationError as exc:
-        summary.elapsed_seconds = time.monotonic() - started
-        return EXIT_STRICT_FAILED, summary, str(exc)
+        _write_log_safe(log_p, summary, str(exc))
+        raise
     except Exception:
         summary.elapsed_seconds = time.monotonic() - started
-        return EXIT_UNEXPECTED, summary, traceback.format_exc()
+        _write_log_safe(log_p, summary, traceback.format_exc())
+        raise
 
     summary.elapsed_seconds = time.monotonic() - started
-    return EXIT_OK, summary, None
+    _write_log_safe(log_p, summary, None)
+    return summary
 
 
-def _print_summary(summary: RunSummary, exit_code: int) -> None:
-    """Short stdout summary for interactive/CLI users."""
-    if exit_code == EXIT_OK:
-        pct = (
-            100.0 * (1.0 - summary.output_size / summary.input_size)
-            if summary.input_size > 0 else 0.0
-        )
-        print(
-            f"OK: {_format_size(summary.input_size)} -> "
-            f"{_format_size(summary.output_size)} ({pct:.1f}% reduction) in "
-            f"{summary.elapsed_seconds:.1f}s  "
-            f"[{summary.kept_ledger:,} ledgers, {summary.kept_group:,} groups]"
-        )
-        if summary.strict_mode:
-            print(f"Strict re-parse: {summary.strict_result}")
-    else:
-        print(
-            f"FAILED (exit {exit_code}): see log at {summary.output_path}.log "
-            f"or --log path",
-            file=sys.stderr,
-        )
+def _print_ok_summary(summary: RunSummary) -> None:
+    """Short stdout summary on successful runs."""
+    pct = (
+        100.0 * (1.0 - summary.output_size / summary.input_size)
+        if summary.input_size > 0 else 0.0
+    )
+    print(
+        f"OK: {_format_size(summary.input_size)} -> "
+        f"{_format_size(summary.output_size)} ({pct:.1f}% reduction) in "
+        f"{summary.elapsed_seconds:.1f}s  "
+        f"[{summary.kept_ledger:,} ledgers, {summary.kept_group:,} groups]"
+    )
+    if summary.strict_mode:
+        print(f"Strict re-parse: {summary.strict_result}")
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Thin argparse wrapper around ``preprocess()``.
+
+    ``preprocess()`` does all the work and writes the sidecar log; this
+    function just translates argparse kwargs to the callable API, catches
+    the three documented exception types, and maps each to the
+    appropriate exit code.
+    """
     ap = argparse.ArgumentParser(
         prog="python -m tools.tally_slim.preprocessor",
         description=(
@@ -579,25 +626,27 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    log_path = Path(args.log).resolve() if args.log else Path(args.output + ".log").resolve()
-
-    exit_code, summary, error_text = _run(args)
-
     try:
-        _write_log(log_path, summary, error_text)
-    except OSError as exc:
-        print(f"WARNING: could not write sidecar log at {log_path}: {exc}", file=sys.stderr)
+        summary = preprocess(
+            args.input,
+            args.output,
+            strict=args.strict,
+            log_path=args.log,
+        )
+    except InputError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return EXIT_INPUT_ERROR
+    except StrictValidationError as exc:
+        print(f"ERROR: strict re-parse failed: {exc}", file=sys.stderr)
+        return EXIT_STRICT_FAILED
+    except Exception as exc:
+        print(f"UNEXPECTED: {type(exc).__name__}: {exc}", file=sys.stderr)
+        print("(see sidecar log for traceback)", file=sys.stderr)
+        return EXIT_UNEXPECTED
 
     if not args.quiet:
-        _print_summary(summary, exit_code)
-
-    if error_text and exit_code != EXIT_OK:
-        # Echo the error to stderr so automation pipelines can see it
-        # without having to tail the log.
-        print(f"ERROR: {error_text.splitlines()[0] if error_text else '(see log)'}",
-              file=sys.stderr)
-
-    return exit_code
+        _print_ok_summary(summary)
+    return EXIT_OK
 
 
 if __name__ == "__main__":
