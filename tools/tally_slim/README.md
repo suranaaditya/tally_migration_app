@@ -39,25 +39,36 @@ This is normal for newly-built tools. To proceed:
 
 This happens once per computer and then goes away.
 
-### Variant B — Defender blocks the app entirely
+### Variant B — Antivirus blocks the app entirely
 
-On some machines Windows Defender is more aggressive and refuses to
-launch TallySlim at all, with a message like:
+On some machines your antivirus (Windows Defender, McAfee, Norton,
+Kaspersky, or similar) is more aggressive and refuses to launch
+TallySlim at all, with a message like:
 
 > Threat detected
 > This file contains a virus or potentially unwanted software.
 
-This is a **false alarm** triggered by Windows Defender's heuristics on
-new unsigned apps. The tool is not infected. To run it:
+or silently quarantines the file so it disappears from the folder.
 
-1. Ask your IT team (or someone with admin rights on the machine) to
-   add the folder containing TallySlim.exe to Windows Defender's
-   exclusion list
-2. If that's not possible, send the quarantine notification ID to your
-   project administrator — they can request a Defender whitelist
-   update
+This is a **false alarm**. Newly-built tools often get flagged by AV
+heuristics until enough people have run them that the AV vendor
+learns they're safe. The tool is not infected.
 
-If neither works on your machine, contact support.
+To run it:
+
+1. Ask your IT team (or someone with admin rights on the machine)
+   to add TallySlim.exe to your antivirus's exclusion list. Exact
+   steps vary by AV product — in McAfee it's
+   **Real-Time Scanning -> Excluded Files -> Add file**; in Windows
+   Defender it's **Virus & threat protection -> Manage settings ->
+   Exclusions -> Add exclusion**.
+2. If the file has already been quarantined, IT can restore it from
+   the AV's quarantine/history view and whitelist it at the same time.
+3. If neither works on your machine, send the quarantine notification
+   to your project administrator.
+
+If none of the above are available, contact support with the AV
+product name and the exact error message.
 
 ## If something goes wrong
 

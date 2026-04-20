@@ -59,31 +59,54 @@ run on a machine that hasn't seen the binary before. Users click
 code-signing certificate would eliminate this (~$200-500/year, out of
 scope for Work Item 8).
 
-### Windows Defender AV blocks CreateProcess ("contains a virus...")
+### Antivirus blocks CreateProcess ("contains a virus...")
 
-More severe than SmartScreen: on some machines Windows Defender's
-real-time protection actively blocks `CreateProcess` on the built exe
-with error `WinError 225` / "Operation did not complete successfully
-because the file contains a virus or potentially unwanted software."
+More severe than SmartScreen: on some machines, the installed
+antivirus's real-time protection actively blocks `CreateProcess` on
+the built exe with error `WinError 225` / "Operation did not complete
+successfully because the file contains a virus or potentially unwanted
+software."
 
 This is a false positive on the PyInstaller `runw.exe` bootloader
-template, not a real malware detection. Multiple independent projects
-ship PyInstaller-built exes and hit this periodically — Microsoft's
-heuristics rotate.
+template, not a real malware detection. Most major AV products trip
+on unsigned PyInstaller exes periodically — their heuristics rotate.
+Confirmed on this project so far: **McAfee LiveSafe** (silent quarantine
+on launch), **Windows Defender** (per the original spec). Norton,
+Kaspersky, ESET are all known to exhibit the same pattern on related
+PyInstaller-built tools.
 
-Fix on the build machine (requires admin):
+Fix depends on which AV is installed. The pattern is always the same:
+turn off real-time scanning briefly, build/restore the exe, add the
+exe (or its parent folder) to the exclusion list, turn real-time
+scanning back on.
 
-    # PowerShell as Administrator
+**Windows Defender** (requires admin PowerShell):
+
     Add-MpPreference -ExclusionPath 'C:\path\to\rgi-migration-app\tools\tally_slim\dist'
 
-Fix on a bookkeeper's machine: the exclusion path approach above is
-the safest. Alternative: right-click the quarantine notification ->
-**Restore** -> **Allow on this device**. Bookkeepers without local
-admin rights must escalate to their IT team.
+If `Add-MpPreference` fails with `0x800106ba`, a third-party AV has
+taken over real-time protection and the Defender cmdlet is disabled.
+Check which AV is actually active.
 
-Code-signing would eliminate this alongside SmartScreen — same mitigation,
-same out-of-scope cost. Until signing exists, expect the Defender issue
-to surface on ~1 in 5 Windows machines.
+**McAfee LiveSafe**:
+
+1. Open McAfee -> **My Protection** -> **Real-Time Scanning**
+2. Click **Turn off**, select a short duration (15 minutes is enough)
+3. Rebuild the exe (or restore it from Quarantine if already quarantined)
+4. McAfee -> **Excluded Files** -> **Add file** -> browse to
+   `TallySlim.exe`
+5. Turn Real-Time Scanning back on (or wait for the 15-min timer)
+6. The exclusion persists after real-time protection resumes
+
+**Alternative path if exe already quarantined**: open McAfee ->
+**Security History** (or **Quarantined Items**), find the entry,
+**Restore** and whitelist in one step.
+
+Bookkeepers without local admin rights must escalate to their IT team.
+Code-signing would eliminate this alongside SmartScreen across all AV
+products — same mitigation, same out-of-scope cost. Until signing
+exists, expect this issue to surface on ~1 in 5 Windows machines,
+with the exact symptom varying by AV vendor.
 
 ### Smoke-testing the GUI without the exe
 

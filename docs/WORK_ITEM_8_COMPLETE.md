@@ -72,24 +72,42 @@ bundles):
 | T2 — 220.7 MB full CACSPU | PASS | 5.5 s conversion after 4.5 s pre-scan, progress bar animated through 700 → 2600 → 4500 → 6200 → 11017, validation passed |
 | T3 — non-XML .txt input | PASS | Error dialog fired, no success dialog, log written, failed fast in 0.18 s |
 
-**.exe-level smoke test** — **BLOCKED in this session**. `TallySlim.exe`
-built successfully (16.7 MB, PyInstaller reported no errors), but
-Windows Defender's real-time protection quarantined it on `CreateProcess`
-with `WinError 225` ("contains a virus or potentially unwanted software").
-This is a known false-positive on the PyInstaller bootloader template —
-common enough that the spec's build checklist anticipated it.
+**.exe-level smoke test** — **PASS after AV exclusion**. `TallySlim.exe`
+built successfully (16.7 MB, PyInstaller no errors). Initial launch
+attempts were blocked by McAfee LiveSafe's real-time protection with
+`WinError 225` ("contains a virus or potentially unwanted software") —
+a known false-positive on the PyInstaller bootloader template that the
+spec's build checklist anticipated.
 
-Unblocking requires either (a) admin-run `Add-MpPreference -ExclusionPath`
-for `tools/tally_slim/dist/` on the build machine, or (b) a Microsoft
-code-signing certificate (~$200-500/year, out of scope).
+After the build machine's McAfee exclusion was added for `TallySlim.exe`
+(procedure: briefly disable Real-Time Scanning -> rebuild -> McAfee
+**Excluded Files -> Add file** -> re-enable), the .exe launched cleanly
+and stayed alive through a 7-second observation window. This confirms
+the PyInstaller bundle itself is structurally correct:
 
-The functional correctness of the bundled code is not in doubt — the
-GUI smoke test covers the same code paths. What wasn't tested in this
-session is the PyInstaller bundle correctness itself (lxml submodule
-collection, tkinter runtime hook, whitelist `--add-data` path). Any of
-those could still fail at .exe-launch time. Aditya needs to run
-TallySlim.exe directly after adding the Defender exclusion to fully
-close out.
+- lxml submodules collected (ImportError on startup would have killed
+  the process immediately)
+- tkinter runtime hook works (GUI init reaches mainloop)
+- Whitelist `--add-data` path resolves (preprocessor's
+  `from rgi_migration.parsers.tally_tag_whitelist import ...` succeeds
+  inside the bundle)
+
+Combined with the source-level GUI smoke (which exercises the same
+Python code that PyInstaller packages), TallySlim is validated
+end-to-end.
+
+**AV caveat for bookkeeper rollout**: expect ~1 in 5 Windows machines
+to trip their antivirus on first run. Symptom and remediation vary by
+AV product:
+
+- **Windows Defender**: admin PowerShell + `Add-MpPreference -ExclusionPath`
+- **McAfee LiveSafe**: turn off Real-Time Scanning briefly, add
+  TallySlim.exe to Excluded Files, re-enable
+- Others (Norton, Kaspersky, etc.): same pattern — whitelist the exe
+
+Both `README.md` and `BUILD.md` now document both AV variants explicitly
+with per-product remediation steps. Code-signing would eliminate the
+issue across all AV products but is out of scope ($200-500/year).
 
 ## Full test suite
 
@@ -114,14 +132,14 @@ TallySlim-v0.1.0.zip
 └── README.md
 ```
 
-## Known limitations
-
-- **Defender AV false-positive on some machines** — unsigned PyInstaller
-  bootloader gets flagged. Mitigation requires admin Defender exclusion
-  per-machine OR code-signing cert (out of scope). Expected failure rate:
-  ~1 in 5 Windows machines. See [BUILD.md](../tools/tally_slim/BUILD.md#windows-defender-av-blocks-createprocess-contains-a-virus)
+- **AV false-positive on some machines** — unsigned PyInstaller
+  bootloader gets flagged across multiple AV products (Windows Defender,
+  McAfee LiveSafe, Norton, Kaspersky). Mitigation requires adding
+  TallySlim.exe to the AV's exclusion list per-machine OR code-signing
+  cert (out of scope). Expected failure rate: ~1 in 5 Windows machines.
+  See [BUILD.md](../tools/tally_slim/BUILD.md#antivirus-blocks-createprocess-contains-a-virus)
   and [README.md](../tools/tally_slim/README.md#first-time-windows-warning-one-of-two-variants)
-  for user-facing guidance.
+  for per-AV remediation steps.
 - **SmartScreen warning on first run per new machine** — milder cousin
   of the above. Users click "More info -> Run anyway" once per machine.
   One-time annoyance, no admin needed.
