@@ -699,7 +699,48 @@ scope partitioning.
 
 ---
 
-## 10. Change log
+## 10. Custom-page bundle-refactor threshold
+
+Recorded here (rather than per-page) so subsequent custom pages
+across the app inherit the rule without re-litigating it each
+time. Origin: Week 4 Item 1+2 (Mapping Decision Review Page)
+prose refinement, see `docs/week4_review_ui_design.md §1.12`.
+
+**Default**: a custom Frappe Page's JS entrypoint ships inline
+— all panel classes in the single `<page_name>.js` file, no
+`<page_name>.bundle.js` wrapper, no `hooks.py` `app_include_js`
+entries for the page. This keeps the asset graph simple and
+avoids `bench build` churn during development.
+
+**Refactor to a bundle when EITHER holds**:
+
+1. The inline file crosses **2,500 lines** — at that size,
+   reading end-to-end in one session stops being practical; the
+   page is better split into 3-5 focused modules (e.g. a list
+   pane, a detail pane, a controller, a shared utilities file)
+   that each read cleanly.
+2. **Item 6 (Tier-2 fuzzy) or any future Item** adds meaningful
+   ranking / algorithm logic that warrants its own testable
+   module. Algorithmic code should not live inline with DOM
+   rendering — the moment ranking logic appears, it splits out
+   regardless of line count.
+
+Both triggers are "refactor now" not "refactor soon." If the
+line-count trigger fires mid-implementation, pause, refactor,
+then resume.
+
+**Precedent**: ERPNext Point of Sale (~4,400 JS lines + ~1,400
+SCSS) uses a bundle with 8 modules. Worth looking at
+`erpnext/public/js/point-of-sale.bundle.js` for the split
+pattern if we cross the threshold on any page.
+
+**Not in scope for this rule**: SCSS / CSS. Page-specific
+stylesheets can stay inline up to any size; CSS doesn't suffer
+from readability-at-scale the way JS does.
+
+---
+
+## 11. Change log
 
 | Date | Change |
 |------|--------|
@@ -717,3 +758,4 @@ scope partitioning.
 | 2026-04-20 | **Company configuration corrections (CACSPU)** applied via `frappe.db.set_value` on erp.jewonline.in: `default_payable_account` changed from `Unsecured Loans Payable - CACSPU` → `Sundry Creditors - CACSPU`. The previous value was inconsistent with RGI §5.3 ("Dr to Sundry Creditors") and would have caused reviewer-edited Purchase Invoices on CACSPU to default-populate the wrong payable account, contaminating reporting. Surfaced during gen #3 research. `stock_received_but_not_billed` verified unchanged (already correctly set to `Stock Received But Not Billed - CACSPU`, same as peer companies JEWIPL + DD). No DocType schema change; Company-record setting only. |
 | 2026-04-20 | **`Tally Migration Session` schema** — added `generated_advance_je` (Link → Journal Entry, read-only) + `generated_advance_je_reference` (Data) fields adjacent to the existing `generated_je_draft` / `generated_je_reference` pair in the Output Artifacts section. Enables gen #3's idempotency pattern + Week-4 UI to cleanly display all four generator artifacts per session. Applied via `dt.save()` on bench + `bench migrate` + scp JSON bridge. |
 | 2026-04-20 | **Generator #3 landed** — Party-wise Dr JE (`advance_je.py`). Per RGI §5.3, one Opening Entry JE per session carrying every net-Dr supplier balance with `is_advance="Yes"`, balanced by `Temporary Opening - {ABBR}`, reference `OB-{ABBR}-2026-02`. 11 unit tests, strict scope. Draft only, never auto-submit. Full-file smoke deferred to end-of-Week-3 integration across all 4 generators. |
+| 2026-04-22 | §10 Custom-page bundle-refactor threshold added. Rule: inline by default; refactor to a bundle when the page's JS file exceeds 2,500 lines OR when Item 6 (Tier-2 fuzzy) adds meaningful ranking logic. Change log renumbered §10 → §11. Origin: Week 4 Item 1+2 (Mapping Decision Review Page) prose refinement 7, see `docs/week4_review_ui_design.md §1.12`. |

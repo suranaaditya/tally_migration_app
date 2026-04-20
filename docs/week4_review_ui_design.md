@@ -17,6 +17,7 @@ and the 58 entities to follow?"
 |---|---|
 | 2026-04-20 | Initial draft of §1 (list view) and §2 (detail view) as two separate Items — see commit `37831ca`. |
 | 2026-04-20 | Revised §1 to unified **Mapping Decision Review Page (master-detail)**. Items 1+2 merge into a single deliverable; §2 is retired. Items 3-9 unchanged in numbering. Driver: Aditya's call after research phase showed POS-style custom Page is the right shape for reviewer throughput. Build budget 8-10 hrs across 3-4 sessions. |
+| 2026-04-20 | Refinement pass on §1 — 7 tweaks from Aditya's review of `70241e5`, OQ1-6 resolutions embedded in relevant sections, Undo elevated from stretch to v1. Detail in §1.14. Prose now implementation-ready. |
 
 ---
 
@@ -69,15 +70,21 @@ blocking the OIT CSV and party-advance JE. 39 decisions total.
 6. Aditya types `Bank of Maharashtra A/c` in the
    `final_account` field. Frappe's Link autocomplete surfaces
    `Bank of Maharashtra A/c No. - 60451303968 (Capital) - CACSPU`.
-   He picks it. `review_action` auto-flips to `Manual Override`
-   (because `final_account` no longer equals the empty
-   `proposed_account`).
-7. Presses **`a`** (approve — save + advance) OR clicks the
-   **Save & Next** button. Backend whitelist method persists the
-   decision; master pane's row indicator flips from orange to
-   green, optimistic-UI re-sorts so the next pending row takes
-   the top slot; detail pane updates with the next decision's
-   doc. Total click-to-next: ~300 ms.
+   He picks it. `review_action` auto-flips to `Approved` —
+   the row was `unmapped` (empty `proposed_account`), so filling
+   in a `final_account` is a straightforward approval, not an
+   override. `Manual Override` is reserved for the distinct case
+   where the mapper HAD a non-empty `proposed_account` and the
+   reviewer picks a different `final_account`. See §1.4 Section
+   4 for the full state-flip logic.
+7. Presses **`a`** (approve + advance) OR clicks the
+   **Approve & Next** button. Backend whitelist method validates
+   (non-empty `final_account`, non-Pending `review_action`),
+   persists the decision; master pane's row indicator flips from
+   orange to green, optimistic-UI re-sorts so the next pending
+   row takes the top slot; detail pane updates with the next
+   decision's doc. Total click-to-next: ~300 ms. A 5-second Undo
+   toast with a "Ctrl+Z to undo" hint appears in the page head.
 8. Next row is `G H R Education & Medical Foundation Nagpur`
    under `Branch / Divisions`. Aditya recognises it as an
    inter-entity receivable with no existing COA target. Presses
@@ -129,6 +136,28 @@ Click → `frappe.set_route("mapping-decision-review", frm.doc.name)`.
 The page reads the hash on load and selects the matching row. See
 §1.8 for state management details.
 
+**No-session landing** (`/app/mapping-decision-review` without a
+path segment): auto-redirects to the user's last-viewed session
+recorded in `frappe.model.user_settings["Mapping Decision Review"].last_session`.
+If no recent session is tracked (fresh user or cleared settings),
+shows the 404-shape empty state (§1.9 case 1). OQ5 resolved.
+
+**Page header controls** (top bar of the custom page, above both
+panes):
+
+- **Title**: current session name + fiscal year chip.
+- **Filter preset toggle**: *Pending* (default) / *All decisions*
+  — duplicated from §1.3 so it's always reachable without
+  scrolling the master pane.
+- **Switch Session dropdown** — Select populated from the user's
+  recent `Tally Migration Session` records (last 10, ordered by
+  `modified`). Picking an entry `frappe.set_route`s to the
+  equivalent URL for that session, preserving the `Review
+  Decisions` mental model for cross-entity audit. Added per OQ5
+  for reviewers auditing multiple entities in one sitting.
+- **Regenerate link**: small right-aligned "Back to session →"
+  link to `/app/tally-migration-session/<name>`.
+
 **Fallback — Desk list view**: the standalone Mapping Decision
 DocType (Option (a) from Open Question #1, confirmed 2026-04-20)
 retains its default Desk list view at `/app/mapping-decision`.
@@ -177,10 +206,11 @@ worth the event-handler work today.
   migration-critical "needs attention" bucket). *All decisions*
   drops the filter for diagnostic inspection.
 - **Tier multi-select**: `frappe.ui.FieldGroup` select with all
-  tier values. Composed AND with the preset filter. Open Question
-  §1.11 #1 — the `tier` DocType enum needs extending to include
-  `excluded_zero_balance`, `tier1_supplier_fuzzy`,
-  `pending_supplier_creation` before this is useful.
+  tier values. Composed AND with the preset filter. The `tier`
+  DocType Select enum is extended in Commit 1 of implementation
+  (alongside the `istable=0` flip) to include the three missing
+  values `excluded_zero_balance`, `tier1_supplier_fuzzy`,
+  `pending_supplier_creation`. OQ1 resolved.
 - **Root-type multi-select**: Select from
   Asset / Liability / Equity / Income / Expense. Useful for
   "clear all the bank cases together" workflows.
@@ -191,16 +221,27 @@ worth the event-handler work today.
 
 | # | Column | Source | Width | Notes |
 |---|---|---|---|---|
-| 1 | Indicator | derived from `review_action` | 8px | coloured dot (§1.9 palette) |
-| 2 | Tally Name | `tally_name` | ~32% | primary identifier, ellipsised at width |
-| 3 | Net Amount | `net_amount` (signed) | ~14%, right-align | formatted with sign + thousands sep |
-| 4 | Side | `net_side` | ~6% | `Dr` / `Cr` / `—` |
-| 5 | Tier | `tier` | ~16% | mapper-classification chip |
-| 6 | Proposed Account | `proposed_account` | ~24% | ellipsised; blank for unmapped |
-| 7 | Review Action | `review_action` | ~16% | current state chip |
+| 1 | Indicator | derived from `review_action` | 8px | coloured dot (§1.11 palette); carries the row's review-state signal |
+| 2 | Tally Name | `tally_name` | ~26% | primary identifier, ellipsised at width |
+| 3 | Parent Chain | `tally_parent_chain` | ~20%, truncated | last ~100 chars, ellipsised LEFT (so rightmost-specific parent is visible); tooltip shows full chain |
+| 4 | Net Amount | `net_amount` (signed) | ~14%, right-align | formatted with sign + thousands sep |
+| 5 | Side | `net_side` | ~6% | `Dr` / `Cr` / `—` |
+| 6 | Tier | `tier` | ~14% | mapper-classification chip |
+| 7 | Proposed Account | `proposed_account` | ~20% | ellipsised; blank for unmapped |
 
-Parent chain is deliberately absent — too long for list width,
-present in detail pane tooltip-free.
+**Column 7 rationale — Review Action dropped (refinement 6).**
+The prior design had a text column for `review_action`; re-read
+confirms it's redundant with the Indicator dot (column 1), which
+colour-codes the same state via the §1.11 palette. Granular
+within-colour distinctions (Pending Account Creation vs Pending
+Supplier Creation vs Pending Group Account Resolution; Approved
+vs Manual Override) are rarely decision-relevant at list-scan
+time — reviewer clicks through to the detail pane for that.
+Removing the column buys horizontal budget for a parent-chain
+snippet, which IS decision-relevant at scan time (e.g. "is this
+under Sundry Debtors or Bank Accounts?"). Parent-chain truncation
+ellipsises the LEFT so the innermost parent group — the one with
+the most classification signal — stays visible at narrow widths.
 
 **Default sort**: `review_action` ascending (Pending sorts
 first against the alphabetised Select enum), then `net_amount`
@@ -284,40 +325,87 @@ will have the visual location pre-learned.
 The work surface. Uses `frappe.ui.form.make_control` per field:
 
 - `review_action` Select — the primary state knob. 10 options
-  per deployed DocType enum. Auto-mutates based on other field
-  changes: if reviewer picks a `final_account` that differs
-  from `proposed_account`, flips to `Manual Override`; if
-  reviewer clears `final_account`, flips back to `Pending`.
+  per deployed DocType enum. Auto-mutates on `final_account`
+  change per this truth table (refinement 1):
+
+  | Starting state | Reviewer action | `review_action` flips to |
+  |---|---|---|
+  | `proposed_account` empty + `Pending` | picks a `final_account` | `Approved` |
+  | `proposed_account` empty + `Pending` | clears `final_account` | back to `Pending` |
+  | `proposed_account` non-empty + `Pending` | picks same as `proposed_account` | `Approved` |
+  | `proposed_account` non-empty + `Pending` | picks different `final_account` | `Manual Override` |
+  | `proposed_account` non-empty + `Pending` | clears `final_account` | back to `Pending` |
+  | Any | manually picks `Rejected` / `Deferred` / `Pending *` | Select value wins (no auto-flip) |
+
+  Key point: `Manual Override` is reserved for "reviewer picked
+  something DIFFERENT than the mapper's proposal." Unmapped +
+  reviewer picks = `Approved` (the reviewer agreed with "there
+  should be a mapping here" and supplied it; not an override of
+  an existing proposal).
+
 - `final_account` Link → Account — **scoped to the session's
   Company via `get_query`** (critical: CACSPU reviewers see
   only CACSPU accounts, not Dux Digitech / JEWIPL accounts).
-  See §1.11 #2 for the implementation-risk flag on standalone
-  `make_control` widgets.
-- `final_dr`, `final_cr` Currency — auto-populated from
-  `opening_dr` / `opening_cr` on initial render; editable for
-  Manual Override cases (e.g. reviewer splits a Tally balance
-  across two ERPNext accounts via linked sibling decisions —
-  handled via `requires_combine` / `combine_with` fields,
-  already in schema).
+  OQ2 resolved: implementation Commit 1 includes a 15-min spike
+  verifying `frappe.ui.form.make_control` + `get_query` on
+  Link fields works on a standalone (no-form) widget. If the
+  spike fails, fall back to fallback (a) — custom
+  `frappe.ui.form.ControlLink` subclass with overridden
+  `get_query`. Fallback (b) reserved as a last resort.
+
+- `final_dr`, `final_cr` Currency — **read-only in v1**
+  (refinement 2). Derived from `opening_dr` / `opening_cr` and
+  always equal to them. The splitting workflow — one Tally
+  balance → two or more ERPNext accounts via
+  `requires_combine` / `combine_with` — is deferred to v2 once
+  the DocType schema for split linkage matures coherently
+  (currently the `combine_with` CSV field is a schema stub
+  with no enforced semantics). See §1.10 scope fence.
+
 - `reviewer_notes` Small Text — free-text audit trail. Used for
   "why" documentation that doesn't fit the structured fields.
-  **Serves as the v1 comments replacement** (Open Question A
-  resolved: skip comments, lean on this field).
+  **Serves as the v1 comments replacement** (per earlier resolution:
+  skip comment threads, lean on this field for audit chronology).
+
+  **Chronology header** (refinement 3): on save, if
+  `reviewer_notes` is being appended to (non-empty incoming
+  value AND existing non-empty stored value), the backend
+  `save_decision` method prepends `[<user>, <YYYY-MM-DD HH:MM>]`
+  to the new content before concatenating with a blank line
+  separator. Example:
+
+  ```
+  [aditya@jewonline.in, 2026-04-22 10:14] Confirmed as inter-entity
+  receivable — GHR Education is a sibling RGI company; target ledger
+  will be created in Item 4.
+
+  [priya@jewonline.in, 2026-04-20 15:47] First-pass: tier unmapped,
+  Tally parent chain suggests Branch / Divisions.
+  ```
+
+  Preserves review chronology without a comment-thread UI.
+  Implementation is server-side (in `save_decision`); the UI
+  textarea simply shows the current full value and the new
+  input is concatenated on submit. See §1.12 for the backend
+  contract.
 
 **Section 5 — Assignment** *(custom minimal widget)*
 
 Two-element widget:
 - **Current assignee chip**: displays `<user> (avatar + name)`
   if the decision has an open ToDo row; empty state otherwise.
-- **Assign to... button**: opens `frappe.ui.Dialog` with a User
-  Link field and description textarea. On Submit, POSTs to
-  `frappe.desk.form.assign_to.add` with
-  `{doctype: "Mapping Decision", name: <decision>, assign_to: [<user>], description}`.
+  **Click-to-remove** (refinement 5): clicking the chip's `×`
+  icon calls `frappe.desk.form.assign_to.remove` with
+  `{doctype: "Mapping Decision", name: <decision>, assign_to: <user>}`.
+  Confirms via `frappe.confirm`, then repaints the chip as empty
+  on success. Removes forced navigation to the ToDo form for
+  assignment changes — reviewer never leaves the review page.
+- **Assign to... button** (shown when chip is empty, or as a
+  secondary "Reassign..." when chip is populated): opens
+  `frappe.ui.Dialog` with a User Link field and description
+  textarea. On Submit, POSTs to `frappe.desk.form.assign_to.add`
+  with `{doctype: "Mapping Decision", name: <decision>, assign_to: [<user>], description}`.
   Reloads the chip.
-
-No Remove-assignment in v1 — reviewer navigates to the ToDo
-itself (standard Frappe) for removal. Good enough until Week 4
-usage says otherwise.
 
 **Section 6 — Audit** *(read-only)*
 
@@ -347,10 +435,34 @@ primary on the right per Frappe convention):
 |---|---|---|---|
 | **Defer** | `d` | `review_action = Deferred` | "kick to next session" |
 | **Reject** | `r` | `review_action = Rejected` | "no mapping appropriate" |
-| **Request Creation** | `c` | `review_action = Pending Account Creation` *(or Pending Supplier Creation for vendor rows)* | opens an account-creation sub-dialog (Item 4 / Item 3) |
-| **Save & Next** (primary) | `a` / `Ctrl+S` | uses current field values — `review_action` is whatever the Select shows | default "Approve" flow |
+| **Request Creation** | `c` | `review_action = Pending Account Creation` *(or Pending Supplier Creation for vendor rows)* | opens a minimal-stub dialog with placeholder required fields (`parent = tally_root_type`, `is_group = 0`). Full Account / Supplier Creation Request workflow lands in Item 4 / Item 3. OQ3+OQ4 resolved. |
+| **Approve & Next** (primary) | `a` / `Ctrl+S` | **validates first** (see below), sets `review_action = Approved` (or `Manual Override` per §1.4 Section 4 truth table), saves, advances | default approval flow |
+| **Save Without Advance** (Actions menu) | `Ctrl+Shift+S` | saves current field state verbatim — whatever `review_action` the Select shows, no validation, stays on row | deliberate state preservation (e.g. save a partial `reviewer_notes` mid-thinking) |
 
-All four save the decision, then auto-advance (§1.7).
+Approve / Defer / Reject / Request Creation all auto-advance
+(§1.7); Save Without Advance stays on the current row.
+
+**`a` validation semantics** (refinement 4). Before save, the
+handler checks:
+
+1. `final_account` is non-empty (the reviewer has committed to
+   a target account).
+2. `review_action` is not `Pending` (a state transition has
+   actually occurred — guards against fat-fingered `a` while the
+   auto-flip logic hasn't run because the account picker was
+   abandoned).
+
+If either fails, the handler shows an **inline validation
+message** below the detail-pane footer ("Pick an account before
+approving" / "Review action is still Pending — confirm via the
+Select above"), does NOT save, does NOT advance. The reviewer
+fixes the input and retries.
+
+`Ctrl+S` deliberately skips this validation. It's the "save what
+I have, warts and all" escape hatch — useful when a reviewer
+wants to persist partial `reviewer_notes` while still thinking
+about the right `final_account`. Discoverability: mentioned in
+the `?` shortcut dialog.
 
 Additional shortcuts:
 
@@ -360,11 +472,23 @@ Additional shortcuts:
 | `Home` / `End` | first / last row |
 | `Enter` (focus in list) | move focus to detail's `final_account` field |
 | `Esc` (focus in detail) | discard unsaved field changes, keep row selection |
+| `Ctrl+Shift+S` | save verbatim (no validation), stay on row — also via Actions menu |
+| `Ctrl+Z` (focus anywhere on page, within 5 s of save) | trigger Undo toast action (§1.7) |
 | `?` | show shortcut reference (Frappe built-in dialog) |
 
-Ctrl+S is reused via `page.set_primary_action("Save & Next",
-handler, ...)` — Frappe's global Ctrl+S shortcut triggers the
-page's primary action automatically (`frappe/public/js/frappe/ui/keyboard.js:188`).
+`page.set_primary_action("Approve & Next", handler, ...)` wires
+the `a` button + Frappe's global Ctrl+S to the validating
+approve-and-advance handler. Ctrl+S in v1 calls the SAME handler
+as the `a` button — meaning Ctrl+S also validates. The
+"save-verbatim-no-validation" escape hatch described above is
+bound to a separate shortcut (`Ctrl+Shift+S`) and also exposed
+via a **Save Without Advance** menu item in the page's Actions
+dropdown. This keeps Ctrl+S aligned with the primary-action
+convention (non-surprising for Frappe users) while still offering
+the save-without-validation path discoverably. Reviewers who
+habitually Ctrl+S will get validation; the escape hatch is
+opt-in via the menu or the less-common shortcut.
+
 Single-letter shortcuts (`a`, `r`, `c`, `d`) register via
 `frappe.ui.keys.add_shortcut({page: this.page, ignore_inputs: false, ...})`
 — they only fire when focus is NOT in a text input, so they
@@ -385,11 +509,24 @@ On any successful save:
    `rgi_migration.rgi_migration.page.mapping_decision_review.mapping_decision_review.save_decision`
    (custom whitelist method; see §1.10).
 2. Show a **5-second Undo** toast (Gmail-style) in the page
-   head. Click → revert `review_action`, `final_account`,
-   `final_dr`, `final_cr`, `reviewer_notes` to pre-save values,
-   stay on current row. **Stretch for v1**; if implementation
-   budget runs tight, land without Undo and defer (§1.9 scope
-   fence).
+   head. Click (or `Ctrl+Z`) → revert `review_action`,
+   `final_account`, `reviewer_notes` to pre-save values, stay
+   on current row (undoes the advance as well). **V1 scope
+   commit** per OQ6 resolution — Aditya's explicit call for
+   reviewer cognitive load. If the build budget tightens, cut
+   scope elsewhere (e.g. Switch Session dropdown polish) before
+   cutting Undo.
+
+   Implementation: client-side `frappe.show_alert` with a
+   custom action handler that calls a separate
+   `rgi_migration.rgi_migration.page.mapping_decision_review.mapping_decision_review.undo_decision`
+   whitelist method. The backend method uses a per-session
+   in-memory `frappe.cache()` keyed by `<user>:<decision_name>`
+   holding the pre-save doc snapshot with a 10-second TTL
+   (covers clock skew). After 10 s the snapshot is gone and
+   Undo becomes a no-op with a "Too late to undo" alert.
+   Chronology header on `reviewer_notes` is NOT prepended on
+   undo — undo means "never happened."
 3. Re-fetch the master-pane list (same filter state).
 4. Compute the next row:
    - Find current selection in the refreshed result set.
@@ -441,8 +578,7 @@ master-pane filter). No client-side session hot-swap in v1.
 
 Four distinct empty states, each with its own messaging and CTA:
 
-**1. Session name missing or 404** —
-`/app/mapping-decision-review/` or
+**1. Session name 404 (segment present but invalid)** —
 `/app/mapping-decision-review/<invalid>`:
 
 > **Session not found.**
@@ -454,6 +590,14 @@ Four distinct empty states, each with its own messaging and CTA:
 > [Go to Session list] — `frappe.set_route("List", "Tally Migration Session")`
 
 Rendered via `page.get_empty_state()` (Frappe's built-in).
+
+**1a. No session segment** — `/app/mapping-decision-review`:
+auto-redirects to the user's last-viewed session via
+`frappe.model.user_settings["Mapping Decision Review"].last_session`
+(OQ5). If `last_session` is absent or the referenced session
+no longer exists, falls through to case 1 above. No empty state
+is shown for the redirecting path — the transition is
+transparent to the reviewer.
 
 **2. Session has zero mapping decisions yet** — reviewer opened
 a Session that hasn't been parsed/mapped:
@@ -503,7 +647,7 @@ a Week-5+ scope, or post-RGI enhancement.
 | Account Creation sub-dialog full build | Rough dialog in v1 (row-action `c` flips state + saves stub request); full create-now button wiring | Week 4 Item 4 |
 | Supplier Creation sub-dialog | Same shape as Item 4 | Week 4 Item 3 |
 | Reviewer-promotion (confirmed fuzzy → Mapping Rule) | Requires Tier-2 plus promotion workflow | Week 4 Item 5 |
-| 5-second Undo toast on save | Stretch — ships if v1 build budget allows, else defers | v2 or late v1 |
+| Editable `final_dr` / `final_cr` + balance-splitting workflow | `requires_combine` / `combine_with` schema exists as stub but has no enforced semantics; splitting one Tally balance across multiple ERPNext accounts is non-trivial (ordering, rounding, reconciliation). Deferred until schema matures coherently. | v2+ post-RGI |
 | Cross-session review inbox | Explicitly rejected per Aditya's scope call (one entity at a time) | Not planned |
 | Per-reviewer "my work queue" view | Same reason | Not planned |
 | Comment / email attachments on a decision | Out of workflow scope | Not planned |
@@ -548,8 +692,12 @@ Root-type chip in detail §1.4 section 1:
 | `Income` / `Expense` | grey-muted (should be rare given §2(a) exclusion) |
 
 Rows themselves are not background-colour-coded; only the
-indicator dot and the Tier chip carry colour. Matches the "don't
-fatigue the eye at 50-row pages" call.
+indicator dot (column 1) and the Tier chip (column 6) carry
+colour. Matches the "don't fatigue the eye at 50-row pages"
+call. The indicator dot is the sole representation of
+`review_action` in the list now that the Review Action text
+column has been dropped (§1.3 refinement 6); granular state
+distinctions are surfaced in the detail pane.
 
 ### §1.12 Build architecture
 
@@ -563,12 +711,15 @@ fatigue the eye at 50-row pages" call.
 | Backend mutations | `rgi_migration/rgi_migration/page/mapping_decision_review/mapping_decision_review.py` | ~200–400 (whitelist methods: `save_decision`, optionally `bulk_save_decisions`) |
 | Session form JS | `rgi_migration/rgi_migration/doctype/tally_migration_session/tally_migration_session.js` | +~15 lines (Review Decisions button wiring) |
 
-**No bundle**. Unlike POS which splits 8 controller files via
-`point-of-sale.bundle.js`, we inline all panel classes in the
-single page JS file. Expected total ~1,800 lines is within
+**No bundle in v1**. Unlike POS which splits 8 controller files
+via `point-of-sale.bundle.js`, we inline all panel classes in
+the single page JS file. Expected total ~1,800 lines is within
 read-in-one-session range; avoids `hooks.py` `app_include_js`
-entries and `bench build` complications. Refactor to a bundle if
-the file crosses 3,000 lines.
+entries and `bench build` complications. The bundle-refactor
+trigger is recorded in `docs/mapper_design_notes.md` per
+refinement 7: refactor when the file exceeds 2,500 lines OR
+when Item 6 (Tier-2 fuzzy) adds meaningful ranking logic that
+warrants its own module.
 
 **Backend methods** (under
 `rgi_migration/rgi_migration/page/mapping_decision_review/mapping_decision_review.py`):
@@ -576,14 +727,58 @@ the file crosses 3,000 lines.
 - `get_session_decisions(session_name, filters, start, page_length, order_by)`
   — thin wrapper around `frappe.get_list` that validates the
   reviewer has read access to the session's company, and
-  filters to `parent=<session_name>` implicitly. Used instead of
-  raw `frappe.desk.reportview.get` to enforce the company scope.
+  filters to `parent=<session_name>` implicitly (this filter
+  becomes `session=<session_name>` once the `istable=0` flip
+  adds the Link field). Used instead of raw
+  `frappe.desk.reportview.get` to enforce the company scope.
 - `save_decision(decision_name, review_action, final_account,
-  final_dr, final_cr, reviewer_notes)` — atomic update, returns
-  the refreshed doc.
+  reviewer_notes)` — atomic update, returns the refreshed doc.
+  `final_dr` / `final_cr` are NOT accepted as inputs in v1
+  (refinement 2 — they're derived server-side from
+  `opening_dr` / `opening_cr`). The method:
+  1. Loads the current doc, captures a snapshot for Undo.
+  2. Applies `review_action` and `final_account` from inputs;
+     re-derives `final_dr` / `final_cr` from
+     `opening_dr` / `opening_cr`.
+  3. Applies the chronology header to `reviewer_notes`
+     (refinement 3): if the incoming value is non-empty AND
+     differs from the stored value AND stored value is non-empty,
+     prepends `[<frappe.session.user>, <frappe.utils.now_datetime().strftime("%Y-%m-%d %H:%M")>]\n`
+     to the new content, then concatenates
+     `<new_content>\n\n<stored_value>`. If the stored value
+     is empty, no header is prepended (first-note case — the
+     `owner` + `creation` fields on the doc are the audit
+     anchor).
+  4. Validates, saves, stashes the pre-save snapshot in
+     `frappe.cache().hset("mdr_undo:<user>", decision_name, snapshot)`
+     with a 10 s TTL via `expire_on`.
+  5. Returns the refreshed doc.
+- `undo_decision(decision_name)` — reverts a decision to its
+  pre-save snapshot if one exists in `frappe.cache()` under
+  `mdr_undo:<frappe.session.user>` and is within the 10 s
+  TTL. Otherwise returns `{status: "expired"}` and the client
+  shows "Too late to undo." No chronology header is added on
+  undo (per §1.7).
 - `get_next_pending(session_name, after_decision_name, filters)`
   — server-computed "what's next" for auto-advance; avoids
   client-state-desync when two reviewers work the same session.
+- `get_session_scope(session_name)` — returns `{company, fiscal_year, recent_sessions}`
+  for the page header (title chip + Switch Session dropdown per
+  OQ5). `recent_sessions` is the current user's 10 most-recently-
+  modified Tally Migration Sessions filtered to ones the user
+  has read access to.
+- Company-scoped Account autocomplete:
+  - **Preferred path (OQ2 spike succeeds)**: no backend method
+    needed — `frappe.ui.form.make_control` with `get_query`
+    handles it client-side against the standard
+    `frappe.client.validated_get_list`.
+  - **Fallback (a) path**: still no backend method — a custom
+    `ControlLink` subclass overrides `get_query` and continues
+    to hit `frappe.client.validated_get_list`.
+  - **Fallback (b) path**, deprecated: a
+    `search_company_accounts(session_name, txt)` whitelist
+    method would be added. Listed only for completeness;
+    unlikely to be reached.
 
 **Data flow on row-click**:
 
@@ -605,99 +800,195 @@ User clicks row (or arrow key)
 **Data flow on save**:
 
 ```
-User presses `a` / Ctrl+S / Save & Next
+User presses `a` / Ctrl+S (Approve & Next — validates)
+  OR Ctrl+Shift+S (Save Without Advance — no validation)
+  → JS: (if Approve path) validate final_account non-empty +
+        review_action != Pending; abort + inline error on fail
   → JS: collect field values from section 4 controls
   → JS: frappe.call("…save_decision", {args})
-  → Server: update doc, commit, return refreshed doc
-  → JS: optimistic toast "Saved" with Undo
-  → JS: frappe.call("…get_session_decisions", {refresh}) OR
-     reuse cached list by splicing in the updated row
-  → JS: resort + reselect next row
+  → Server: re-derive final_dr/final_cr, apply chronology header
+     to reviewer_notes, save, stash Undo snapshot in cache
+  → JS: toast "Saved" with Undo button (5 s, Ctrl+Z also fires)
+  → JS: (auto-advance paths only — Approve/Defer/Reject/Request
+        Creation; NOT Save Without Advance) refresh list + resort
+     + advance to next row via get_next_pending
   → JS: frappe.db.get_doc(next_row) → update detail pane
 ```
 
-### §1.13 Open questions for Aditya
+### §1.13 Open-question resolutions (all resolved 2026-04-22)
 
-Unresolved before implementation kickoff. Listed in order of
-blocking-severity.
+Every OQ from the `70241e5` prose has been resolved and embedded
+in the relevant section. Kept here as a pointer index, not as
+open work.
 
-#### Open Question 1 — `tier` Select enum drift (carried over from prior §1)
+| OQ | Topic | Resolution | Landed in |
+|---|---|---|---|
+| 1 | `tier` Select enum drift | Extend enum as part of Commit 1 (alongside `istable=0` flip). | §1.3 filter bar note; §1.12 build architecture |
+| 2 | `get_query` on standalone `make_control` | 15-min spike in Commit 1; fallback (a) custom `ControlLink` subclass if spike fails. Fallback (b) deprecated. | §1.4 Section 4 `final_account` bullet; §1.12 backend |
+| 3 | Account Creation Request sub-dialog on `c` | Minimal stub with placeholder required fields (`parent = tally_root_type`, `is_group = 0`). Full CRUD in Item 4. | §1.6 action-buttons table |
+| 4 | Supplier Creation Request sub-dialog | Same shape as OQ3 for `pending_supplier_creation`. Full CRUD in Item 3. | §1.6 action-buttons table |
+| 5 | Session-less URL behaviour | Auto-redirect to `user_settings.last_session` with 404 fallback. Plus **Switch Session dropdown** in page header for mid-session context switching. | §1.1 page header controls; §1.9 case 1a |
+| 6 | Undo toast | **Elevated to v1 scope** per Aditya's explicit call for reviewer cognitive load. Cut scope elsewhere if budget tightens, not Undo. | §1.7 auto-advance step 2; §1.12 `undo_decision` backend |
 
-Still unresolved. The deployed `Mapping Decision.tier` Select
-options are missing `excluded_zero_balance`, `tier1_supplier_fuzzy`,
-`pending_supplier_creation`. Blocks the §1.3 tier filter widget.
+No open questions remain. Prose is implementation-ready.
 
-**Proposed resolution**: extend the Select options as the first
-commit of Item 1 implementation (alongside the `istable=0` flip).
-Captured in one `bench console` heredoc per the §5 schema-mutation
-recipe. Sign-off?
+### §1.14 Prose refinement change log
 
-#### Open Question 2 — `get_query` on standalone `make_control` (implementation risk)
+Detail of what changed between commit `70241e5` (initial §1
+master-detail prose) and this commit. For each refinement:
+what it fixes, which sections moved, and why it matters.
 
-The §1.4 Reviewer Action section requires company-scoped Account
-autocomplete. `frappe.ui.form.make_control(df, parent)` accepts a
-`get_query` function at form-level typically; verified behaviour
-on **standalone** (no `frm`) widgets is not yet confirmed.
+#### Refinement 1 — `review_action` auto-flip semantics
 
-**Proposed resolution**: Commit-1 of implementation should include
-a 15-min spike against a throwaway test page to verify
-`make_control` + `get_query` + Link field works standalone. If it
-doesn't, fall back to one of:
+**Before**: §1.0 step 6 and §1.4 Section 4 said that picking any
+`final_account` different from `proposed_account` flips
+`review_action` to `Manual Override`.
 
-- (a) Custom `frappe.ui.form.ControlLink` subclass with
-  overridden `get_query`.
-- (b) Server-side filtered autocomplete via a custom whitelist
-  method (`search_accounts(session_name, txt)`) + a
-  `frappe.ui.form.ControlAutocomplete`.
+**After**: a 6-row truth table in §1.4 Section 4 distinguishes:
+- unmapped → picks account → `Approved` (reviewer agreed there
+  should be a mapping and supplied it).
+- mapped (non-empty proposal) → picks same → `Approved`.
+- mapped → picks different → `Manual Override`.
+- mapped → clears → `Pending`.
+- Any → manually picks terminal state → Select value wins.
 
-Both fallbacks are ~30–45 min of work; (a) is preferred.
+**Why it matters**: `Manual Override` carried a specific
+semantic ("reviewer disagreed with mapper's proposal") that was
+being diluted when reviewers simply filled in unmapped rows.
+Downstream (reviewer-promotion to Mapping Rule in Item 5) wants
+to distinguish "new rule needed" (Approved on formerly unmapped)
+from "existing rule is wrong for this case" (Manual Override).
 
-Flag here so if the spike reveals blockage, we don't lose scope
-time chasing the Ideal path.
+§1.0 step 6 narrative updated to reflect the new flip. Cross-
+reference added from §1.0 to §1.4 Section 4.
 
-#### Open Question 3 — Account Creation Request sub-dialog in §1.6 `c` shortcut
+#### Refinement 2 — `final_dr` / `final_cr` read-only in v1
 
-When reviewer presses `c`, v1 options are:
+**Before**: §1.4 Section 4 showed these fields as editable, with
+a note that Manual Override could split a Tally balance across
+ERPNext accounts via `requires_combine` / `combine_with`.
 
-- **Minimal** — flip `review_action = Pending Account Creation`,
-  save, advance. Account Creation Request row is created as a
-  stub with just the link back to the decision; Item 4 builds
-  out the "fill in parent / is_group / type and Create Now"
-  fields and the approval UI.
-- **Inline dialog** — open a small dialog asking for
-  `new_account_parent` + `new_account_root_type` + `is_group`
-  before saving. Creates a fully-populated Account Creation
-  Request in one flow. Item 4 then just builds the
-  review-and-approve side.
+**After**: both fields are strictly read-only in v1, derived
+server-side from `opening_dr` / `opening_cr`. The splitting
+workflow is explicitly punted to v2 in §1.10 scope fence. §1.12
+`save_decision` drops them from the input schema and re-derives
+on save.
 
-Item 1+2 merged scope suggests **Minimal** is correct — less
-coupling, respects item boundaries. Confirm?
+**Why it matters**: `requires_combine` + `combine_with` is
+currently a schema stub with no enforced semantics — letting
+reviewers edit these fields in v1 would produce unvalidated data
+that we'd then have to migrate when splitting actually lands.
+Keeping them read-only means the v1 data model is guaranteed to
+match `opening_*` on save, so v2 can design the splitting
+schema cleanly without cleaning up v1 garbage first.
 
-#### Open Question 4 — Supplier Creation Request: same question
+#### Refinement 3 — `reviewer_notes` chronology header
 
-Identical shape to OQ3 for `pending_supplier_creation`. Presume
-same resolution (minimal stub in Item 1+2; Item 3 builds the
-Supplier Creation Request workflow). Confirm?
+**Before**: §1.4 Section 4 treated `reviewer_notes` as a single
+text field; multiple reviewers writing to the same decision over
+time would stomp each other's notes or accumulate unattributed
+concatenation.
 
-#### Open Question 5 — What happens if session-name path segment is `None` / URL has no segment?
+**After**: §1.12 `save_decision` backend auto-prepends
+`[<user>, <YYYY-MM-DD HH:MM>]` to new content on append,
+preserving chronology without a comment-thread UI. First-note
+case (empty stored value) skips the header — `owner` + `creation`
+cover the attribution. §1.4 Section 4 documents the client-side
+UX (reviewer just sees/edits the current full value; concatenation
+is server-side).
 
-`/app/mapping-decision-review` (no session) — three options:
+**Why it matters**: comment threads were deferred per the earlier
+"skip comments" resolution, but audit chronology IS
+migration-critical — the client will want to see "priya did X at
+time Y, aditya disagreed and did Z at time W" when reconciling.
+This is the lightest-weight way to preserve that signal.
 
-- **a** — 404 empty state per §1.9.
-- **b** — auto-redirect to most-recently-viewed session
-  (Frappe `user_settings` supports this cleanly).
-- **c** — render a session picker as the landing state.
+#### Refinement 4 — `a` shortcut validates before save
 
-Lean: **(b)** with a fallback to **(a)** if no recent session
-exists. Cheap via `frappe.model.user_settings.Mapping Decision
-Review.last_session`. Confirm?
+**Before**: `a` and Ctrl+S both saved unconditionally.
 
-#### Open Question 6 — Undo toast stretch item
+**After**: `a` (now "Approve & Next") validates
+`final_account != empty` and `review_action != Pending` before
+saving; failure shows an inline message without advancing.
+Ctrl+S is now bound to the SAME validating handler (non-surprising
+for Frappe users). The escape hatch is bound to `Ctrl+Shift+S`
+and exposed via an Actions menu "Save Without Advance" item.
 
-Per §1.7: implementation budget scope. I'd like to hold 30 min at
-end of v1 build to implement a Gmail-style 5-second Undo toast;
-if budget runs tight, defer to v2. Explicit OK to treat as
-stretch?
+**Why it matters**: the common failure mode was fat-fingering
+`a` immediately after a row-click before the reviewer had
+actually decided; without validation this created `Approved`
+rows with empty `final_account`, which then broke generator #1
+at regenerate time. Now `a` is reliably "I mean it" — Ctrl+Shift+S
+is the escape hatch for "save my thinking mid-stream."
+
+#### Refinement 5 — Assignment chip clickable to remove
+
+**Before**: §1.4 Section 5 required reviewers to navigate to the
+ToDo form to remove an assignment.
+
+**After**: clicking the chip's `×` icon calls
+`frappe.desk.form.assign_to.remove` via `frappe.confirm`; reviewer
+stays on the review page. Assign-to button morphs into a
+"Reassign..." secondary button when the chip is populated.
+
+**Why it matters**: the review page is the reviewer's primary
+workspace for the 30-min per-entity loop; forcing a navigation
+away for assignment changes broke flow. This makes assignment a
+first-class in-page action.
+
+#### Refinement 6 — Review Action column dropped in favour of Parent Chain snippet
+
+**Before**: master pane column 7 was a text chip for `review_action`.
+
+**After**: column 7 dropped; column 3 is a new Parent Chain
+snippet (truncated at ~100 chars, **left-ellipsised** so the
+innermost parent group stays visible); column widths
+re-balanced. The indicator dot (column 1) remains the sole
+list-level representation of `review_action` via the §1.11
+colour palette. Granular state distinctions move to the detail
+pane.
+
+**Why it matters**: `review_action` chip was redundant with the
+coloured dot at list-scan time — reviewers rarely need to
+disambiguate "Pending Account Creation vs Pending Supplier
+Creation" without clicking through. Parent chain, in contrast,
+is scan-relevant: "is this a Sundry Debtors ledger?" "is this
+under Bank Accounts?" are triage-relevant questions the prior
+list couldn't answer without entering detail.
+
+Left-ellipsising the parent chain preserves the most-specific
+ancestor (the one that differentiates between sibling ledgers),
+which is the part carrying actual classification signal.
+
+#### Refinement 7 — Bundle-threshold rule documented elsewhere
+
+**Before**: §1.12 carried a "refactor to bundle if file crosses
+3,000 lines" rule inline.
+
+**After**: rule moved to `docs/mapper_design_notes.md` (§11 in
+that doc) with updated thresholds (2,500 lines **or** Item 6
+adds meaningful ranking logic). §1.12 references it.
+
+**Why it matters**: the threshold is a cross-item concern (Item
+6 will contribute to the same file) and should live in the
+shared architectural-principles doc, not inside Item 1's prose.
+Avoids every subsequent item re-litigating "when do we bundle?"
+
+#### Undo elevation — OQ6 resolved at v1 scope
+
+Moved from "stretch if budget allows" to v1-committed scope per
+Aditya's explicit call for reviewer cognitive load. §1.7
+auto-advance step 2 is now unconditional; §1.10 scope fence no
+longer lists Undo as deferred; §1.12 backend adds an
+`undo_decision` whitelist method + `frappe.cache()`-backed 10 s
+TTL snapshot storage per user+decision. Ctrl+Z bound as an
+alternative trigger for the Undo toast.
+
+**Why it matters**: reviewers working through 2,300 decisions
+over 59 entities will fat-finger. The cognitive cost of "did I
+just approve something I shouldn't have?" uncertainty compounds
+across the migration. Undo is the cheapest possible mitigation
+and it matters most on a bulk-throughput workflow.
 
 ---
 
