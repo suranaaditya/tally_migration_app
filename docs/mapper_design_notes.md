@@ -579,7 +579,127 @@ rules that look active in review UIs and mask real gaps.
 
 ---
 
-## 8. Change log
+## 8. Generator conventions (Work Item 7)
+
+These are post-mapper concerns — shared across generators #1-#4 so the
+four artefacts (main JE, OIT CSV, party-Dr JE, students CSV) stay
+consistent when a reviewer compares them or aggregates across entities.
+
+### 8.1 CSV format conventions
+
+- **Encoding**: UTF-8, no BOM.
+- **Line endings**: `\n` (LF). ERPNext's Import Data tool and most Indian
+  accounting workflows handle either, but LF keeps diffs clean in git if
+  a CSV ever gets committed for regression testing.
+- **Quoting**: RFC 4180 — only wrap fields in double-quotes when the
+  value contains `,`, `"`, or a newline. Escape embedded `"` as `""`.
+- **Date columns**: always ISO 8601 (`YYYY-MM-DD`) regardless of how the
+  RGI rules doc examples display dates. Rationale: RGI examples show
+  localised DD-MM-YYYY (`01-04-2026`), but that's UI presentation, not a
+  storage contract. ERPNext's Import Data tool parses ISO natively and
+  without locale ambiguity; the Desk UI re-renders per user preference
+  after import. Keeping storage/interchange ISO avoids a class of
+  import-tool bugs where DD-MM vs MM-DD is ambiguous.
+- **Currency / amounts**: 2 decimal places, no thousands separator, no
+  currency symbol. E.g. `125000.00`, not `₹1,25,000.00` and not `125000`.
+- **Integer-like columns that are stored as Data in the target DocType**
+  (e.g. OICT Item's `qty` field) write as string literal `"1"`, not `1`.
+  Reflects the DocType's actual type so Import Data doesn't coerce
+  unpredictably.
+
+### 8.2 Generator performance — parse-and-map caching
+
+Week 3 generators reparse the Tally XML and re-run the full Tier-1
+mapper on every regeneration. Acceptable for dev cycle (2-3s on
+CACSPU's 221 MB file) and removes a persistence layer that would
+otherwise need its own schema + invalidation logic.
+
+**Week 4+ optimisation** (deferred): persist `ParsedTallyTB` and the
+`list[MappedDecision]` to the Tally Migration Session on first parse
+(JSON attach or pickle blob). Subsequent regenerations read from
+cache; cache invalidates on source-file SHA-256 change or explicit
+reviewer "reset parse" action. Do not do this inside a generator
+module — the cache is a session-lifecycle concern, not a
+generator-lifecycle concern. The review UI workflow is the natural
+owner.
+
+### 8.3 Supplier re-check ordering (Order A)
+
+Generators #2 (OIT CSV) and #3 (party-advance JE) must re-check every
+resolved supplier against the live ERPNext Supplier master at
+generation time — between mapping and generation the master can have
+disabled, deleted, or renamed rows.
+
+**Ordering**: **all-suppliers-first, batch error**. The generator
+iterates the supplier-resolving decisions once, collects every
+missing/disabled supplier into a list, then refuses the whole run
+with a single error message that cites ALL problems at once. Not
+first-encountered-refusal, not one-by-one.
+
+Rationale: reviewer sees the complete set of issues in a single trip.
+First-encountered refusal forces N re-runs for N problems. The
+single-pass implementation is also cheaper — one `frappe.get_all`
+batch lookup instead of N individual `frappe.get_doc` calls.
+
+Example refusal message:
+
+```
+Cannot generate OIT CSV for session {name}: 3 supplier resolution issues:
+  - Nilesh Traders: deleted from Supplier master
+  - Abhi Tria: disabled
+  - Gulab Hardware: deleted from Supplier master
+Re-run mapping or restore/enable suppliers, then regenerate.
+```
+
+Applies identically to generator #3's supplier re-check step.
+
+### 8.4 Artefact filename convention
+
+CSV / attachment filenames produced by generators use the pattern:
+
+```
+{artefact}-{ABBR}-{fiscal_year}-{YYYYMMDDHHMMSS}.{ext}
+```
+
+e.g. `oit-CACSPU-2026-2027-20260420091530.csv`,
+`students-CACSPU-2026-2027-20260420091530.csv`.
+
+Note: uses `fiscal_year` in **full form** (`2026-2027`), not
+`fiscal_year_short` (`26-27`). Rationale: `fiscal_year_short` is a
+hidden, read-only field on `Tally Migration Session` with no
+auto-population hook (confirmed 2026-04-20 during the autoname
+diagnostic). Week-4 UI workflows that create sessions through Desk
+would leave it blank, breaking any filename template that depends on
+it. `fiscal_year` is always populated (required field) and fully
+self-documenting in the filename.
+
+The trailing `YYYYMMDDHHMMSS` timestamp preserves an audit trail in
+the File Manager when a session regenerates — the old file is
+deleted from the session attachment link, but prior versions remain
+distinguishable by timestamp for forensics.
+
+---
+
+## 9. Week-3 → Week-4 carry-over
+
+Explicit list of items generated during Work Item 7 (Week 3) that are
+correctly deferred to Week 4. Not bugs, not technical debt — known
+scope partitioning.
+
+| Item | Why it's Week 4 |
+|---|---|
+| Residual ~21 unmapped on CACSPU | Name-divergence cases (Bank of Maharashtra (Cap) vs Bank of Maharashtra A/c No. ...). Tier-2 fuzzy + Account Creation Request workflow is exactly designed for these. Writing per-case Mapping Rules would be churn. |
+| 18 `pending_supplier_creation` on CACSPU | Real vendors needing ERPNext Supplier master rows created. Review UI workflow drives this, not generator code. |
+| `fiscal_year_short` auto-pop hook | Needed for Desk-created sessions. Can be a tiny `before_insert` hook in `tally_migration_session.py` (`"{YY}-{YY+1}"` from `fiscal_year`). Trivial when ready. |
+| Generator #1 full-file smoke on real data | Blocked by refusal until reviewers clear the 21 unmapped. Synthetic-fixture unit tests cover the happy path. Acceptance criterion for gen #1 in Week 3 is "code + refusal contract + unit tests", not "Draft JE visible in ERPNext UI". |
+| `ParsedTallyTB` + decisions persistence | Per §8.2 — session-lifecycle concern. Review UI is the natural owner. Generators reparse-and-remap until then. |
+| `Tally Migration Session Event` child table | Prose-design mentioned it; doesn't exist. Generators log deletion/warning events to `session.error_log` (Long Text) as timestamped blocks in the interim. Clean schema migration when Week-4 UI wants structured events. |
+| Stale pre-Decision-1 mappings with `pending_supplier_creation` on now-zero-balance ledgers | Currently moot (no persisted sessions). Week-4 review UI should re-run mapping on load for any session whose source-file SHA-256 matches the stored parse — cheap and always consistent with current mapper behaviour. |
+| CACSPU Company's `Stock Received But Not Billed` default | Detected during gen #2 Q5 verification: direct `Purchase Invoice.validate()` fails because this default account isn't set on the Company. OICT's own `make_invoices()` works (takes a different code path), so OIT CSV workflow is unaffected. But reviewer-edited Purchase Invoices on CACSPU post-import may hit this. Fix via Company setup, not code. |
+
+---
+
+## 10. Change log
 
 | Date | Change |
 |------|--------|
@@ -592,3 +712,4 @@ rules that look active in review UIs and mask real gaps.
 | 2026-04-19 | §6.4 Fuzzy false-positive pattern added. Documents the 7 jewonline-dev-bench false positives from Work Item 6, the rule that threshold 85% stays as designed, and negative-alias-rule mitigation over threshold tightening. |
 | 2026-04-19 | §7 Leaf-only posting principle added. Articulates that all Tally/ERPNext postings happen at leaf level; group-account refusal in §2(b) is a correctness requirement, not a defensive check. First recorded example: §4.10 Student Fee Outstanding paused because the name is a group in Tally on educational entities, routing through dux_voucher's per-student CSV instead. |
 | 2026-04-20 | §7 extended with "Cross-app architectural boundary" subsection. §4.10 fully deprecated (removed from seed library; DocType row deleted). Parser extended with AGGREGATE_STUDENT_ACCOUNT_NAMES frozenset — aggregate student control accounts now flagged `is_student_ledger=True` alongside per-student leaves. Total seed count: 23 → 22. |
+| 2026-04-20 | §8 Generator conventions added — CSV format (ISO 8601, UTF-8, RFC 4180), parse/map caching deferred to Week 4, all-suppliers-first batch refusal (Order A), and the artefact filename convention using `fiscal_year` in full form (avoids the `fiscal_year_short` auto-pop gap). §9 Week-3 → Week-4 carry-over added — explicit list of deferred items (residual unmapped, supplier creations, session-event child table, parse cache, `fiscal_year_short` hook, CACSPU `Stock Received But Not Billed` default). Change log renumbered §8 → §10. |
