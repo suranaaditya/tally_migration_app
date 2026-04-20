@@ -35,6 +35,7 @@
 *.py[cod]
 *.pyc
 *.py~
+*.spec
 *.swo
 *.swp
 *debug.log

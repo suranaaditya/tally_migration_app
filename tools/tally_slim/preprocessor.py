@@ -34,6 +34,7 @@ import logging
 import sys
 import time
 import traceback
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -250,15 +251,25 @@ def _write_tallymessage(out, serialized_child: str) -> None:   # noqa: ANN001
 # Streaming pass
 # ---------------------------------------------------------------------------
 
+_PROGRESS_CALLBACK_EVERY = 100   # emit progress after every N TALLYMESSAGE entities
+
+
 def _stream_and_filter(
     input_path: Path,
     output_path: Path,
     summary: RunSummary,
+    progress_callback: Callable[[int], None] | None = None,
 ) -> None:
     """Single streaming pass: iterparse REQUESTDESC + TALLYMESSAGE, filter, write.
 
     Side effects: populates ``summary.kept_*`` and ``summary.dropped_by_type``.
     Raises ``InputError`` on XML parse failure.
+
+    If ``progress_callback`` is supplied, it's invoked as
+    ``progress_callback(tallymessage_count_so_far)`` every
+    :data:`_PROGRESS_CALLBACK_EVERY` entities plus once at end.  Throttled
+    to keep UI-thread marshal overhead bounded.  The GUI runs a separate
+    pre-scan to obtain the denominator for the progress bar.
     """
     # Emit tags: REQUESTDESC (envelope metadata) + TALLYMESSAGE (entity wrappers).
     # Both tags fire end events; REQUESTDESC appears before any TALLYMESSAGE
@@ -266,6 +277,7 @@ def _stream_and_filter(
     # on first TALLYMESSAGE to keep the output structurally valid.
     prologue_written = False
     request_desc_xml: str | None = None
+    msg_count = 0
 
     with output_path.open("w", encoding="utf-8", newline="\n") as out:
         try:
@@ -299,6 +311,12 @@ def _stream_and_filter(
                         _write_prologue(out, None)
                         prologue_written = True
                     _process_tallymessage(elem, out, summary)
+                    msg_count += 1
+                    if (
+                        progress_callback is not None
+                        and msg_count % _PROGRESS_CALLBACK_EVERY == 0
+                    ):
+                        progress_callback(msg_count)
 
                 # Aggressive clear — bound memory to one TALLYMESSAGE + ancestors.
                 elem.clear()
@@ -320,6 +338,10 @@ def _stream_and_filter(
                 "Input contained no TALLYMESSAGE entities — slim output is empty"
             )
         _write_epilogue(out)
+
+    # Emit a final progress tick so the bar reliably reaches its denominator.
+    if progress_callback is not None and msg_count > 0:
+        progress_callback(msg_count)
 
     # Post-flight: if zero entities kept, treat as input error.
     if summary.kept_ledger == 0 and summary.kept_group == 0:
@@ -496,12 +518,37 @@ def _write_log_safe(log_path: Path, summary: RunSummary, error_text: str | None)
         _log.warning("could not write sidecar log at %s: %s", log_path, exc)
 
 
+def count_tallymessages(input_path: str | Path) -> int:
+    """Pre-scan: count TALLYMESSAGE end events.
+
+    Exposed separately from ``preprocess()`` so the GUI can compute a
+    progress-bar denominator before the main conversion runs.  On the
+    CACSPU 221 MB reference file this takes ~3-6 seconds.  Uses the same
+    aggressive-clear memory discipline as ``_stream_and_filter``.
+    """
+    path = str(input_path)
+    n = 0
+    ctx = etree.iterparse(
+        path, events=("end",), tag="TALLYMESSAGE",
+        recover=True, huge_tree=True,
+    )
+    for _, elem in ctx:
+        n += 1
+        elem.clear()
+        parent = elem.getparent()
+        if parent is not None:
+            while elem.getprevious() is not None:
+                del parent[0]
+    return n
+
+
 def preprocess(
     input_path: str | Path,
     output_path: str | Path,
     *,
     strict: bool = True,
     log_path: str | Path | None = None,
+    progress_callback: Callable[[int], None] | None = None,
 ) -> RunSummary:
     """Run one preprocessing pass; return the summary or raise on failure.
 
@@ -509,12 +556,18 @@ def preprocess(
     is the canonical run record whether success or failure.
 
     Args:
-        input_path:  Full Tally All Masters XML to read.
-        output_path: Slim UTF-8 XML to write.
-        strict:      If True, re-parse the output via rgi_migration's parser
-                     and raise ``StrictValidationError`` if parsing fails.
-        log_path:    Sidecar log path (defaults to ``<output>.log``; always
-                     overwrite mode).
+        input_path:        Full Tally All Masters XML to read.
+        output_path:       Slim UTF-8 XML to write.
+        strict:            If True, re-parse the output via rgi_migration's
+                           parser and raise ``StrictValidationError`` if
+                           parsing fails.
+        log_path:          Sidecar log path (defaults to ``<output>.log``;
+                           always overwrite mode).
+        progress_callback: Optional ``callback(tallymessage_count)`` invoked
+                           every 100 entities plus once at end.  Used by the
+                           tkinter GUI (``gui.py``) for progress-bar updates.
+                           Called from the preprocessing thread; caller is
+                           responsible for UI-thread marshalling.
 
     Returns:
         ``RunSummary`` populated with input/output sizes, kept/dropped
@@ -544,7 +597,10 @@ def preprocess(
         summary.input_encoding = enc
         summary.input_size = input_p.stat().st_size
 
-        _stream_and_filter(input_p, output_p, summary)
+        _stream_and_filter(
+            input_p, output_p, summary,
+            progress_callback=progress_callback,
+        )
         summary.output_size = output_p.stat().st_size if output_p.exists() else 0
 
         if strict:
