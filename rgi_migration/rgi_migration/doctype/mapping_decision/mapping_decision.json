@@ -1,6 +1,7 @@
 {
  "actions": [],
  "allow_rename": 1,
+ "autoname": "naming_series:",
  "creation": "2026-04-19 19:56:19.668303",
  "doctype": "DocType",
  "editable_grid": 1,
@@ -37,7 +38,9 @@
   "flagged_for_email",
   "promoted_to_rule",
   "requires_combine",
-  "combine_with"
+  "combine_with",
+  "session",
+  "naming_series"
  ],
  "fields": [
   {
@@ -112,7 +115,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Tier",
-   "options": "tier1_exact\ntier1_rule\ntier1_pattern\ntier2_fuzzy\ntier3_claude\nunmapped\nexcluded_pnl\ngroup_refused\nanti_pattern_blocked\npending_account_creation"
+   "options": "tier1_exact\ntier1_rule\ntier1_pattern\ntier2_fuzzy\ntier3_claude\nunmapped\nexcluded_pnl\ngroup_refused\nanti_pattern_blocked\npending_account_creation\nexcluded_zero_balance\npending_supplier_creation\ntier1_supplier_fuzzy"
   },
   {
    "fieldname": "proposed_account",
@@ -221,13 +224,29 @@
    "fieldname": "combine_with",
    "fieldtype": "Small Text",
    "label": "Combine With (sibling decision idxs, CSV)"
+  },
+  {
+   "fieldname": "session",
+   "fieldtype": "Link",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Session",
+   "options": "Tally Migration Session",
+   "reqd": 1
+  },
+  {
+   "default": "MD-.YYYY.-.#####",
+   "fieldname": "naming_series",
+   "fieldtype": "Select",
+   "label": "Naming Series",
+   "options": "MD-.YYYY.-.#####",
+   "reqd": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
- "istable": 1,
  "links": [],
- "modified": "2026-04-19 20:19:29.524546",
+ "modified": "2026-04-20 22:31:20.043117",
  "modified_by": "Administrator",
  "module": "Rgi Migration",
  "name": "Mapping Decision",

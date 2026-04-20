@@ -306,6 +306,75 @@ frappe.db.commit()
 
 Same pattern for any DDL: `ADD COLUMN`, `CHANGE COLUMN`, etc.
 
+### `idx` is NOT an orphan to drop when flipping `istable` from 1 → 0
+
+Despite being a child-table column in some readings, `idx` is
+**framework-universal** — Frappe's generic `INSERT INTO` statement
+includes `idx` as a column on every DocType, child or standalone. It
+backs the default-ordering semantics (`ORDER BY idx` in Desk list
+queries) and isn't exposed as a declared field in the DocType JSON;
+it's auto-added by Frappe at table-creation time.
+
+Dropping `idx` from a standalone DocType's SQL table breaks every
+subsequent insert with:
+
+```
+OperationalError: (1054, "Unknown column 'idx' in 'INSERT INTO'")
+```
+
+The orphan-drop list after an `istable = 1 → 0` flip is strictly
+the three child-only columns:
+
+- `parent`
+- `parenttype`
+- `parentfield`
+
+`idx` stays. If you already dropped it, restore with
+`ALTER TABLE \`tab<DocType>\` ADD COLUMN \`idx\` INT NOT NULL DEFAULT 0`
+(commit-flanked per the recipe above).
+
+Recorded after Week 4 Item 1 Commit 1 mis-dropped `idx` during the
+Mapping Decision istable flip and had to restore it in the same
+session.
+
+### `autoname` mode string requires a trailing colon for naming_series
+
+Frappe's naming dispatcher
+(`apps/frappe/frappe/model/naming.py:226` in v16.12) pattern-matches
+`autoname` string prefixes:
+
+```python
+if _autoname.startswith("field:"):
+    ...
+elif _autoname.startswith("naming_series:"):   # ← note trailing colon
+    ...
+elif _autoname.startswith("prompt"):
+    ...
+elif _autoname.startswith("format:"):
+    ...
+```
+
+Setting `DocType.autoname = "naming_series"` (no colon) fails every
+branch and falls through to the hash-name fallback — docs insert with
+10-character random names like `3sj54k3dp0` even when the
+`naming_series` field is populated with the correct pattern
+(`MD-.YYYY.-.#####` in our case) and the field default is set.
+
+Canonical `autoname` values:
+
+| Autoname mode | Correct string | Effect |
+|---|---|---|
+| naming_series-driven | `"naming_series:"` | reads the `naming_series` field on each doc and applies the pattern |
+| field-driven | `"field:<fieldname>"` | uses the literal value of `<fieldname>` as the doc name |
+| format-driven | `"format:<pattern>"` | uses a computed pattern against the doc |
+| user-prompted | `"prompt"` | UI prompts for name at insert |
+| random hash | empty or `"hash"` | 10-char random name fallback |
+
+Also recorded after Week 4 Item 1 Commit 1 — the trailing-colon
+requirement isn't obvious from the user-facing DocType form, and I
+missed it in the schema-flip script. Fix: single `dt.save()` with
+the colon appended, no DDL needed.
+
 ### Section Break / Data field fieldname collision
 
 When two fields on the same DocType both claim the same fieldname (e.g.
@@ -759,3 +828,4 @@ from readability-at-scale the way JS does.
 | 2026-04-20 | **`Tally Migration Session` schema** — added `generated_advance_je` (Link → Journal Entry, read-only) + `generated_advance_je_reference` (Data) fields adjacent to the existing `generated_je_draft` / `generated_je_reference` pair in the Output Artifacts section. Enables gen #3's idempotency pattern + Week-4 UI to cleanly display all four generator artifacts per session. Applied via `dt.save()` on bench + `bench migrate` + scp JSON bridge. |
 | 2026-04-20 | **Generator #3 landed** — Party-wise Dr JE (`advance_je.py`). Per RGI §5.3, one Opening Entry JE per session carrying every net-Dr supplier balance with `is_advance="Yes"`, balanced by `Temporary Opening - {ABBR}`, reference `OB-{ABBR}-2026-02`. 11 unit tests, strict scope. Draft only, never auto-submit. Full-file smoke deferred to end-of-Week-3 integration across all 4 generators. |
 | 2026-04-22 | §10 Custom-page bundle-refactor threshold added. Rule: inline by default; refactor to a bundle when the page's JS file exceeds 2,500 lines OR when Item 6 (Tier-2 fuzzy) adds meaningful ranking logic. Change log renumbered §10 → §11. Origin: Week 4 Item 1+2 (Mapping Decision Review Page) prose refinement 7, see `docs/week4_review_ui_design.md §1.12`. |
+| 2026-04-22 | §5 expanded with two schema-mutation clarifications captured during Week 4 Item 1 Commit 1 schema-migration work: (a) `idx` is framework-universal and must NOT be dropped as a child-table orphan; (b) autoname mode string requires a trailing colon (`"naming_series:"`, not `"naming_series"`) per the Frappe naming dispatcher. Both learned the hard way; both now load-bearing guardrails for the next `istable` flip. |

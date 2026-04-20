@@ -54,7 +54,6 @@
   "sb_notes",
   "reviewer_notes",
   "sb_children",
-  "mapping_decisions",
   "account_creation_requests",
   "supplier_creation_requests"
  ],
@@ -332,12 +331,6 @@
    "label": "Child Tables"
   },
   {
-   "fieldname": "mapping_decisions",
-   "fieldtype": "Table",
-   "label": "Mapping Decisions",
-   "options": "Mapping Decision"
-  },
-  {
    "fieldname": "account_creation_requests",
    "fieldtype": "Table",
    "label": "Account Creation Requests",
@@ -367,7 +360,7 @@
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-04-20 09:45:08.392024",
+ "modified": "2026-04-20 22:14:13.375986",
  "modified_by": "Administrator",
  "module": "Rgi Migration",
  "name": "Tally Migration Session",

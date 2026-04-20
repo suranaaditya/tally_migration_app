@@ -569,8 +569,8 @@ def _parse_and_map(
 
     Week-3 has no end-to-end workflow yet that persists mapper output on
     the session, so the generator re-parses and re-maps on demand. When
-    Week-4 adds a ``Mapping Decision`` child-table reader, replace this
-    helper.
+    Week-4+ adds a standalone ``Mapping Decision`` reader (session-linked
+    records populated by the review page), replace this helper.
 
     Rule source:    ``JsonFileRuleSource(docs/seed_plan.json)`` — the
                     committed seed file is the source of truth; the bench's

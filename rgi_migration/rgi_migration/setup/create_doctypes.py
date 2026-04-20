@@ -462,9 +462,14 @@ TALLY_MIGRATION_SESSION_SHELL = _dt(
         _f("sb_notes", "Notes", "Section Break"),
         _f("reviewer_notes", "Reviewer Notes", "Long Text"),
         # Child tables added in phase 2:
-        #   mapping_decisions           -> Mapping Decision
         #   account_creation_requests   -> Account Creation Request
         #   supplier_creation_requests  -> Supplier Creation Request
+        #
+        # NOTE (2026-04-22): `mapping_decisions` child table was removed
+        # as part of Week 4 Item 1 Commit 1. Mapping Decision is now a
+        # standalone DocType (istable=0) linked to the session via its
+        # own `session` Link field. Reads go through
+        # ``TallyMigrationSession.get_decisions()`` below.
     ],
 )
 
@@ -511,8 +516,9 @@ def run_phase1() -> dict:
 
 SESSION_CHILD_TABLE_FIELDS = [
     ("sb_children", "Child Tables", "Section Break", {}),
-    ("mapping_decisions", "Mapping Decisions", "Table",
-     {"options": "Mapping Decision"}),
+    # mapping_decisions child field removed 2026-04-22 — Mapping Decision
+    # is now a standalone DocType (istable=0) linked via its own
+    # `session` Link field. See patches/v1_0/migrate_decisions_to_standalone.py.
     ("account_creation_requests", "Account Creation Requests", "Table",
      {"options": "Account Creation Request"}),
     ("supplier_creation_requests", "Supplier Creation Requests", "Table",
