@@ -22,7 +22,9 @@ RGI migration system in your browser.
 6. Upload the **output** file (the smaller one) to the RGI migration
    system
 
-## First-time Windows warning
+## First-time Windows warning (one of two variants)
+
+### Variant A — SmartScreen warning (most common)
 
 The first time you run TallySlim on a new computer, Windows may show:
 
@@ -36,6 +38,26 @@ This is normal for newly-built tools. To proceed:
 2. Click **Run anyway**
 
 This happens once per computer and then goes away.
+
+### Variant B — Defender blocks the app entirely
+
+On some machines Windows Defender is more aggressive and refuses to
+launch TallySlim at all, with a message like:
+
+> Threat detected
+> This file contains a virus or potentially unwanted software.
+
+This is a **false alarm** triggered by Windows Defender's heuristics on
+new unsigned apps. The tool is not infected. To run it:
+
+1. Ask your IT team (or someone with admin rights on the machine) to
+   add the folder containing TallySlim.exe to Windows Defender's
+   exclusion list
+2. If that's not possible, send the quarantine notification ID to your
+   project administrator — they can request a Defender whitelist
+   update
+
+If neither works on your machine, contact support.
 
 ## If something goes wrong
 

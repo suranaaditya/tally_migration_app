@@ -59,6 +59,44 @@ run on a machine that hasn't seen the binary before. Users click
 code-signing certificate would eliminate this (~$200-500/year, out of
 scope for Work Item 8).
 
+### Windows Defender AV blocks CreateProcess ("contains a virus...")
+
+More severe than SmartScreen: on some machines Windows Defender's
+real-time protection actively blocks `CreateProcess` on the built exe
+with error `WinError 225` / "Operation did not complete successfully
+because the file contains a virus or potentially unwanted software."
+
+This is a false positive on the PyInstaller `runw.exe` bootloader
+template, not a real malware detection. Multiple independent projects
+ship PyInstaller-built exes and hit this periodically — Microsoft's
+heuristics rotate.
+
+Fix on the build machine (requires admin):
+
+    # PowerShell as Administrator
+    Add-MpPreference -ExclusionPath 'C:\path\to\rgi-migration-app\tools\tally_slim\dist'
+
+Fix on a bookkeeper's machine: the exclusion path approach above is
+the safest. Alternative: right-click the quarantine notification ->
+**Restore** -> **Allow on this device**. Bookkeepers without local
+admin rights must escalate to their IT team.
+
+Code-signing would eliminate this alongside SmartScreen — same mitigation,
+same out-of-scope cost. Until signing exists, expect the Defender issue
+to surface on ~1 in 5 Windows machines.
+
+### Smoke-testing the GUI without the exe
+
+`scripts/smoke_test_gui.py` drives the tkinter app programmatically
+against the source files (bypassing PyInstaller). Exercises the three
+spec scenarios (small sample, full CACSPU, non-XML error). Run this
+to validate GUI logic changes without rebuilding the exe:
+
+    python scripts/smoke_test_gui.py
+
+Does NOT validate PyInstaller bundle correctness (for that, run
+`TallySlim.exe` directly).
+
 ### UPX compression disabled intentionally
 
 UPX would cut the exe size by 30-40%, but UPX-packed binaries trigger
