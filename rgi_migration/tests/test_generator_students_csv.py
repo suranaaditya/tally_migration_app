@@ -276,6 +276,29 @@ def test_mixed_id_present_and_absent_multi_contributor() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 15. All-None tally_ids across multiple contributors — preserve count info
+# ---------------------------------------------------------------------------
+
+
+def test_all_none_tally_ids_multi_contributor_preserves_count() -> None:
+    """When every contributor in a multi-contributor group has
+    tally_id=None, remarks renders ``(all none, N contributors)`` instead
+    of a bare ``(none)`` — so the count signal survives the absence of
+    IDs. On CACSPU, 74% of student ledgers have tally_id=None, making
+    this the common multi-contributor shape rather than an edge case."""
+    rows = build_student_rows([
+        _ledger("ALL NONE STUDENT", tally_id=None, opening_dr=1000.0),
+        _ledger("ALL NONE STUDENT", tally_id=None, opening_dr=500.0),
+    ])
+    assert len(rows) == 1
+    assert rows[0].debit_amount == 1500.0
+    # Count-preserving format, not bare (none)
+    assert "(all none, 2 contributors)" in rows[0].remarks
+    # And NOT AUDIT_MERGED — no distinct non-null tally_ids by definition
+    assert not rows[0].remarks.startswith("AUDIT_MERGED:")
+
+
+# ---------------------------------------------------------------------------
 # 14. Aggregation sanity: totals-preservation invariant (authorized addition)
 # ---------------------------------------------------------------------------
 
