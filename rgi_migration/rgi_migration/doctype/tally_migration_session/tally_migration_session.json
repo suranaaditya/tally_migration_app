@@ -46,6 +46,8 @@
   "sb_output",
   "generated_je_reference",
   "generated_je_draft",
+  "generated_advance_je_reference",
+  "generated_advance_je",
   "generated_oit_file",
   "student_ledger_file",
   "temp_opening_amount",
@@ -346,12 +348,26 @@
    "fieldtype": "Table",
    "label": "Supplier Creation Requests",
    "options": "Supplier Creation Request"
+  },
+  {
+   "description": "Reference ID for the Advance JE, e.g. OB-CACSPU-2026-02 per RGI rules sec 6.2.",
+   "fieldname": "generated_advance_je_reference",
+   "fieldtype": "Data",
+   "label": "Advance JE Reference"
+  },
+  {
+   "description": "Party-wise Dr JE for vendor advances (generator #3, reference OB-{ABBR}-2026-02). Draft \u2014 reviewer submits in ERPNext after preview.",
+   "fieldname": "generated_advance_je",
+   "fieldtype": "Link",
+   "label": "Generated Advance JE",
+   "options": "Journal Entry",
+   "read_only": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "links": [],
- "modified": "2026-04-20 08:04:47.509840",
+ "modified": "2026-04-20 09:45:08.392024",
  "modified_by": "Administrator",
  "module": "Rgi Migration",
  "name": "Tally Migration Session",
