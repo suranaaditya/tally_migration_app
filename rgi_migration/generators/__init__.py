@@ -11,6 +11,13 @@ Work Item 7 scope:
 
 from __future__ import annotations
 
+from rgi_migration.generators.advance_je import (
+    AdvanceJEGenerationError,
+    AdvanceJEPayload,
+    AdvanceLine,
+    build_advance_je_payload,
+    generate_advance_je,
+)
 from rgi_migration.generators.oit_csv import (
     OITGenerationError,
     OITRow,
@@ -41,4 +48,10 @@ __all__ = [
     "build_oit_rows",
     "format_csv",
     "generate_oit_csv",
+    # Generator #3 — Party-wise Dr JE (vendor advances)
+    "AdvanceJEGenerationError",
+    "AdvanceJEPayload",
+    "AdvanceLine",
+    "build_advance_je_payload",
+    "generate_advance_je",
 ]
