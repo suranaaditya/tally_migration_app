@@ -33,6 +33,13 @@ from rgi_migration.generators.opening_je import (
     build_je_payload,
     generate_main_opening_je,
 )
+from rgi_migration.generators.students_csv import (
+    StudentRow,
+    StudentsCSVGenerationError,
+    build_student_rows,
+    generate_students_csv,
+    refuse_if_empty,
+)
 
 __all__ = [
     # Generator #1 — Main Opening JE
@@ -54,4 +61,10 @@ __all__ = [
     "AdvanceLine",
     "build_advance_je_payload",
     "generate_advance_je",
+    # Generator #4 — Students CSV (dux_voucher handoff)
+    "StudentRow",
+    "StudentsCSVGenerationError",
+    "build_student_rows",
+    "generate_students_csv",
+    "refuse_if_empty",
 ]
