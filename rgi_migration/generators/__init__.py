@@ -11,6 +11,15 @@ Work Item 7 scope:
 
 from __future__ import annotations
 
+from rgi_migration.generators.oit_csv import (
+    OITGenerationError,
+    OITRow,
+    SupplierInfo,
+    SupplierIssue,
+    build_oit_rows,
+    format_csv,
+    generate_oit_csv,
+)
 from rgi_migration.generators.opening_je import (
     MainJEGenerationError,
     MainJEPayload,
@@ -19,8 +28,17 @@ from rgi_migration.generators.opening_je import (
 )
 
 __all__ = [
+    # Generator #1 — Main Opening JE
     "MainJEGenerationError",
     "MainJEPayload",
     "build_je_payload",
     "generate_main_opening_je",
+    # Generator #2 — OIT CSV
+    "OITGenerationError",
+    "OITRow",
+    "SupplierInfo",
+    "SupplierIssue",
+    "build_oit_rows",
+    "format_csv",
+    "generate_oit_csv",
 ]
