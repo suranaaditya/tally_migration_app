@@ -126,15 +126,45 @@ def find_matching_anti_pattern(
     return None
 
 
+# Whitespace collapse + case-fold normalisation for Layer-3 exact match.
+# Tally users type ledger names with varied conventions (ALL CAPS, Title
+# Case, stray leading/trailing whitespace, double spaces). ERPNext COA is
+# usually Title Case from the initial import but can carry CSV-import
+# whitespace artefacts. Layer 3 must tolerate both sides' informality while
+# remaining strict enough to avoid false positives ("Cash" must not match
+# "Petty Cash"). Surfaced on CACSPU ledger "STUDENT PAYABLE CYBERVIDYA"
+# (all-caps Tally input) vs COA "Student Payable Cybervidya - CACSPU".
+_WS_RE = re.compile(r"\s+")
+
+
+def _normalize_for_match(s: str) -> str:
+    if not s:
+        return ""
+    return _WS_RE.sub(" ", s.strip()).lower()
+
+
 def resolve_exact_name(
     ledger: Any,
     coa: dict[str, Any],
     abbr: str,
 ) -> str | None:
-    """Layer 3 — construct ``<cleaned_tally_name> - {abbr}`` and check the
-    COA directly. Returns the resolved account name if present, else None.
-    The mapper applies the group-account refusal check separately; this
-    function does NOT filter by is_group.
+    """Layer 3 — construct ``<cleaned_tally_name> - {abbr}`` and scan the COA
+    with case-insensitive, whitespace-tolerant matching. Returns the COA key
+    with its *original* casing (so downstream Frappe Link-field resolution
+    keeps working) if a match is found, else None. The mapper applies the
+    group-account refusal check separately; this function does NOT filter
+    by ``is_group``.
+
+    Linear scan over the COA is fine at ~700 accounts × ~2000 ledgers on a
+    full-entity run (<2s mapping overhead). If the COA grows materially,
+    build a pre-normalised index once in ``load_coa``.
     """
-    candidate = f"{ledger.name} - {abbr}"
-    return candidate if candidate in coa else None
+    if not ledger.name:
+        return None
+    candidate_norm = _normalize_for_match(f"{ledger.name} - {abbr}")
+    if not candidate_norm:
+        return None
+    for coa_key in coa:
+        if _normalize_for_match(coa_key) == candidate_norm:
+            return coa_key
+    return None
