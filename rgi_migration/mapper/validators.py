@@ -4,8 +4,10 @@ These are code-level invariants, not data-driven rules. They do not live in
 the `Mapping Rule` DocType because they apply regardless of rule content.
 See docs/mapper_design_notes.md §2.
 
-Two validators:
+Three validators:
     pnl_root_type_exclusion   — pre-resolution. Short-circuits Income/Expense.
+    zero_balance_exclusion    — pre-resolution. Short-circuits Dr=0 AND Cr=0
+                                ledgers (Tally definitional noise).
     group_account_refusal     — post-resolution. Refuses proposals targeting
                                 an is_group account.
 
@@ -41,6 +43,37 @@ def pnl_root_type_exclusion(ledger: Any) -> ValidatorOutcome | None:
                 "transfer, not opening JE."
             ),
             counter_name="pnl_excluded_count",
+        )
+    return None
+
+
+def zero_balance_exclusion(ledger: Any) -> ValidatorOutcome | None:
+    """Exclude ledgers with no opening balance (Dr=0 AND Cr=0).
+
+    Tally exports every declared ledger regardless of balance — definitional
+    ledgers, closed-out accounts, and never-posted-to rows all appear in the
+    export. Per architectural decision 2026-04-20 these carry no migration
+    relevance and are short-circuited at the mapper boundary: no rule
+    evaluation, no exact-name lookup, no party routing, no Account Creation
+    Request. If the accounting team needs one later, it's created manually
+    in the ERPNext UI.
+
+    Order-of-operations: runs AFTER ``pnl_root_type_exclusion`` so a stale
+    non-zero P&L ledger still surfaces as ``excluded_pnl`` (its root_type,
+    not its balance, drives the exclusion), and a zero-balance P&L ledger
+    gets buckets as ``excluded_pnl`` too (consistent with root-type-first
+    thinking — reviewers investigating P&L export-flag issues see all P&L
+    in one bucket regardless of balance).
+    """
+    if ledger.opening_dr == 0 and ledger.opening_cr == 0:
+        return ValidatorOutcome(
+            review_action="Excluded (Zero Balance)",
+            excluded_reason=(
+                "Ledger carries no opening balance (Dr=0 AND Cr=0). Tally "
+                "exports every declared ledger; zero-balance rows are "
+                "definitional and have no migration relevance."
+            ),
+            counter_name="excluded_zero_balance_count",
         )
     return None
 

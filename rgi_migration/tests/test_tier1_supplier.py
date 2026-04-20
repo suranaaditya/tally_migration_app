@@ -41,8 +41,12 @@ class StubLedger:
     name: str
     root_type: str
     parent_chain: list[str] = field(default_factory=list)
+    # Non-zero default balance so supplier-routing tests exercise the
+    # intended path. A Dr=0 AND Cr=0 ledger short-circuits to
+    # excluded_zero_balance at the mapper boundary (architectural decision
+    # 2026-04-20), which would mask the supplier logic under test.
     opening_dr: float = 0.0
-    opening_cr: float = 0.0
+    opening_cr: float = 100.0
     tally_id: str | None = None
 
 

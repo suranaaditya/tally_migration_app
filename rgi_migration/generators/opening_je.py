@@ -494,6 +494,13 @@ def generate_main_opening_je(session_name: str) -> str:
         erpnext_company=erpnext_company,
     )
 
+    zero_count = sum(1 for d in decisions if d.tier == "excluded_zero_balance")
+    if zero_count:
+        LOG.info(
+            "Skipped %d zero-balance ledgers (Tally definitional noise — no "
+            "migration impact) for session %s", zero_count, session_name,
+        )
+
     # --- 4. Build payload ---------------------------------------------------
     reference_id = (
         session.generated_je_reference

@@ -50,7 +50,11 @@ class StubLedger:
     name: str
     root_type: str
     parent_chain: list[str] = field(default_factory=list)
-    opening_dr: float = 0.0
+    # Default to non-zero balance so these tests exercise the tier-1 paths
+    # they were written for. A Dr=0 AND Cr=0 ledger short-circuits to
+    # excluded_zero_balance (architectural decision 2026-04-20); tests that
+    # specifically want that path set both explicitly to 0.
+    opening_dr: float = 100.0
     opening_cr: float = 0.0
     tally_id: str | None = None
 

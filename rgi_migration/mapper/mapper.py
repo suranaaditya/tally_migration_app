@@ -11,11 +11,12 @@ Public API:
 Resolution order inside `Mapper.resolve`:
 
     1. Structural validator — P&L root-type exclusion (validators.py §a)
-    2. Anti-pattern match lookup (informational; applied to candidates below)
-    3. Positive rule match — exact_ci rules, then pattern-mode rules (tier1_rules.py)
-    4. Exact-name fallback against the ERP COA
-    5. Anti-pattern-only fallback (rule matched, no positive target resolved)
-    6. Unmapped
+    2. Zero-balance exclusion — Dr=0 AND Cr=0 ledgers (validators.py)
+    3. Anti-pattern match lookup (informational; applied to candidates below)
+    4. Positive rule match — exact_ci rules, then pattern-mode rules (tier1_rules.py)
+    5. Exact-name fallback against the ERP COA
+    6. Anti-pattern-only fallback (rule matched, no positive target resolved)
+    7. Unmapped
 
 Post-resolution filters applied to any candidate target:
     - Anti-pattern override: if the candidate equals the anti-pattern's
@@ -65,6 +66,7 @@ from rgi_migration.mapper.validators import (
     ValidatorOutcome,
     group_account_refusal,
     pnl_root_type_exclusion,
+    zero_balance_exclusion,
 )
 
 LOG = logging.getLogger(__name__)
@@ -175,10 +177,19 @@ class Mapper:
         if pnl:
             return self._excluded(ledger, pnl, tier="excluded_pnl")
 
-        # 2. Anti-pattern lookup (does not short-circuit by itself)
+        # 2. Zero-balance exclusion (architectural decision 2026-04-20).
+        #    Runs after P&L so stale non-zero P&L ledgers still bucket as
+        #    excluded_pnl (see validators.zero_balance_exclusion docstring)
+        #    and before anti-pattern / rule / exact-name / party routing
+        #    because there's no signal to match against a balance-free row.
+        zb = zero_balance_exclusion(ledger)
+        if zb:
+            return self._excluded(ledger, zb, tier="excluded_zero_balance")
+
+        # 3. Anti-pattern lookup (does not short-circuit by itself)
         anti = find_matching_anti_pattern(ledger, self._anti)
 
-        # 3. Positive rules — RUN FIRST, before party routing. §4 includes
+        # 4. Positive rules — RUN FIRST, before party routing. §4 includes
         #    rules whose targets live under Sundry Creditors in Tally
         #    (§4.6 Unpaid Expenditure Account, §4.7 Payable A/c). If the
         #    party branch ran first, those rules would silently stop
@@ -190,25 +201,25 @@ class Mapper:
             rule, tier = rule_match
             return self._resolve_with_rule(ledger, rule, tier, anti)
 
-        # 4. Party-ledger routing (vendor/creditor → supplier resolution).
+        # 5. Party-ledger routing (vendor/creditor → supplier resolution).
         #    Only engaged when the Mapper was constructed with a
         #    supplier_source AND the ledger is a vendor party (excludes
         #    control accounts per tier1_supplier.is_control_account).
         if self.supplier_source is not None and is_vendor_party_ledger(ledger):
             return self._resolve_party(ledger)
 
-        # 5. Exact-name fallback (Layer 3 of account-mapping)
+        # 6. Exact-name fallback (Layer 3 of account-mapping)
         exact = resolve_exact_name(ledger, self.coa, self.abbr)
         if exact:
             return self._resolve_with_candidate(ledger, exact, matched_rule=None,
                                                 tier="tier1_exact", anti=anti,
                                                 confidence=1.0)
 
-        # 6. Anti-pattern matched but no positive target emerged
+        # 7. Anti-pattern matched but no positive target emerged
         if anti:
             return self._anti_pattern_only(ledger, anti)
 
-        # 7. Unmapped
+        # 8. Unmapped
         return MappedDecision(
             tally_name=ledger.name,
             tally_id=ledger.tally_id,
