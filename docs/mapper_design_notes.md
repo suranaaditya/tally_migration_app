@@ -414,6 +414,115 @@ without). Final landing: `md-review` (9 chars). Two-attempt sequence
 + investigation ≈ 45 min; a single sentence in this guardrail would
 have saved that time.
 
+### Frappe `get_docinfo` vs `get_assignments` — response-channel difference
+
+`frappe.desk.form.load.get_docinfo(doc=None, doctype=None, name=None)` is
+decorated `@frappe.whitelist()` and writes its result to
+`frappe.response["docinfo"]` INSTEAD of returning it (see
+`frappe/desk/form/load.py:134`). This works in HTTP request/response
+context (Frappe's dispatcher reads `frappe.response` after the call
+completes), but returns **`None`** when called directly from Python —
+bench-console, internal wrappers, or from inside another
+`@frappe.whitelist()` method that invokes it.
+
+**Guidance** when accessing docinfo-style data from inside another
+whitelist method (e.g. a custom detail-fetch endpoint):
+
+- Do NOT call `get_docinfo` and expect a return value — you'll get
+  `None` and downstream code will silently break.
+- Use the narrower helpers from the same module:
+  - `get_assignments(doctype, name)` → list of ToDo dicts, returns cleanly
+  - `get_communications(doctype, name)` → similar
+  - `get_attachments(doctype, name)` → similar
+- `get_docinfo` is only safe to call when implementing an HTTP endpoint
+  that Frappe's dispatcher will itself read `frappe.response` from.
+
+**Secondary trap — positional-arg binding.** `get_docinfo`'s signature
+is `(doc=None, doctype=None, name=None)`. First positional is the
+**Document instance** (not a doctype string). Calling
+`get_docinfo("Mapping Decision", name)` binds the string to `doc` and
+internal code fails on `doc.doctype` with:
+
+```
+AttributeError: 'str' object has no attribute 'doctype'
+```
+
+Safe positional form: `get_docinfo(doc=my_frappe_doc)`. Keyword form:
+`get_docinfo(doctype="Mapping Decision", name=my_name)`.
+
+Recorded after Week 4 Item 1 Commit 4a's bench-console smoke hit both
+traps in sequence. Cost ~10 min to diagnose each; the fix in the
+Commit 4a wrapper uses `get_assignments(doctype, name)` which needs
+neither a Document nor a response channel.
+
+### Gunicorn `--preload` + stale Python module cache — `kill -HUP` fix
+
+This bench runs gunicorn with `--preload`:
+
+```
+gunicorn -b 127.0.0.1:8000 -w 3 --max-requests 5000 --max-requests-jitter 500 \
+         -t 120 --graceful-timeout 30 frappe.app:application --preload
+```
+
+With `--preload`, the application code is imported in the **master
+process** before workers are forked. Workers inherit the master's module
+state via copy-on-write. Result: **changes to `.py` files on disk do
+NOT reach the already-forked workers**, even when `developer_mode: 1`
+is set.
+
+Symptoms (all encountered in this project):
+
+- New whitelist methods added via `scp` come back as
+  `AttributeError: module ... has no attribute '<fn_name>'`
+  when called over HTTP, but succeed via `bench console` (which spawns
+  a fresh Python process every time).
+- New fields added to existing query responses don't reach the browser
+  even though `bench console` verification shows the backend returns
+  them correctly.
+- `bench --site X clear-cache` flushes Redis but does NOT reload Python
+  modules — the workers stay cached indefinitely.
+
+**The canonical fix: `kill -HUP <gunicorn-master-pid>`.**
+
+Gunicorn's HUP handler performs a graceful rolling worker restart:
+master re-imports the application, then replaces workers one by one
+from the fresh state. No downtime. No sudo required (we own the
+process — running as `frappe` user).
+
+Workflow:
+
+```bash
+# Find the gunicorn master (has --preload flag, spawned the others)
+ps aux | grep "frappe.app:application" | grep -v grep
+
+# The master is typically the parent (lowest PID among the group).
+# Send HUP to the master — workers graceful-restart from the new state.
+kill -HUP <master-pid>
+
+# Verify: workers replaced, master unchanged
+ps aux | grep "frappe.app:application" | grep -v grep
+# Worker PIDs should be new (higher), their elapsed time should reset;
+# master PID stays the same.
+```
+
+Apply AFTER every `scp`-based Python module update. Alternative:
+commit + push + `git pull` + `bench migrate` also works (migrate
+triggers a similar reload), but HUP is faster for iterative debugging.
+
+Do NOT apply for `.js` / `.css` changes — those are browser-side; a
+hard browser refresh (`Ctrl+Shift+R`) suffices. Do NOT apply to the
+individual workers (`kill -HUP <worker-pid>`); only the master handles
+the signal correctly.
+
+Recorded after Week 4 Item 1 Commit 4a's browser verification surfaced
+the issue for the third time in two days (previously in Commit 3's
+root-type-prefix and Commit 4a's `get_decision_detail` HTTP dispatch).
+Applying HUP during Commit 4a's verification incidentally resolved the
+Commit 3 deferred issue — the root-type prefix now appears in the
+master-pane parent-chain column as originally designed, because the
+workers finally picked up the new `query.py` with `tally_root_type`
+in `DEFAULT_DECISION_FIELDS`.
+
 ### Pre-existing bench Socket.IO 404s on all Desk pages
 
 As of 2026-04-20, the `erp.jewonline.in` bench emits Socket.IO
@@ -894,3 +1003,5 @@ from readability-at-scale the way JS does.
 | 2026-04-22 | §10 Custom-page bundle-refactor threshold added. Rule: inline by default; refactor to a bundle when the page's JS file exceeds 2,500 lines OR when Item 6 (Tier-2 fuzzy) adds meaningful ranking logic. Change log renumbered §10 → §11. Origin: Week 4 Item 1+2 (Mapping Decision Review Page) prose refinement 7, see `docs/week4_review_ui_design.md §1.12`. |
 | 2026-04-22 | §5 expanded with two schema-mutation clarifications captured during Week 4 Item 1 Commit 1 schema-migration work: (a) `idx` is framework-universal and must NOT be dropped as a child-table orphan; (b) autoname mode string requires a trailing colon (`"naming_series:"`, not `"naming_series"`) per the Frappe naming dispatcher. Both learned the hard way; both now load-bearing guardrails for the next `istable` flip. |
 | 2026-04-22 | §5 expanded further during Week 4 Item 1 Commit 2 page-scaffolding work: (a) Frappe Page names are truncated to 20 characters at runtime autoname regardless of how `name` / `page_name` are passed — fixture-loading is the only path to longer names; (b) pre-existing Socket.IO 404s on this bench are orthogonal to our work and can be ignored during Desk-page browser verification. Guardrail for the next custom Page we create. |
+| 2026-04-22 | §5 expanded again during Week 4 Item 1 Commit 4a detail-pane work: `frappe.desk.form.load.get_docinfo` writes to `frappe.response["docinfo"]` instead of returning, so callers outside HTTP request context get `None`. Use the narrower `get_assignments` / `get_communications` / `get_attachments` helpers instead. Also captured the positional-arg trap: first positional is `doc` (Document instance), not `doctype` (string) — passing a string binds to `doc` and fails on `.doctype`. |
+| 2026-04-22 | §5 canonical fix for stale Python module cache (third occurrence in two days): `kill -HUP <gunicorn-master-pid>` gracefully reloads workers. Gunicorn's `--preload` flag imports app code in master before forking, so workers never see disk changes without this reload. No sudo required. Applying HUP during Commit 4a verification incidentally cleared Commit 3's deferred root-type-prefix issue — it was always a worker-cache problem, not a code problem. |

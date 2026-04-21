@@ -478,6 +478,438 @@ class MasterPane {
 
 
 // ============================================================================
+// CLASS: AssignmentWidget
+// ============================================================================
+
+class AssignmentWidget {
+    // Stable-hash avatar palette. Same user always gets same color across
+    // sessions / browsers; deterministic, not random. Per §1.4 Section 5
+    // refinement — reviewers quickly recognise "oh that's Priya's red"
+    // without a photo lookup.
+    static AVATAR_PALETTE = [
+        "#4a90e2", "#7ed321", "#f5a623", "#bd10e0",
+        "#50e3c2", "#e94e77", "#b8e986",
+    ];
+
+    constructor(opts) {
+        this.parent = $(opts.parent);
+        this.decision_name = opts.decision_name;
+        this.assignments = opts.assignments || [];
+        this.on_change = opts.on_change;
+    }
+
+    render() {
+        const assignee = this._current_assignee();
+        if (assignee) {
+            const color = AssignmentWidget._avatar_color(assignee.owner);
+            const initial = (assignee.owner[0] || "?").toUpperCase();
+            this.parent.html(`
+                <div class="assignment-chip">
+                    <span class="assignment-avatar" style="background: ${color};">${frappe.utils.escape_html(initial)}</span>
+                    <span class="assignment-name" title="${frappe.utils.escape_html(assignee.description || "")}">${frappe.utils.escape_html(assignee.owner)}</span>
+                    <button class="assignment-remove" title="Remove assignment">×</button>
+                </div>
+                <button class="btn btn-default btn-xs assignment-reassign">Reassign...</button>
+            `);
+        } else {
+            this.parent.html(`
+                <div class="assignment-empty">Unassigned</div>
+                <button class="btn btn-default btn-xs assignment-assign">Assign to...</button>
+            `);
+        }
+        this._wire();
+    }
+
+    _wire() {
+        this.parent.on("click", ".assignment-assign, .assignment-reassign", () => this._open_dialog());
+        this.parent.on("click", ".assignment-remove", () => this._remove_assignment());
+    }
+
+    _current_assignee() {
+        // get_assignments filters out Cancelled/Closed already, but be
+        // defensive in case the shape ever changes. Take the first (rare
+        // multi-assignment case: still single chip in v1 — first wins).
+        return (this.assignments || []).find(
+            (a) => a && a.owner && a.status !== "Cancelled" && a.status !== "Closed"
+        );
+    }
+
+    _open_dialog() {
+        const dialog = new frappe.ui.Dialog({
+            title: __("Assign Decision"),
+            fields: [
+                {
+                    fieldname: "assign_to",
+                    fieldtype: "Link",
+                    options: "User",
+                    label: __("Assign To"),
+                    reqd: 1,
+                },
+                {
+                    fieldname: "description",
+                    fieldtype: "Small Text",
+                    label: __("Description"),
+                },
+            ],
+            primary_action_label: __("Assign"),
+            primary_action: (values) => {
+                frappe.call({
+                    method: "frappe.desk.form.assign_to.add",
+                    args: {
+                        assign_to: [values.assign_to],
+                        doctype: "Mapping Decision",
+                        name: this.decision_name,
+                        description: values.description || "",
+                    },
+                }).then(() => {
+                    dialog.hide();
+                    frappe.show_alert({
+                        message: __("Assigned to {0}", [values.assign_to]),
+                        indicator: "green",
+                    }, 3);
+                    if (this.on_change) this.on_change();
+                }).catch((err) => {
+                    console.error("md-review: assign_to.add failed", err);
+                    frappe.show_alert({
+                        message: __("Failed to assign — see console."),
+                        indicator: "red",
+                    }, 7);
+                });
+            },
+        });
+        dialog.show();
+    }
+
+    _remove_assignment() {
+        const assignee = this._current_assignee();
+        if (!assignee) return;
+
+        frappe.confirm(
+            __("Remove assignment from {0}?", [assignee.owner]),
+            () => {
+                frappe.call({
+                    method: "frappe.desk.form.assign_to.remove",
+                    args: {
+                        doctype: "Mapping Decision",
+                        name: this.decision_name,
+                        assign_to: assignee.owner,
+                    },
+                }).then(() => {
+                    frappe.show_alert({
+                        message: __("Unassigned"),
+                        indicator: "blue",
+                    }, 3);
+                    if (this.on_change) this.on_change();
+                }).catch((err) => {
+                    console.error("md-review: assign_to.remove failed", err);
+                    frappe.show_alert({
+                        message: __("Failed to remove assignment — see console."),
+                        indicator: "red",
+                    }, 7);
+                });
+            }
+        );
+    }
+
+    static _avatar_color(email) {
+        if (!email) return AssignmentWidget.AVATAR_PALETTE[0];
+        const hash = email.split("").reduce((sum, c) => sum + c.charCodeAt(0), 0);
+        return AssignmentWidget.AVATAR_PALETTE[hash % AssignmentWidget.AVATAR_PALETTE.length];
+    }
+}
+
+
+// ============================================================================
+// CLASS: DetailPane
+// ============================================================================
+
+class DetailPane {
+    // Root-type CSS class map for chip styling per §1.11.
+    static ROOT_TYPE_CLASS = {
+        "Asset": "asset",
+        "Liability": "liability",
+        "Equity": "equity",
+        "Income": "income",
+        "Expense": "expense",
+    };
+
+    constructor(container_el) {
+        this.container = $(container_el);
+        this.current_decision_name = null;
+        this.current_decision = null;
+        this.current_docinfo = null;
+        this.session_company_abbr = null;
+        this.assignment_widget = null;
+        this._render_empty();
+    }
+
+    _render_empty() {
+        this.container.html(`
+            <div class="pane-placeholder">Select a decision to view details</div>
+        `);
+    }
+
+    clear() {
+        this.current_decision_name = null;
+        this.current_decision = null;
+        this.current_docinfo = null;
+        this.session_company_abbr = null;
+        this.assignment_widget = null;
+        this._render_empty();
+    }
+
+    async loadDecision(decision_name) {
+        if (!decision_name) {
+            this.clear();
+            return;
+        }
+        // Idempotent — avoids double-fetch when selection callback + initial
+        // hash-restore both trigger the same decision.
+        if (decision_name === this.current_decision_name) return;
+
+        try {
+            const r = await frappe.call({
+                method: "rgi_migration.rgi_migration.page.md_review.md_review.get_decision_detail",
+                args: { decision_name: decision_name },
+            });
+            const msg = r.message || {};
+            this.current_decision_name = decision_name;
+            this.current_decision = msg.decision || {};
+            this.current_docinfo = msg.docinfo || {};
+            this.session_company_abbr = msg.session_company_abbr || "";
+            this._render();
+        } catch (err) {
+            console.error("md-review: get_decision_detail failed", err);
+            frappe.show_alert({
+                message: __("Failed to load decision detail — see console."),
+                indicator: "red",
+            }, 7);
+        }
+    }
+
+    async refreshAssignments() {
+        // Assignment widget invokes on_change after add/remove. Re-fetch the
+        // full detail so docinfo.assignments is fresh. Cheap (one call).
+        const name = this.current_decision_name;
+        if (!name) return;
+        this.current_decision_name = null;  // force re-fetch despite idempotency guard
+        await this.loadDecision(name);
+    }
+
+    _render() {
+        const d = this.current_decision;
+        if (!d || !d.name) {
+            this._render_empty();
+            return;
+        }
+
+        this.container.html(`
+            <div class="detail-pane-content">
+                ${this._render_tally_context(d)}
+                ${this._render_mapper_resolution(d)}
+                ${this._render_tier2_placeholder()}
+                ${this._render_assignment_shell()}
+                ${this._render_audit(d)}
+            </div>
+        `);
+
+        // AssignmentWidget mounts into the shell after HTML is in DOM
+        this._mount_assignment();
+    }
+
+    // --- Section renderers ---------------------------------------------------
+
+    _render_tally_context(d) {
+        const root_type = d.tally_root_type || "";
+        const root_type_class = DetailPane.ROOT_TYPE_CLASS[root_type] || "muted";
+        const chain = d.tally_parent_chain || "";
+
+        // Conditional flag badges
+        const flags = [];
+        if (d.is_pnl_closed_zero) flags.push(`<span class="flag-badge">PnL Closed Zero</span>`);
+        if (d.is_system_account) flags.push(`<span class="flag-badge">System Account</span>`);
+        const flags_html = flags.length
+            ? `<div class="flag-badges">${flags.join("")}</div>`
+            : "";
+
+        const tally_id = d.tally_id || "";
+
+        return `
+            <section class="detail-section detail-tally-context">
+                <div class="detail-section-header">Tally Context</div>
+                <div class="detail-heading">
+                    <div class="tally-name-heading">${frappe.utils.escape_html(d.tally_name || "")}</div>
+                    ${tally_id ? `<div class="tally-id-sub">ID ${frappe.utils.escape_html(tally_id)}</div>` : ""}
+                </div>
+                <div class="kv-grid">
+                    ${root_type ? `
+                        <div class="kv-label">Root Type</div>
+                        <div class="kv-value">
+                            <span class="root-type-chip ${root_type_class}">${frappe.utils.escape_html(root_type)}</span>
+                        </div>
+                    ` : ""}
+                    ${chain ? `
+                        <div class="kv-label">Parent Chain</div>
+                        <div class="kv-value detail-parent-chain">${frappe.utils.escape_html(chain)}</div>
+                    ` : ""}
+                    <div class="kv-label">Opening Dr</div>
+                    <div class="kv-value">${MasterPane._format_amount(d.opening_dr)}</div>
+                    <div class="kv-label">Opening Cr</div>
+                    <div class="kv-value">${MasterPane._format_amount(d.opening_cr)}</div>
+                    <div class="kv-label">Net Amount</div>
+                    <div class="kv-value kv-net-amount">
+                        ${MasterPane._format_amount(d.net_amount)}
+                        <span class="net-side-inline">${frappe.utils.escape_html(d.net_side || "—")}</span>
+                    </div>
+                </div>
+                ${flags_html}
+            </section>
+        `;
+    }
+
+    _render_mapper_resolution(d) {
+        const tier = d.tier || "";
+        const tier_state = MasterPane.TIER_CHIP_STATE[tier] || "muted";
+        const proposed = d.proposed_account || "";
+        const matched = d.matched_rule || "";
+        const confidence = typeof d.confidence === "number"
+            ? d.confidence.toFixed(2)
+            : "";
+
+        const proposed_html = proposed
+            ? `<a href="/app/account/${encodeURIComponent(proposed)}" target="_blank" rel="noopener">${frappe.utils.escape_html(proposed)} <span class="nav-icon">↗</span></a>`
+            : `<span class="muted">(none)</span>`;
+
+        const matched_html = matched
+            ? `<a href="/app/mapping-rule/${encodeURIComponent(matched)}" target="_blank" rel="noopener">${frappe.utils.escape_html(matched)} <span class="nav-icon">↗</span></a>`
+            : `<span class="muted">(none)</span>`;
+
+        // Anti-pattern block (conditional, red-bordered)
+        let anti_pattern_html = "";
+        if (d.anti_pattern_blocked) {
+            anti_pattern_html = `
+                <div class="anti-pattern-block">
+                    <div class="anti-pattern-label">⚠ Anti-pattern blocked</div>
+                    ${d.anti_pattern_rule ? `<div class="anti-pattern-rule">Rule: ${frappe.utils.escape_html(d.anti_pattern_rule)}</div>` : ""}
+                    ${d.anti_pattern_message ? `<div class="anti-pattern-message">${frappe.utils.escape_html(d.anti_pattern_message)}</div>` : ""}
+                </div>
+            `;
+        }
+
+        // Excluded reason (conditional — for excluded_pnl / excluded_zero_balance / group_refused)
+        const excluded_html = d.excluded_reason
+            ? `<div class="excluded-reason-block">${frappe.utils.escape_html(d.excluded_reason)}</div>`
+            : "";
+
+        // Proposed Dr/Cr row only shown when at least one is non-zero (mapper diagnostic)
+        const proposed_amounts_html = (d.proposed_dr || d.proposed_cr) ? `
+            <div class="kv-label">Proposed Dr / Cr</div>
+            <div class="kv-value">${MasterPane._format_amount(d.proposed_dr)} / ${MasterPane._format_amount(d.proposed_cr)}</div>
+        ` : "";
+
+        return `
+            <section class="detail-section detail-mapper-resolution">
+                <div class="detail-section-header">Mapper Resolution</div>
+                <div class="kv-grid">
+                    <div class="kv-label">Tier</div>
+                    <div class="kv-value">
+                        <span class="tier-chip ${tier_state}">${frappe.utils.escape_html(tier)}</span>
+                    </div>
+                    <div class="kv-label">Proposed Account</div>
+                    <div class="kv-value">${proposed_html}</div>
+                    <div class="kv-label">Matched Rule</div>
+                    <div class="kv-value">${matched_html}</div>
+                    <div class="kv-label">Confidence</div>
+                    <div class="kv-value">${confidence}</div>
+                    ${proposed_amounts_html}
+                </div>
+                ${anti_pattern_html}
+                ${excluded_html}
+            </section>
+        `;
+    }
+
+    _render_tier2_placeholder() {
+        return `
+            <section class="detail-section detail-tier2-placeholder">
+                <div class="detail-section-header">Tier-2 Fuzzy Candidates</div>
+                <div class="placeholder-text">
+                    Tier-2 fuzzy matching not yet active. Top candidate matches
+                    will appear here after Item 6 ships.
+                </div>
+            </section>
+        `;
+    }
+
+    _render_assignment_shell() {
+        return `
+            <section class="detail-section detail-assignment">
+                <div class="detail-section-header">Assignment</div>
+                <div class="assignment-widget-mount"></div>
+            </section>
+        `;
+    }
+
+    _mount_assignment() {
+        const mount = this.container.find(".assignment-widget-mount");
+        if (!mount.length) return;
+
+        const assignments = (this.current_docinfo && this.current_docinfo.assignments) || [];
+
+        this.assignment_widget = new AssignmentWidget({
+            parent: mount,
+            decision_name: this.current_decision_name,
+            assignments: assignments,
+            on_change: () => this.refreshAssignments(),
+        });
+        this.assignment_widget.render();
+    }
+
+    _render_audit(d) {
+        const creation = d.creation || "";
+        const modified = d.modified || "";
+        const owner = d.owner || "";
+        const modified_by = d.modified_by || "";
+        const promoted = d.promoted_to_rule || "";
+
+        // frappe.datetime.comment_when is "2 hours ago"-style pretty format.
+        // Full ISO in the title= tooltip for reviewer who needs exact time.
+        const creation_display = creation
+            ? `<span title="${frappe.utils.escape_html(creation)}">${frappe.datetime.comment_when(creation)}</span>`
+            : "—";
+        const modified_display = modified
+            ? `<span title="${frappe.utils.escape_html(modified)}">${frappe.datetime.comment_when(modified)}</span>`
+            : "—";
+
+        const promoted_html = promoted
+            ? `<a href="/app/mapping-rule/${encodeURIComponent(promoted)}" target="_blank" rel="noopener">${frappe.utils.escape_html(promoted)} <span class="nav-icon">↗</span></a>`
+            : `<span class="muted">—</span>`;
+
+        const open_form_url = `/app/mapping-decision/${encodeURIComponent(d.name || "")}`;
+
+        return `
+            <section class="detail-section detail-audit">
+                <div class="detail-section-header">Audit</div>
+                <div class="kv-grid">
+                    <div class="kv-label">Created by</div>
+                    <div class="kv-value">${frappe.utils.escape_html(owner)} · ${creation_display}</div>
+                    <div class="kv-label">Last edited by</div>
+                    <div class="kv-value">${frappe.utils.escape_html(modified_by)} · ${modified_display}</div>
+                    <div class="kv-label">Promoted to rule</div>
+                    <div class="kv-value">${promoted_html}</div>
+                </div>
+                <div class="audit-actions">
+                    <a class="btn btn-default btn-xs open-full-form" href="${open_form_url}" target="_blank" rel="noopener">
+                        Open in full form <span class="nav-icon">↗</span>
+                    </a>
+                </div>
+            </section>
+        `;
+    }
+}
+
+
+// ============================================================================
 // MAIN: on_page_load
 // ============================================================================
 
@@ -520,14 +952,22 @@ frappe.pages["md-review"].on_page_load = function(wrapper) {
         return;
     }
 
-    // Controller: thin orchestration layer so FilterBar + MasterPane stay
-    // cohesive classes. Grows into the keyboard-shortcut + detail-pane
-    // coupling home in Commits 4 and 5.
+    // DetailPane instantiates FIRST so the controller's on_selection_change
+    // callback can close over it. The detail-pane container is already in
+    // the DOM (from the shell above); DetailPane replaces its contents with
+    // the empty-state placeholder, then with rendered sections on row
+    // selection.
+    const detail_pane = new DetailPane(container.find(".decision-detail-pane"));
+
+    // Controller: thin orchestration layer between FilterBar + MasterPane +
+    // DetailPane. Selection in the master pane drives URL hash sync AND
+    // detail pane refresh; filter changes drive a master-pane reload AND
+    // a detail-pane refresh for the new selection (or clear if empty).
     const controller = {
         on_selection_change: (decision) => {
-            // URL hash sync on selection. Detail pane update lands Commit 4.
             if (decision && decision.name) {
                 history.replaceState(null, "", "#" + decision.name);
+                detail_pane.loadDecision(decision.name);
             }
         },
     };
@@ -542,17 +982,35 @@ frappe.pages["md-review"].on_page_load = function(wrapper) {
     filter_bar.onChange(() => {
         master_pane.setFilters(filter_bar.getFilters());
         master_pane.pagination_start = 0;
-        master_pane.loadDecisions();
+        master_pane.loadDecisions().then(() => {
+            // After filter change, the master pane reselects row 0. Sync
+            // the detail pane to that new selection, or clear if empty.
+            const selected = master_pane.getSelectedDecisionName();
+            if (selected) {
+                detail_pane.loadDecision(selected);
+            } else {
+                detail_pane.clear();
+            }
+        });
     });
 
     // Initial load
     master_pane.setFilters(filter_bar.getFilters());
     master_pane.loadDecisions().then(() => {
         // If URL had a #<decision-name>, restore selection to that row if
-        // present in the result set; otherwise leave the default (first row)
-        // selected and log for diagnostic.
+        // present in the result set; otherwise the default (first row)
+        // remains selected.
         if (decision_hash) {
             master_pane.selectByName(decision_hash);
+        }
+        // Trigger initial detail-pane load for whatever row ended up
+        // selected. selectByName already fires on_selection_change (→
+        // detail_pane.loadDecision), which is idempotent, so this explicit
+        // call covers the "no hash, default row 0" case without double-
+        // fetching the hash case.
+        const selected = master_pane.getSelectedDecisionName();
+        if (selected) {
+            detail_pane.loadDecision(selected);
         }
     });
 

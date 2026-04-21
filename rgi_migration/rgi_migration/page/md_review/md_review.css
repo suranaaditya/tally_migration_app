@@ -371,3 +371,335 @@
     padding: 4px 14px;
     font-size: 12px;
 }
+
+
+/* ===========================================================================
+ * Commit 4a additions — DetailPane + AssignmentWidget sections.
+ * Per docs/week4_review_ui_design.md §1.4 sections 1, 2, 3, 5, 6.
+ * Section 4 (Reviewer Action writable form) deferred to Commit 4b.
+ * =========================================================================== */
+
+
+/* --- Detail pane content container + sections ---------------------------- */
+
+.mapping-decision-review-app .detail-pane-content {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+.mapping-decision-review-app .detail-section {
+    padding: 14px 4px;
+    border-bottom: 1px solid var(--border-color, #ededed);
+}
+
+.mapping-decision-review-app .detail-section:last-child {
+    border-bottom: 0;
+}
+
+.mapping-decision-review-app .detail-section-header {
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted, #6c7680);
+    margin-bottom: 10px;
+}
+
+
+/* --- Section 1: Tally Context ------------------------------------------- */
+
+.mapping-decision-review-app .detail-heading {
+    margin-bottom: 10px;
+}
+
+.mapping-decision-review-app .tally-name-heading {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-color, #1f272e);
+    line-height: 1.3;
+    word-break: break-word;
+}
+
+.mapping-decision-review-app .tally-id-sub {
+    font-size: 11px;
+    color: var(--text-muted, #6c7680);
+    margin-top: 2px;
+}
+
+/* Label-value grid used across Tally Context, Mapper Resolution, Audit */
+.mapping-decision-review-app .kv-grid {
+    display: grid;
+    grid-template-columns: 120px 1fr;
+    row-gap: 6px;
+    column-gap: 12px;
+    font-size: 13px;
+}
+
+.mapping-decision-review-app .kv-label {
+    color: var(--text-muted, #6c7680);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    line-height: 1.5;
+    padding-top: 2px;
+}
+
+.mapping-decision-review-app .kv-value {
+    color: var(--text-color, #1f272e);
+    word-break: break-word;
+}
+
+.mapping-decision-review-app .kv-net-amount {
+    font-size: 18px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    text-align: left;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+}
+
+.mapping-decision-review-app .net-side-inline {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--text-muted, #6c7680);
+    text-transform: uppercase;
+}
+
+.mapping-decision-review-app .detail-parent-chain {
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--text-muted, #495057);
+}
+
+
+/* --- Root-type chip (detail pane) ---------------------------------------- */
+
+.mapping-decision-review-app .root-type-chip {
+    display: inline-block;
+    padding: 3px 10px;
+    font-size: 11px;
+    font-weight: 500;
+    border-radius: 10px;
+    background: var(--gray-100, #e9ecef);
+    color: var(--gray-800, #495057);
+    line-height: 1.4;
+}
+
+.mapping-decision-review-app .root-type-chip.asset {
+    background: var(--blue-100, #cfe2ff);
+    color: var(--blue-700, #084298);
+}
+
+.mapping-decision-review-app .root-type-chip.liability {
+    background: var(--red-100, #f8d7da);
+    color: var(--red-700, #842029);
+}
+
+.mapping-decision-review-app .root-type-chip.equity {
+    background: var(--purple-100, #e0cffc);
+    color: var(--purple-700, #432874);
+}
+
+.mapping-decision-review-app .root-type-chip.income,
+.mapping-decision-review-app .root-type-chip.expense,
+.mapping-decision-review-app .root-type-chip.muted {
+    background: var(--gray-100, #e9ecef);
+    color: var(--gray-700, #495057);
+}
+
+
+/* --- Flag badges (is_pnl_closed_zero / is_system_account) --------------- */
+
+.mapping-decision-review-app .flag-badges {
+    margin-top: 10px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.mapping-decision-review-app .flag-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    background: var(--gray-100, #f4f5f6);
+    color: var(--text-muted, #6c7680);
+    font-size: 10px;
+    font-weight: 500;
+    border-radius: 8px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+
+/* --- Section 2: Mapper Resolution extras -------------------------------- */
+
+.mapping-decision-review-app .detail-mapper-resolution .kv-value a {
+    color: var(--primary-color, #2490ef);
+    text-decoration: none;
+}
+
+.mapping-decision-review-app .detail-mapper-resolution .kv-value a:hover {
+    text-decoration: underline;
+}
+
+.mapping-decision-review-app .nav-icon {
+    font-size: 11px;
+    color: var(--text-muted, #6c7680);
+    margin-left: 2px;
+}
+
+.mapping-decision-review-app .muted {
+    color: var(--text-muted, #6c7680);
+    font-style: italic;
+    font-size: 12px;
+}
+
+
+/* Anti-pattern block — red bordered conditional per §1.4 Section 2 */
+.mapping-decision-review-app .anti-pattern-block {
+    margin-top: 12px;
+    padding: 10px 12px;
+    background: var(--red-50, #fef0f0);
+    border: 1px solid var(--red-200, #f5c2c7);
+    border-left: 3px solid var(--red-500, #e24c4c);
+    border-radius: 4px;
+    font-size: 12px;
+}
+
+.mapping-decision-review-app .anti-pattern-label {
+    font-weight: 600;
+    color: var(--red-700, #842029);
+    margin-bottom: 4px;
+}
+
+.mapping-decision-review-app .anti-pattern-rule {
+    color: var(--red-700, #842029);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    margin-bottom: 4px;
+}
+
+.mapping-decision-review-app .anti-pattern-message {
+    color: var(--text-color, #1f272e);
+    line-height: 1.45;
+}
+
+
+/* Excluded-reason block — muted conditional for excluded_pnl / zero_balance */
+.mapping-decision-review-app .excluded-reason-block {
+    margin-top: 12px;
+    padding: 8px 12px;
+    background: var(--gray-100, #f4f5f6);
+    border-left: 3px solid var(--gray-400, #8d99a6);
+    border-radius: 3px;
+    color: var(--text-muted, #495057);
+    font-size: 12px;
+    font-style: italic;
+    line-height: 1.45;
+}
+
+
+/* --- Section 3: Tier-2 placeholder --------------------------------------- */
+
+.mapping-decision-review-app .placeholder-text {
+    padding: 16px 4px;
+    color: var(--text-muted, #8d99a6);
+    font-style: italic;
+    font-size: 12px;
+    line-height: 1.5;
+    text-align: center;
+}
+
+
+/* --- Section 5: AssignmentWidget ---------------------------------------- */
+
+.mapping-decision-review-app .assignment-widget-mount {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.mapping-decision-review-app .assignment-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 4px 3px 3px;
+    background: var(--bg-light-gray, #f4f5f6);
+    border: 1px solid var(--border-color, #ededed);
+    border-radius: 999px;
+    font-size: 12px;
+}
+
+.mapping-decision-review-app .assignment-avatar {
+    width: 24px;
+    height: 24px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    font-size: 11px;
+    font-weight: 600;
+    flex-shrink: 0;
+}
+
+.mapping-decision-review-app .assignment-name {
+    color: var(--text-color, #1f272e);
+    max-width: 160px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mapping-decision-review-app .assignment-remove {
+    background: transparent;
+    border: 0;
+    padding: 0 4px;
+    font-size: 16px;
+    line-height: 1;
+    color: var(--text-muted, #6c7680);
+    cursor: pointer;
+    border-radius: 50%;
+}
+
+.mapping-decision-review-app .assignment-remove:hover {
+    background: var(--red-100, #f8d7da);
+    color: var(--red-700, #842029);
+}
+
+.mapping-decision-review-app .assignment-empty {
+    color: var(--text-muted, #6c7680);
+    font-size: 12px;
+    font-style: italic;
+}
+
+.mapping-decision-review-app .assignment-assign,
+.mapping-decision-review-app .assignment-reassign {
+    font-size: 11px;
+    padding: 3px 10px;
+}
+
+
+/* --- Section 6: Audit ---------------------------------------------------- */
+
+.mapping-decision-review-app .detail-audit .kv-value {
+    font-size: 12px;
+}
+
+.mapping-decision-review-app .audit-actions {
+    margin-top: 12px;
+}
+
+.mapping-decision-review-app .open-full-form {
+    font-size: 11px;
+    padding: 4px 12px;
+    color: var(--text-color, #1f272e);
+    text-decoration: none;
+}
+
+.mapping-decision-review-app .open-full-form:hover {
+    background: var(--fg-hover-color, #f4f5f6);
+    text-decoration: none;
+}

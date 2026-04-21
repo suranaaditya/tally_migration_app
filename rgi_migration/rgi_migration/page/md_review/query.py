@@ -121,3 +121,90 @@ def fetch_session_decisions(
         "total_count": total_count,
         "filtered_count": filtered_count,
     }
+
+
+def fetch_decision_detail(
+    *,
+    decision_name: str,
+    get_decision_fn: Callable[[str], dict],
+    get_session_company_fn: Callable[[str], str],
+    get_docinfo_fn: Callable[[str], dict],
+    permission_check_fn: Callable[[], None],
+) -> dict:
+    """Pure implementation of the get_decision_detail endpoint.
+
+    Fetches a single Mapping Decision with its docinfo and the linked
+    session's company abbreviation. Used by the detail pane (§1.4
+    sections 1, 2, 5, 6) of the Mapping Decision Review page.
+
+    Permission enforcement is delegated to the injected
+    ``permission_check_fn`` (typically closes over a pre-fetched
+    ``session_doc`` and calls ``.check_permission("read")``). The pure
+    function doesn't know or care whether permission is decision-level
+    or session-level — that's a wrapper concern.
+
+    Args:
+        decision_name: Mapping Decision name. Required (empty string /
+            None raises ``ValueError``).
+        get_decision_fn: ``(name) -> dict`` — returns the decision's
+            fields. Must include a ``"session"`` key referencing the
+            parent Tally Migration Session (per the Commit 1 schema
+            invariant: ``session`` is ``reqd=1`` on the DocType).
+        get_session_company_fn: ``(session_name) -> str`` — returns
+            the linked session's ``company_abbr`` for display purposes.
+        get_docinfo_fn: ``(decision_name) -> dict`` — returns Frappe's
+            ``get_docinfo`` payload (assignments, comments, versions,
+            attachments). Section 5 (Assignment) reads
+            ``docinfo["assignments"]``.
+        permission_check_fn: ``() -> None`` — called after the decision
+            is fetched, before docinfo / company lookups. Closure over
+            the session doc in the production wrapper.
+
+    Returns:
+        ``{"decision": dict, "docinfo": dict, "session_company_abbr": str}``
+
+    Raises:
+        ValueError: ``decision_name`` is empty, or the fetched decision
+            is ``None``, or the decision's ``session`` field is empty
+            (should be unreachable given the Commit 1 schema).
+        Whatever ``permission_check_fn`` raises on denial (in Frappe,
+        typically ``frappe.PermissionError``).
+        Whatever ``get_decision_fn`` raises on not-found (in Frappe,
+        typically ``frappe.DoesNotExistError`` — propagated via the
+        wrapper's ``frappe.get_doc`` call, not this pure function).
+    """
+    if not decision_name:
+        raise ValueError("decision_name is required")
+
+    decision = get_decision_fn(decision_name)
+    if decision is None:
+        raise ValueError(
+            "get_decision_fn returned None for "
+            f"decision_name={decision_name!r}"
+        )
+
+    # Accommodate both dict (production — Document.as_dict()) and plain
+    # object (some test fixtures).
+    if isinstance(decision, dict):
+        session_name = decision.get("session")
+    else:
+        session_name = getattr(decision, "session", None)
+
+    if not session_name:
+        raise ValueError(
+            f"Mapping Decision {decision_name!r} has no session link "
+            "(expected reqd=1 field per Commit 1 schema invariant)"
+        )
+
+    # Permission gate — call BEFORE fetching docinfo / company so that
+    # a denied user doesn't leak any data via the subsequent calls.
+    permission_check_fn()
+
+    docinfo = get_docinfo_fn(decision_name)
+    session_company_abbr = get_session_company_fn(session_name)
+
+    return {
+        "decision": decision,
+        "docinfo": docinfo,
+        "session_company_abbr": session_company_abbr,
+    }
