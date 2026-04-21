@@ -703,3 +703,82 @@
     background: var(--fg-hover-color, #f4f5f6);
     text-decoration: none;
 }
+
+/* ============================================================================
+ * §1.4 Section 4 — Reviewer Action (Commit 4b)
+ * Writable form controls mounted via frappe.ui.form.make_control.
+ * ============================================================================ */
+
+.mapping-decision-review-app .detail-reviewer-action .reviewer-action-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px 16px;
+    margin-top: 8px;
+}
+
+.mapping-decision-review-app .ra-field {
+    display: flex;
+    flex-direction: column;
+}
+
+/* review_action + final_account span one column each; reviewer_notes
+ * spans both for textarea width. */
+.mapping-decision-review-app .ra-reviewer-notes {
+    grid-column: 1 / -1;
+}
+
+.mapping-decision-review-app .ra-label {
+    font-size: 11px;
+    color: var(--text-muted, #687178);
+    margin-bottom: 2px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.02em;
+}
+
+/* Read-only currency display (final_dr / final_cr) — right-aligned,
+ * light grey, no input-style border. Distinguishes from editable fields
+ * so reviewers don't try to click in. */
+.mapping-decision-review-app .readonly-currency {
+    padding: 6px 8px;
+    background: var(--control-bg-on-gray, #f4f5f6);
+    border: 1px solid transparent;
+    border-radius: 4px;
+    color: var(--text-muted, #687178);
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    min-height: 30px;
+    line-height: 18px;
+}
+
+/* Stored reviewer_notes chronology block — read-only, above the textarea.
+ * Compact max-height with scroll so a long history doesn't push Section 5
+ * off-screen. */
+.mapping-decision-review-app .reviewer-notes-stored {
+    padding: 8px 10px;
+    background: var(--control-bg-on-gray, #f4f5f6);
+    border: 1px solid var(--border-color, #e8eaeb);
+    border-radius: 4px;
+    color: var(--text-muted, #687178);
+    font-size: 12px;
+    white-space: pre-wrap;
+    max-height: 120px;
+    overflow-y: auto;
+    margin-bottom: 6px;
+}
+
+/* Make_control's rendered inputs already carry Frappe's standard styles
+ * via the .frappe-control wrapper; nothing extra needed for Select/Link/
+ * Small Text in this section. */
+
+/* Save button footer — right-aligned below the grid. Disabled state
+ * uses the default Frappe .btn disabled styling; no override needed. */
+.mapping-decision-review-app .reviewer-action-footer {
+    margin-top: 12px;
+    display: flex;
+    justify-content: flex-end;
+}
+
+.mapping-decision-review-app .save-decision-btn {
+    min-width: 80px;
+}

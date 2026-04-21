@@ -222,6 +222,20 @@ class MasterPane {
 
     static PAGE_LENGTH = 50;
 
+    // Pending-like review states. Mirror of DetailPane.PENDING_REVIEW_STATES
+    // and query.PENDING_REVIEW_STATES (Python). When review_action is in
+    // one of these, the tier chip remains meaningful — it tells the
+    // reviewer "here's what the mapper thought". Once the reviewer has
+    // resolved the decision (Approved, Rejected, etc.), the tier chip
+    // is historical noise that conflicts with the indicator dot; hide
+    // it (or swap for an "excluded" chip on Excluded (P&L)).
+    static PENDING_REVIEW_STATES = new Set([
+        "Pending",
+        "Pending Account Creation",
+        "Pending Group Account Resolution",
+        "Pending Supplier Creation",
+    ]);
+
     constructor(container_el, session_name, controller) {
         this.container = $(container_el);
         this.session_name = session_name;
@@ -368,6 +382,27 @@ class MasterPane {
         const proposed_account = decision.proposed_account || "";
         const tier_label = decision.tier || "";
 
+        // Tier chip display rule: the mapper's tier classification is
+        // historical — it describes what the mapper initially proposed.
+        // Once the reviewer has resolved the decision (Approved,
+        // Rejected, Deferred, Skipped, Manual Override), the tier chip
+        // conflicts with the indicator dot (e.g. "unmapped" tier chip
+        // next to a green done-state dot). Hide it for resolved states,
+        // keep it visible for the four Pending* variants so the
+        // reviewer sees the mapper signal while the decision is still
+        // open. Excluded (P&L) gets a muted "excluded" chip — an
+        // indicator-independent signal that the ledger is routed out
+        // of the migration entirely.
+        const review_action = decision.review_action || "";
+        let tier_chip_html = "";
+        if (MasterPane.PENDING_REVIEW_STATES.has(review_action)) {
+            tier_chip_html = `<span class="tier-chip ${tier_state}">${frappe.utils.escape_html(tier_label)}</span>`;
+        } else if (review_action === "Excluded (P&L)") {
+            tier_chip_html = `<span class="tier-chip muted">excluded</span>`;
+        }
+        // else: resolved state. Empty cell, indicator dot carries the
+        // state signal.
+
         // Prepend root type to parent chain for quick classification context
         // per reviewer feedback during Commit 3 browser verification. The
         // combined display anchors "this is a Liability" / "this is an
@@ -395,7 +430,7 @@ class MasterPane {
                 <td class="col-net-amount">${net_amount}</td>
                 <td class="col-side">${frappe.utils.escape_html(net_side)}</td>
                 <td class="col-tier">
-                    <span class="tier-chip ${tier_state}">${frappe.utils.escape_html(tier_label)}</span>
+                    ${tier_chip_html}
                 </td>
                 <td class="col-proposed-account" title="${frappe.utils.escape_html(proposed_account)}">
                     ${frappe.utils.escape_html(proposed_account)}
@@ -448,6 +483,54 @@ class MasterPane {
         if (this.selected_index === null) return null;
         const decision = this.current_decisions[this.selected_index];
         return decision ? decision.name : null;
+    }
+
+    /**
+     * Optimistically patch a single row in-place after a successful
+     * save — no list refetch, no re-sort. The page.controller invokes
+     * this from DetailPane.on_save_success so the indicator dot and
+     * proposed-account cell reflect the just-saved state without the
+     * round-trip + re-render cost.
+     *
+     * The underlying ``current_decisions`` entry is mutated so that
+     * subsequent filter/refetch cycles start from the new values, and
+     * the row's DOM is re-rendered in place to pick up the indicator-
+     * state + tier class changes.
+     *
+     * If ``name`` isn't currently in the list (e.g. a filter excluded
+     * it), silently no-ops — the next list refresh will pick up the
+     * change. Save already succeeded on the server.
+     *
+     * @param {string} name - Mapping Decision name
+     * @param {object} patch - saved decision dict from save_decision
+     *   response. Only the fields present in _render_row's output are
+     *   consumed (review_action, final_account, tier,
+     *   proposed_account).
+     */
+    updateRow(name, patch) {
+        if (!name || !patch) return;
+        const idx = this.current_decisions.findIndex((d) => d.name === name);
+        if (idx < 0) return;
+
+        // Merge patch onto the cached decision. Keep fields the server
+        // didn't return (e.g. tally_name, net_amount — immutable from
+        // this endpoint's perspective) intact.
+        const merged = { ...this.current_decisions[idx], ...patch };
+        this.current_decisions[idx] = merged;
+
+        // Re-render only the affected row. _render_row is pure; find
+        // the <tr> by data-name and replaceWith.
+        const new_html = this._render_row(merged, idx);
+        const $row = this.container.find(
+            `.master-row[data-name="${$.escapeSelector(name)}"]`
+        );
+        if ($row.length) {
+            $row.replaceWith(new_html);
+            // Preserve selection highlight if this was the selected row.
+            if (this.selected_index === idx) {
+                this._apply_selection_highlight();
+            }
+        }
     }
 
     selectByName(decision_name) {
@@ -633,13 +716,94 @@ class DetailPane {
         "Expense": "expense",
     };
 
-    constructor(container_el) {
+    // Mirror of rgi_migration.rgi_migration.page.md_review.query.PENDING_REVIEW_STATES.
+    // Kept in sync with the Python side — see test_auto_flip_logic.py's
+    // test_pending_subvariants_all_flip for the cross-language invariant
+    // guard. If the Select enum grows a new Pending-like state, add it to
+    // BOTH this JS frozenset and the Python frozenset.
+    static PENDING_REVIEW_STATES = new Set([
+        "Pending",
+        "Pending Account Creation",
+        "Pending Group Account Resolution",
+        "Pending Supplier Creation",
+    ]);
+
+    /**
+     * Pure function: compute what review_action should become, given the
+     * current control values and the row-load-time proposed_account.
+     * Mirror of query.compute_auto_flip (Python); see that docstring and
+     * test_auto_flip_logic.py for the authoritative truth table. Both
+     * versions must stay behaviourally identical.
+     *
+     * @param {object} params
+     * @param {string|null} params.originalProposedAccount - proposed_account at row load
+     * @param {string} params.currentReviewAction - current Select value
+     * @param {string|null} params.currentFinalAccount - current Link value (empty = cleared)
+     * @returns {string} The review_action Select value to display.
+     */
+    static _computeAutoFlip({
+        originalProposedAccount,
+        currentReviewAction,
+        currentFinalAccount,
+    }) {
+        // Row 5 — reviewer chose a terminal state, respect it.
+        if (!DetailPane.PENDING_REVIEW_STATES.has(currentReviewAction)) {
+            return currentReviewAction;
+        }
+        // Row 4 — final_account cleared, back to Pending.
+        if (!currentFinalAccount) {
+            return "Pending";
+        }
+        // Row 1 — unmapped + picked = Approved (not override).
+        if (!originalProposedAccount) {
+            return "Approved";
+        }
+        // Row 2 — mapped + picked same = Approved.
+        if (currentFinalAccount === originalProposedAccount) {
+            return "Approved";
+        }
+        // Row 3 — mapped + picked different = Manual Override.
+        return "Manual Override";
+    }
+
+    constructor(container_el, opts = {}) {
         this.container = $(container_el);
+        // Optional callback — invoked by saveDecision() after a
+        // successful save so the controller can update the master
+        // pane row in place (optimistic UX — no full list refetch).
+        // Signature: (decision_name, saved_decision_dict) => void.
+        this.on_save_success = opts.on_save_success || null;
         this.current_decision_name = null;
         this.current_decision = null;
         this.current_docinfo = null;
         this.session_company_abbr = null;
+        this.session_erpnext_company = null;
         this.assignment_widget = null;
+        // Section 4 control instances, indexed by fieldname. Re-created
+        // on every _render() call (the previous DOM is replaced, so the
+        // old instances are orphaned and GC'd once this map is replaced).
+        // Populated by _mount_reviewer_action_controls().
+        this.section4_controls = {};
+        // Auto-flip needs the pre-reviewer proposed_account (pinned at
+        // row load time). Kept on ``this`` so the onchange handler
+        // can read it without re-fetching current_decision.
+        this._original_proposed_account = null;
+        // Dirty-detection originals — snapshotted in
+        // _mount_reviewer_action_controls after the three writable
+        // controls are populated. Comparing current control values
+        // against these determines whether the Save button is
+        // enabled. reviewer_notes's original is always "" (textarea
+        // always starts empty per the chronology-separation UX).
+        this._original_review_action = null;
+        this._original_final_account = null;
+        // True during initial ``set_value`` calls that populate the
+        // controls. Blocks the onchange handler from firing the auto-
+        // flip + dirty-check logic on controlled state changes.
+        // Cleared after initial population.
+        this._loading_controls = false;
+        // In-flight save guard — blocks double-click / Enter-spam
+        // while a save_decision round-trip is pending.
+        this._saving = false;
         this._render_empty();
     }
 
@@ -654,7 +818,14 @@ class DetailPane {
         this.current_decision = null;
         this.current_docinfo = null;
         this.session_company_abbr = null;
+        this.session_erpnext_company = null;
         this.assignment_widget = null;
+        this.section4_controls = {};
+        this._original_proposed_account = null;
+        this._original_review_action = null;
+        this._original_final_account = null;
+        this._loading_controls = false;
+        this._saving = false;
         this._render_empty();
     }
 
@@ -677,6 +848,7 @@ class DetailPane {
             this.current_decision = msg.decision || {};
             this.current_docinfo = msg.docinfo || {};
             this.session_company_abbr = msg.session_company_abbr || "";
+            this.session_erpnext_company = msg.session_erpnext_company || "";
             this._render();
         } catch (err) {
             console.error("md-review: get_decision_detail failed", err);
@@ -708,12 +880,20 @@ class DetailPane {
                 ${this._render_tally_context(d)}
                 ${this._render_mapper_resolution(d)}
                 ${this._render_tier2_placeholder()}
+                ${this._render_reviewer_action_shell(d)}
                 ${this._render_assignment_shell()}
                 ${this._render_audit(d)}
             </div>
         `);
 
-        // AssignmentWidget mounts into the shell after HTML is in DOM
+        // Controls that need interactive state mount AFTER HTML is in
+        // the DOM. Each mount helper finds its own shell and attaches.
+        // Previous control instances (if any) are abandoned here —
+        // their DOM parents are gone, so listeners are effectively
+        // detached; the JS objects are GC'd once the old maps fall
+        // out of scope.
+        this.section4_controls = {};
+        this._mount_reviewer_action_controls();
         this._mount_assignment();
     }
 
@@ -841,6 +1021,373 @@ class DetailPane {
         `;
     }
 
+    _render_reviewer_action_shell(d) {
+        // Section 4 — the writable work surface. The shell is pure HTML
+        // (labels + mount divs + read-only display values for final_dr/cr
+        // + a stored-notes chronology block). The four writable controls
+        // (Select, Link, read-only Currency fields were folded to plain
+        // HTML since they're v1-read-only per refinement 2, Small Text)
+        // are instantiated after render via make_control in
+        // _mount_reviewer_action_controls.
+        //
+        // final_dr / final_cr render as plain read-only currency text
+        // (not make_control-backed) since refinement 2 locks them to
+        // mirror opening_dr / opening_cr until the splitting workflow
+        // lands in v2 — no control machinery needed for a display-only
+        // field that will never carry reviewer edits in this version.
+        const final_dr_val = (d.final_dr != null && d.final_dr !== 0)
+            ? d.final_dr
+            : (d.opening_dr || 0);
+        const final_cr_val = (d.final_cr != null && d.final_cr !== 0)
+            ? d.final_cr
+            : (d.opening_cr || 0);
+
+        // Stored reviewer_notes render as a read-only chronology block
+        // ABOVE the input textarea. The textarea itself starts empty —
+        // the user types only the new note, and the server (via
+        // apply_decision_save) prepends the chronology header and
+        // concatenates with stored on save. Separating display from
+        // input keeps the "what's new in this save" unambiguous.
+        const stored_notes = d.reviewer_notes || "";
+        const stored_notes_html = stored_notes
+            ? `<div class="reviewer-notes-stored" title="Prior notes — read-only">${frappe.utils.escape_html(stored_notes)}</div>`
+            : "";
+
+        return `
+            <section class="detail-section detail-reviewer-action">
+                <div class="detail-section-header">Reviewer Action</div>
+                <div class="reviewer-action-grid">
+                    <div class="ra-field ra-review-action">
+                        <label class="ra-label">Review Action</label>
+                        <div class="review-action-mount"></div>
+                    </div>
+                    <div class="ra-field ra-final-account">
+                        <label class="ra-label">Final Account</label>
+                        <div class="final-account-mount"></div>
+                    </div>
+                    <div class="ra-field ra-final-dr">
+                        <label class="ra-label">Final Dr</label>
+                        <div class="readonly-currency">${MasterPane._format_amount(final_dr_val)}</div>
+                    </div>
+                    <div class="ra-field ra-final-cr">
+                        <label class="ra-label">Final Cr</label>
+                        <div class="readonly-currency">${MasterPane._format_amount(final_cr_val)}</div>
+                    </div>
+                    <div class="ra-field ra-reviewer-notes">
+                        <label class="ra-label">Reviewer Notes</label>
+                        ${stored_notes_html}
+                        <div class="reviewer-notes-mount"></div>
+                    </div>
+                </div>
+                <div class="reviewer-action-footer">
+                    <button class="btn btn-primary btn-sm save-decision-btn" disabled>
+                        Save
+                    </button>
+                </div>
+            </section>
+        `;
+    }
+
+    _mount_reviewer_action_controls() {
+        const d = this.current_decision || {};
+        const company = this.session_erpnext_company || "";
+
+        const review_action_mount = this.container.find(".review-action-mount");
+        const final_account_mount = this.container.find(".final-account-mount");
+        const reviewer_notes_mount = this.container.find(".reviewer-notes-mount");
+
+        if (!review_action_mount.length) {
+            // Section 4 shell didn't render (defensive). Nothing to mount.
+            return;
+        }
+
+        // Pin the row-load-time proposed_account. The auto-flip truth
+        // table distinguishes "unmapped + reviewer supplied mapping"
+        // from "mapped + reviewer picked different" — both cases can
+        // have the same current_final_account, so we need to remember
+        // what the mapper proposed BEFORE the reviewer touched
+        // anything. Captured here, read by _handle_final_account_change
+        // on every change event.
+        this._original_proposed_account = d.proposed_account || null;
+
+        // Block the onchange handlers below during initial set_value
+        // population — the handler would otherwise auto-flip
+        // review_action to "Pending" the moment we clear final_account
+        // (or to "Approved" when we set it). Cleared at the end of this
+        // method once all three controls are populated.
+        this._loading_controls = true;
+
+        // review_action Select — 10 enum options per Mapping Decision
+        // DocType. Options string uses the exact spelling the DocType
+        // expects (Frappe compares literally on save).
+        // onchange handler: a MANUAL change to the Select doesn't
+        // trigger auto-flip (auto-flip runs only on final_account
+        // changes); it just marks the state dirty. The handler is a
+        // thin wrapper around _on_section4_change — see that method
+        // for the dirty-tracking logic.
+        this.section4_controls.review_action = frappe.ui.form.make_control({
+            parent: review_action_mount[0],
+            df: {
+                fieldtype: "Select",
+                fieldname: "review_action",
+                options: [
+                    "Pending",
+                    "Approved",
+                    "Rejected",
+                    "Manual Override",
+                    "Deferred",
+                    "Skipped",
+                    "Excluded (P&L)",
+                    "Pending Account Creation",
+                    "Pending Group Account Resolution",
+                    "Pending Supplier Creation",
+                ].join("\n"),
+                onchange: () => this._on_section4_change("review_action"),
+            },
+            render_input: true,
+        });
+        this.section4_controls.review_action.set_value(d.review_action || "Pending");
+
+        // final_account Link — scoped to session's Company via the
+        // custom account_query_with_parent whitelist method.
+        // onchange handler: applies the auto-flip truth table (§1.4
+        // refinement 1) — when final_account changes, review_action
+        // may auto-mutate per the rules in
+        // DetailPane._computeAutoFlip. Also marks state dirty.
+        this.section4_controls.final_account = frappe.ui.form.make_control({
+            parent: final_account_mount[0],
+            df: {
+                fieldtype: "Link",
+                fieldname: "final_account",
+                options: "Account",
+                get_query: () => ({
+                    query: "rgi_migration.rgi_migration.page.md_review.md_review.account_query_with_parent",
+                    filters: {
+                        company: company,
+                        is_group: 0,
+                    },
+                }),
+                onchange: () => this._on_section4_change("final_account"),
+            },
+            render_input: true,
+        });
+        this.section4_controls.final_account.set_value(d.final_account || "");
+
+        // reviewer_notes — Small Text. Always mounts empty; stored
+        // chronology is shown separately above via the read-only
+        // block in _render_reviewer_action_shell.
+        this.section4_controls.reviewer_notes = frappe.ui.form.make_control({
+            parent: reviewer_notes_mount[0],
+            df: {
+                fieldtype: "Small Text",
+                fieldname: "reviewer_notes",
+                placeholder: "Add a note — chronology header is added automatically on save",
+                onchange: () => this._on_section4_change("reviewer_notes"),
+            },
+            render_input: true,
+        });
+        this.section4_controls.reviewer_notes.set_value("");
+
+        // Small Text's onchange fires on blur, not on every keystroke —
+        // without this `input` listener the Save button wouldn't enable
+        // until the reviewer clicked outside the textarea. Bind
+        // directly to the DOM element so we react as the user types.
+        const notes_input = this.section4_controls.reviewer_notes.$input;
+        if (notes_input && notes_input.length) {
+            notes_input.off("input.mdr-notes").on("input.mdr-notes", () => {
+                if (this._loading_controls) return;
+                this._update_save_button_state();
+            });
+        }
+
+        // Snapshot originals for dirty detection. Captured AFTER the
+        // initial set_value calls so we record the post-population
+        // state, not the pre-population blanks. reviewer_notes's
+        // original is always "" — the textarea represents the "new
+        // note for this save" increment, never the stored chronology.
+        this._original_review_action =
+            this.section4_controls.review_action.get_value() || "";
+        this._original_final_account =
+            this.section4_controls.final_account.get_value() || "";
+
+        // Population complete — release the onchange guard. From here
+        // on, any value change is reviewer-initiated and should run
+        // the handler.
+        this._loading_controls = false;
+
+        // Wire the Save button click handler. Event-delegated on the
+        // Section 4 container so it survives the shell-re-render
+        // between row switches. jQuery .on("click") is idempotent per
+        // selector+handler, but we use .off+on to guarantee no stale
+        // handler from a prior mount lingers (belt-and-braces — in
+        // practice _render() replaces innerHTML so handlers die with
+        // the DOM, but explicit off defends against any code path
+        // that mutates without a full _render).
+        const btn = this.container.find(".save-decision-btn");
+        btn.off("click.mdr-save").on("click.mdr-save", () => this.saveDecision());
+
+        // Initial button state — freshly loaded row is clean.
+        this._update_save_button_state();
+    }
+
+    /**
+     * Compute whether Section 4 has unsaved changes.
+     *
+     * Dirty if ANY of:
+     *   - review_action differs from original (manual pick OR auto-flip
+     *     from a final_account change both count)
+     *   - final_account differs from original
+     *   - reviewer_notes textarea is non-empty (always starts empty;
+     *     any content is a new note to persist)
+     *
+     * Pure read — no side effects. Safe to call from onchange handlers,
+     * render paths, and anywhere else.
+     *
+     * @returns {boolean}
+     */
+    isDirty() {
+        if (!this.section4_controls.review_action) return false;  // pre-render
+
+        const current_ra = this.section4_controls.review_action.get_value() || "";
+        const current_fa = this.section4_controls.final_account.get_value() || "";
+        const current_notes = this.section4_controls.reviewer_notes.get_value() || "";
+
+        return (
+            current_ra !== this._original_review_action ||
+            current_fa !== this._original_final_account ||
+            current_notes !== ""
+        );
+    }
+
+    _update_save_button_state() {
+        const btn = this.container.find(".save-decision-btn");
+        if (!btn.length) return;
+        // During an in-flight save, button stays disabled regardless of
+        // dirty state — prevents double-submit before the await resolves.
+        btn.prop("disabled", this._saving || !this.isDirty());
+    }
+
+    /**
+     * Persist Section 4 inputs via the save_decision whitelist method.
+     *
+     * Flow:
+     *   1. Collect values, send to backend
+     *   2. On success: reload decision (chronology header is added
+     *      server-side, so the new stored notes block reflects the
+     *      concatenated value immediately), reset dirty snapshots,
+     *      fire on_save_success callback for the master-pane
+     *      optimistic row update
+     *   3. On error: Frappe's default dialog surfaces the message;
+     *      we just log and keep the current dirty state so the
+     *      reviewer can retry without retyping
+     *
+     * The _saving guard blocks re-entry between click and await
+     * resolution.
+     */
+    async saveDecision() {
+        if (this._saving) return;
+        if (!this.isDirty()) return;  // button should be disabled; defensive.
+        if (!this.current_decision_name) return;
+
+        this._saving = true;
+        this._update_save_button_state();
+
+        const decision_name = this.current_decision_name;
+        const review_action = this.section4_controls.review_action.get_value() || "";
+        const final_account = this.section4_controls.final_account.get_value() || "";
+        const reviewer_notes = this.section4_controls.reviewer_notes.get_value() || "";
+
+        try {
+            const r = await frappe.call({
+                method: "rgi_migration.rgi_migration.page.md_review.md_review.save_decision",
+                args: {
+                    decision_name: decision_name,
+                    review_action: review_action,
+                    final_account: final_account,
+                    reviewer_notes: reviewer_notes,
+                },
+            });
+
+            const saved = r.message || {};
+            frappe.show_alert({ message: __("Saved"), indicator: "green" }, 3);
+
+            // Notify the controller so it can update the master pane
+            // row in place (optimistic UX — no list refetch).
+            if (this.on_save_success) {
+                this.on_save_success(decision_name, saved);
+            }
+
+            // Reload the decision so the chronology block, updated
+            // modified/modified_by timestamps, and any server-side
+            // value transformations are visible to the reviewer.
+            // Force re-fetch by clearing the idempotency guard.
+            this.current_decision_name = null;
+            await this.loadDecision(decision_name);
+            // loadDecision → _render → _mount_reviewer_action_controls
+            // re-snapshots originals, so dirty state is naturally
+            // clean on the reloaded row.
+        } catch (err) {
+            // Frappe surfaces whitelist-method errors automatically via
+            // its error dialog (frappe.call handles the response
+            // shape). All we do here is log for dev debugging and
+            // preserve dirty state so the reviewer can retry.
+            console.error("md-review: save_decision failed", err);
+        } finally {
+            this._saving = false;
+            this._update_save_button_state();
+        }
+    }
+
+    /**
+     * Central change handler for Section 4 controls. Called on every
+     * onchange event from the three writable controls. Responsibilities:
+     *
+     *  - On final_account change: compute auto-flip (§1.4 refinement 1)
+     *    and programmatically set review_action. The programmatic
+     *    set_value re-enters this handler (Frappe fires onchange on
+     *    set_value too), so the _loading_controls flag is raised around
+     *    the set_value call to prevent recursion.
+     *
+     *  - Dirty-state tracking lands in Phase D.3. For now, this handler
+     *    is auto-flip-only.
+     *
+     * @param {string} field_that_changed - "review_action" / "final_account" / "reviewer_notes"
+     */
+    _on_section4_change(field_that_changed) {
+        // Skip the handler entirely during initial row-load population.
+        // Also skip when we're mid-programmatic-flip (see below).
+        if (this._loading_controls) return;
+
+        if (field_that_changed === "final_account") {
+            const current_final = this.section4_controls.final_account.get_value() || "";
+            const current_action = this.section4_controls.review_action.get_value() || "Pending";
+
+            const new_action = DetailPane._computeAutoFlip({
+                originalProposedAccount: this._original_proposed_account,
+                currentReviewAction: current_action,
+                currentFinalAccount: current_final,
+            });
+
+            if (new_action !== current_action) {
+                // Programmatic set_value would re-enter this handler via
+                // onchange and potentially cause a flip-feedback loop if
+                // the review_action branch ever grows logic. Raise the
+                // guard for the duration of the flip to keep the chain
+                // single-pass.
+                this._loading_controls = true;
+                try {
+                    this.section4_controls.review_action.set_value(new_action);
+                } finally {
+                    this._loading_controls = false;
+                }
+            }
+        }
+        // review_action manual change and reviewer_notes edits: no
+        // auto-flip, but the Save button state still needs to update.
+        // All three field changes funnel into this terminal step.
+        this._update_save_button_state();
+    }
+
     _render_assignment_shell() {
         return `
             <section class="detail-section detail-assignment">
@@ -957,7 +1504,23 @@ frappe.pages["md-review"].on_page_load = function(wrapper) {
     // the DOM (from the shell above); DetailPane replaces its contents with
     // the empty-state placeholder, then with rendered sections on row
     // selection.
-    const detail_pane = new DetailPane(container.find(".decision-detail-pane"));
+    //
+    // on_save_success bridges DetailPane → MasterPane.updateRow so the
+    // list row reflects the just-saved state without a full list
+    // refetch. Declared here (rather than in the controller object
+    // below) because master_pane isn't in scope until after
+    // DetailPane is constructed — the closure captures the outer
+    // binding which is filled in a few lines later; by the time
+    // on_save_success actually fires, master_pane is populated.
+    let master_pane;
+    const detail_pane = new DetailPane(
+        container.find(".decision-detail-pane"),
+        {
+            on_save_success: (name, saved) => {
+                if (master_pane) master_pane.updateRow(name, saved);
+            },
+        }
+    );
 
     // Controller: thin orchestration layer between FilterBar + MasterPane +
     // DetailPane. Selection in the master pane drives URL hash sync AND
@@ -973,7 +1536,7 @@ frappe.pages["md-review"].on_page_load = function(wrapper) {
     };
 
     const filter_bar = new FilterBar(container.find(".filter-bar-container"));
-    const master_pane = new MasterPane(
+    master_pane = new MasterPane(
         container.find(".master-pane-container"),
         session_name,
         controller
@@ -992,6 +1555,33 @@ frappe.pages["md-review"].on_page_load = function(wrapper) {
                 detail_pane.clear();
             }
         });
+    });
+
+    // Ctrl+S keyboard shortcut — saves the current decision when
+    // Section 4 is dirty. First shortcut in the page; the fuller
+    // suite (a/r/c/d/Ctrl+Shift+S/Ctrl+Z) lands in Commit 5 alongside
+    // the opinionated Approve & Next / Reject / Defer flow and their
+    // validation semantics. Ctrl+S is the one shortcut whose meaning
+    // ("save current form") is unambiguous enough to ship standalone.
+    //
+    // ignore_inputs: true is load-bearing — reviewers spend most of
+    // their time with focus in the reviewer_notes textarea, and the
+    // shortcut MUST fire from there without requiring a blur-first.
+    // The _saving guard inside saveDecision() handles the double-
+    // fire case (click + Ctrl+S in quick succession).
+    frappe.ui.keys.add_shortcut({
+        shortcut: "ctrl+s",
+        action: () => {
+            if (detail_pane.isDirty() && !detail_pane._saving) {
+                detail_pane.saveDecision();
+            }
+            // If clean, swallow the Ctrl+S silently — no toast, no
+            // error. Reviewers will habitually Ctrl+S to confirm
+            // "yes, this row is good as-is"; we don't want to nag.
+        },
+        description: __("Save current decision"),
+        page: page,
+        ignore_inputs: true,
     });
 
     // Initial load

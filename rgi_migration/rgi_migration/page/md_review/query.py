@@ -208,3 +208,255 @@ def fetch_decision_detail(
         "docinfo": docinfo,
         "session_company_abbr": session_company_abbr,
     }
+
+
+# ---------------------------------------------------------------------------
+# Commit 4b — save_decision core + account autocomplete formatter
+# ---------------------------------------------------------------------------
+
+
+SAVE_DECISION_FIELDS: tuple[str, ...] = (
+    "review_action",
+    "final_account",
+    "final_dr",
+    "final_cr",
+    "reviewer_notes",
+)
+
+
+def apply_decision_save(
+    *,
+    current: dict,
+    review_action: str,
+    final_account: str | None,
+    reviewer_notes_input: str | None,
+    session_user: str,
+    now_str: str,
+) -> dict:
+    """Pure implementation of the save-decision mutation logic.
+
+    Given the current Mapping Decision doc-dict and the reviewer's
+    inputs, returns a dict of the fields that should be written back
+    to the doc before save. The Frappe wrapper applies these and calls
+    ``doc.save()``.
+
+    Encapsulates two non-trivial rules from
+    ``docs/week4_review_ui_design.md §1.4``:
+
+    * **Refinement 2** — ``final_dr`` / ``final_cr`` are *not*
+      reviewer-editable in v1. They mirror ``opening_dr`` /
+      ``opening_cr`` exactly. The splitting workflow
+      (one Tally balance → multiple ERPNext accounts) is deferred to
+      v2; in v1 the mapping is always 1:1 so the derivation is
+      trivial.
+
+    * **Refinement 3** — ``reviewer_notes`` accumulates as a
+      chronology. When the reviewer submits new note content *and*
+      prior stored content is non-empty *and* the new content differs
+      from the stored content, a header of the form
+      ``[<user>, <YYYY-MM-DD HH:MM>] `` is prepended to the new
+      content and the whole thing is concatenated with a blank line
+      separator before the stored content. If the stored content is
+      empty (first-note case), the new content is written verbatim
+      with no header — the doc's ``owner`` / ``creation`` fields
+      already anchor the first authorship. If the new content is
+      empty or identical to stored, the stored value is left alone.
+
+    Args:
+        current: The current Mapping Decision as a dict. Must contain
+            ``opening_dr``, ``opening_cr``, ``reviewer_notes`` (may
+            be ``None`` / empty).
+        review_action: The target ``review_action`` Select value.
+        final_account: The target ``final_account`` Link value, or
+            ``None`` / empty string to clear.
+        reviewer_notes_input: The reviewer's new notes content — just
+            the new text, not the accumulated history. ``None`` or
+            empty string means "no new note this save; preserve
+            stored value".
+        session_user: ``frappe.session.user`` — captured by the
+            wrapper and passed in for determinism in tests.
+        now_str: Current datetime formatted as ``YYYY-MM-DD HH:MM`` —
+            captured by the wrapper for determinism in tests.
+
+    Returns:
+        A dict with exactly the keys in :data:`SAVE_DECISION_FIELDS`.
+        Caller assigns these onto the Frappe doc and calls ``save()``.
+    """
+    opening_dr = float(current.get("opening_dr") or 0.0)
+    opening_cr = float(current.get("opening_cr") or 0.0)
+
+    # final_account: empty string is the "clear" sentinel — normalise
+    # to None so Frappe writes NULL rather than an empty-string Link
+    # (which would fail Account-existence validation).
+    final_account_clean: str | None = final_account or None
+
+    # reviewer_notes — see Refinement 3 logic above.
+    stored_notes = (current.get("reviewer_notes") or "").strip()
+    new_input = (reviewer_notes_input or "").strip()
+
+    if not new_input:
+        # No new content. Preserve stored exactly (may itself be "").
+        final_notes = current.get("reviewer_notes") or ""
+    elif not stored_notes:
+        # First-note case — write verbatim, no header.
+        final_notes = new_input
+    elif new_input == stored_notes:
+        # Reviewer didn't actually change anything. Leave stored
+        # untouched — avoids adding a header for a no-op save.
+        final_notes = current.get("reviewer_notes") or ""
+    else:
+        header = f"[{session_user}, {now_str}] "
+        final_notes = f"{header}{new_input}\n\n{stored_notes}"
+
+    return {
+        "review_action": review_action,
+        "final_account": final_account_clean,
+        "final_dr": opening_dr,
+        "final_cr": opening_cr,
+        "reviewer_notes": final_notes,
+    }
+
+
+def build_account_autocomplete_results(
+    accounts: list[dict],
+) -> list[list[str]]:
+    """Pure implementation of the parent-chain-annotated autocomplete.
+
+    The Mapping Decision Review page's ``final_account`` Link widget
+    uses a custom ``query`` (wired via ``df.get_query``) so reviewers
+    can see each candidate's parent account + root type as the
+    autocomplete dropdown's description line. Without it, reviewers
+    staring at "Bank of Maharashtra - CACSPU" can't tell whether
+    it sits under "Bank Accounts - CACSPU" or "Fixed Deposits -
+    CACSPU" without clicking through — a real failure mode observed
+    during the spike.
+
+    Frappe's Link autocomplete accepts each result as either
+    ``[name]`` (name-only) or ``[name, description, ...extras]``
+    (name + grey subtitle on the right). This function returns the
+    latter shape.
+
+    Args:
+        accounts: Rows from ``frappe.get_all("Account", ...)``.
+            Each row must have ``name``; ``parent_account`` and
+            ``root_type`` are optional but make the subtitle useful.
+
+    Returns:
+        A list of ``[name, description]`` pairs. ``description`` is
+        ``"<root_type> · under <parent_account>"`` when both are
+        present, or a shorter form when one is missing. Empty list
+        if ``accounts`` is empty.
+    """
+    results: list[list[str]] = []
+    for acc in accounts:
+        name = acc.get("name")
+        if not name:
+            # Defensive — should never happen with frappe.get_all,
+            # but refuse to return a [null, ...] row that would crash
+            # the autocomplete renderer.
+            continue
+        parent = (acc.get("parent_account") or "").strip()
+        root = (acc.get("root_type") or "").strip()
+        if parent and root:
+            description = f"{root} \u00b7 under {parent}"
+        elif parent:
+            description = f"under {parent}"
+        elif root:
+            description = root
+        else:
+            description = "(root)"
+        results.append([name, description])
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Commit 4b — auto-flip truth table (§1.4 Section 4, refinement 1)
+# ---------------------------------------------------------------------------
+
+
+# Every Select option whose semantics are "still-awaiting-decision". When
+# the reviewer is in one of these states, the auto-flip logic reacts to
+# ``final_account`` changes; when they're in a terminal state (Approved,
+# Rejected, Deferred, etc.), we respect the explicit choice and leave it
+# alone.
+PENDING_REVIEW_STATES: frozenset[str] = frozenset({
+    "Pending",
+    "Pending Account Creation",
+    "Pending Group Account Resolution",
+    "Pending Supplier Creation",
+})
+
+
+def compute_auto_flip(
+    *,
+    original_proposed_account: str | None,
+    current_review_action: str,
+    current_final_account: str | None,
+) -> str:
+    """Pure implementation of the review_action auto-flip truth table.
+
+    Mirror of ``DetailPane._computeAutoFlip`` in ``md_review.js`` — the
+    JS version runs live in the browser on every ``final_account``
+    change; this Python version exists so the logic can be unit-tested
+    in pytest. Both must stay behaviourally identical. If one is
+    changed, update the other and the tests.
+
+    Truth table (§1.4 Section 4, refinement 1):
+
+    =====================================  ==========================  =========================
+    Starting state                          Reviewer action              review_action flips to
+    =====================================  ==========================  =========================
+    unmapped + Pending                      picks final_account         Approved
+    mapped + Pending                        picks same as proposal      Approved
+    mapped + Pending                        picks different account     Manual Override
+    unmapped or mapped + Pending            clears final_account        Pending
+    Any state                               manually picks terminal     Select value wins (no-op)
+    =====================================  ==========================  =========================
+
+    The function treats all four ``Pending*`` variants as Pending-
+    like — they represent "still awaiting decision" in various
+    sub-flavours. Terminal states (Approved / Rejected / Manual
+    Override / Deferred / Skipped / Excluded (P&L)) mean the reviewer
+    has made an explicit call; we don't overwrite.
+
+    Args:
+        original_proposed_account: ``proposed_account`` at row-load
+            time. ``None`` / empty string means the mapper left the
+            ledger unmapped.
+        current_review_action: The value currently shown in the
+            ``review_action`` Select control.
+        current_final_account: The value currently shown in the
+            ``final_account`` Link control. ``None`` / empty string
+            means the reviewer hasn't picked / has cleared it.
+
+    Returns:
+        The ``review_action`` Select value to display. Caller sets
+        this via ``control.set_value()`` (never via a save — the
+        flip is UI-only until the reviewer saves).
+    """
+    # Rule 5 — reviewer already picked a terminal state. Respect it.
+    if current_review_action not in PENDING_REVIEW_STATES:
+        return current_review_action
+
+    # Rule 4 — final_account cleared (or never set). Back to Pending.
+    if not current_final_account:
+        return "Pending"
+
+    # From here, final_account is non-empty and we're in a Pending*
+    # variant. The decision is whether this counts as agreeing with
+    # the mapper (Approved) or overriding it (Manual Override).
+    if not original_proposed_account:
+        # Rule 1 — unmapped + reviewer supplied a mapping. The reviewer
+        # agreed "there should be a mapping here" and filled it. Not
+        # an override.
+        return "Approved"
+
+    if current_final_account == original_proposed_account:
+        # Rule 2 — mapped + reviewer picked same as proposal.
+        return "Approved"
+
+    # Rule 3 — mapped + reviewer picked something different. This is
+    # the Manual Override case (downstream rule-promotion treats it as
+    # "existing rule is wrong for this ledger" versus Approved-on-
+    # unmapped's "new rule needed").
+    return "Manual Override"
