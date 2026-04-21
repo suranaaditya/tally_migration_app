@@ -19,6 +19,7 @@ and the 58 entities to follow?"
 | 2026-04-20 | Revised §1 to unified **Mapping Decision Review Page (master-detail)**. Items 1+2 merge into a single deliverable; §2 is retired. Items 3-9 unchanged in numbering. Driver: Aditya's call after research phase showed POS-style custom Page is the right shape for reviewer throughput. Build budget 8-10 hrs across 3-4 sessions. |
 | 2026-04-20 | Refinement pass on §1 — 7 tweaks from Aditya's review of `70241e5`, OQ1-6 resolutions embedded in relevant sections, Undo elevated from stretch to v1. Detail in §1.14. Prose now implementation-ready. |
 | 2026-04-20 | Route renamed from `/app/mapping-decision-review/...` to `/app/md-review/...` due to Frappe Page controller's hardcoded 20-char runtime autoname truncation (see `mapper_design_notes.md §5`). Python module path similarly shortened to `page/md_review/`. CSS class `.mapping-decision-review-app` retained — describes component purpose, not URL identifier. Functional design unchanged. |
+| 2026-04-21 | Pane split ratio tightened from 6/4 to 7/3 during Commit 3 browser verification. Master pane's 7-column text-dense layout benefits materially from the extra horizontal room; detail-pane form (Commit 4) still fits at 30% on typical Desk viewports. Prose §1.2 + §1.10 scope fence updated. One-line CSS change, reversible. |
 
 ---
 
@@ -165,7 +166,7 @@ retains its default Desk list view at `/app/mapping-decision`.
 Reviewers don't use it; admins use it for cross-session
 diagnostics and as a safety net if the custom page breaks.
 
-### §1.2 Layout — split-pane, 6/4, fixed-ratio v1
+### §1.2 Layout — split-pane, 7/3, fixed-ratio v1
 
 CSS grid matching POS's pattern (`erpnext/public/scss/point-of-sale.scss`):
 
@@ -177,20 +178,25 @@ CSS grid matching POS's pattern (`erpnext/public/scss/point-of-sale.scss`):
   padding: 1%;
   height: calc(100vh - 5rem);
 
-  > .decision-list-pane   { grid-column: span 6 / span 6; }
-  > .decision-detail-pane { grid-column: span 4 / span 4; }
+  > .decision-list-pane   { grid-column: span 7 / span 7; }
+  > .decision-detail-pane { grid-column: span 3 / span 3; }
 }
 ```
 
 Both panes have fixed height `calc(100vh - 5rem)` (matching POS);
 each pane internally scrolls on overflow.
 
-**Ratio rationale**: 6/4 prioritises list scannability. Seven
-columns of text-dense list content (see §1.3) read cleanly at
-60% viewport; the detail pane at 40% fits all six sections (see
-§1.4) without wasted whitespace on a 1440px Desk viewport. Mirrors
-POS's own ratio and every reviewer on this bench will already have
-the eye-model from their dux_daybook / dux_cashbook use.
+**Ratio rationale**: 7/3 prioritises list scannability. The seven
+columns of text-dense list content (see §1.3) benefit materially
+from the extra horizontal room at 70%; the detail pane at 30%
+fits the six sections (see §1.4) adequately at 1200px+ viewports —
+Link autocomplete and Currency fields stay readable, textarea
+wraps naturally.
+
+Originally designed at 6/4 (mirroring POS), tightened to 7/3
+during Commit 3 browser verification after reviewer feedback that
+the master pane was the attention-anchor and deserved the budget.
+One-line CSS change if we revisit.
 
 **Fixed ratio in v1**. Drag-to-resize is explicitly a v2 concern
 (§1.9 scope fence). One-line CSS change to add it later; not
@@ -640,7 +646,7 @@ a Week-5+ scope, or post-RGI enhancement.
 
 | Non-goal | Why not v1 | Lands in |
 |---|---|---|
-| Drag-to-resize panes | One-line CSS change, zero reviewer value at 6/4 ratio | v2+ post-RGI |
+| Drag-to-resize panes | One-line CSS change, zero reviewer value at 7/3 ratio | v2+ post-RGI |
 | Collapsible detail sections | Six sections all fit at 40% width × calc(100vh - 5rem); collapsing is premature | v2+ post-RGI |
 | Full comment threads with @-mention | `reviewer_notes` textarea covers the audit trail; synthetic-frm scaffolding is fragile | v2+ post-RGI, if reviewers ask |
 | Mobile responsive | Desk-only per Aditya's call — all reviewers use laptop-class screens | post-RGI |

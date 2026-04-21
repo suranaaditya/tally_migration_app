@@ -1,21 +1,70 @@
 """
 Mapping Decision Review — backend whitelist methods.
 
-Scope per Week 4 Item 1 Commit 2: stubs only. Actual implementations
-land in Commits 3 and 5 per docs/week4_review_ui_design.md §1.12.
+Scope progression:
+
+* Commit 2 (infrastructure): four stubs raising NotImplementedError.
+* Commit 3 (this commit): ``get_session_decisions`` implemented as a
+  thin Frappe wrapper around :func:`query.fetch_session_decisions`.
+  The other three stubs remain NotImplementedError — they land in
+  Commit 5 per ``docs/week4_review_ui_design.md §1.12``.
 """
+
+import json
 
 import frappe
 
+from rgi_migration.rgi_migration.page.md_review.query import (
+    fetch_session_decisions,
+)
+
 
 @frappe.whitelist()
-def get_session_decisions(session_name, filters=None, start=0, page_length=50, order_by=None):
+def get_session_decisions(
+    session_name,
+    filters=None,
+    start=0,
+    page_length=50,
+    order_by=None,
+):
     """Return Mapping Decisions for a session with filtering + pagination.
 
-    Used by the master pane to populate the decision list.
-    Implementation lands in Commit 3.
+    Used by the Mapping Decision Review page's master pane. Thin
+    Frappe wrapper around :func:`query.fetch_session_decisions`; all
+    query-building and session-scope-guard logic lives there, so the
+    test suite can exercise it without Frappe.
+
+    Session existence is enforced by the ``frappe.get_doc`` call below
+    (raises ``DoesNotExistError`` on a missing session). Read
+    permission on the session is enforced by
+    ``session_doc.check_permission("read")``.
+
+    Args, return shape, and raises: see :func:`query.fetch_session_decisions`.
+    Additional behavior unique to this wrapper:
+
+    * ``filters`` may arrive as a JSON string (standard Frappe client
+      serialisation). Parsed to dict before delegating.
+    * ``frappe.DoesNotExistError`` propagates from ``get_doc``.
     """
-    raise NotImplementedError("get_session_decisions lands in Commit 3")
+    # Frappe's ``frappe.call`` serialises dict args over the wire as
+    # JSON strings for HTTP transport. Parse back to dict before the
+    # core function sees it.
+    if isinstance(filters, str):
+        filters = json.loads(filters) if filters else None
+
+    # Existence + permission check (both enforced by Frappe).
+    session_doc = frappe.get_doc("Tally Migration Session", session_name)
+
+    return fetch_session_decisions(
+        session_name=session_name,
+        filters=filters,
+        start=start,
+        page_length=page_length,
+        order_by=order_by,
+        check_permission=lambda: session_doc.check_permission("read"),
+        get_all=lambda **kw: frappe.get_all("Mapping Decision", **kw),
+        count=lambda f: frappe.db.count("Mapping Decision", f),
+    )
 
 
 @frappe.whitelist()
