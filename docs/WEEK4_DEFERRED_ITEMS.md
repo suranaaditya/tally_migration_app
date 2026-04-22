@@ -8,6 +8,38 @@ here and reference the landing commit in the change log.
 
 ---
 
+## Future design discussions
+
+### Loader-time tier auto-lift when `final_*` is set
+
+**Raised:** Item 2 Commit 4.2 smoke-design (2026-04-22).
+
+Potential enhancement: `decision_from_doc_row` could infer a lifted
+`tier` when the reviewer has supplied a `final_*` field. Concretely,
+when `final_account` is non-null and persisted `tier == "unmapped"`,
+return `tier="tier1_exact"`. When `final_supplier` is non-null and
+persisted `tier == "pending_supplier_creation"`, return
+`tier="tier1_supplier_exact"`. Same for the other refusal tiers.
+
+**Why it's interesting:** generator refusal counts today stay pinned
+to mapper-authoritative tier even after reviewer picks a final
+target. Auto-lift at read would make refusal counts drop in response
+to reviewer edits without requiring the full Items 3/4 approval
+workflow on the critical path.
+
+**Trade-off:** `tier` becomes a **derived** field at read time rather
+than a mapper-authoritative audit field. Two readers of the same
+DocType row see different tiers. Breaks the invariant that the
+persisted row is the source of truth.
+
+**Scope status:** NOT in any current Item. Deferred pending explicit
+design discussion. Items 3 (supplier) and 4 (account) are currently
+expected to carry tier transitions as part of their approval
+workflows — if those workflows land cleanly, loader-time auto-lift
+may be moot.
+
+---
+
 ## `create_doctypes.py` scaffolder drift
 
 **Raised:** Item 2 Commit 1 (2026-04-22). **Target:** before Item 9
@@ -38,56 +70,6 @@ bootstrap) before Item 9 end-to-end test on a clean bench.
   preset), case 4 (filter eliminated everything) each get their own
   copy + CTA.
 - §1.11 prose fix — "column 5" → "column 6" for the Tier chip.
-
----
-
-## "Open in full form" button (Section 6) — bench URL routing quirk
-
-**Raised:** Commit 4b (2026-04-21). **Re-deferred:** Commit 6 (2026-04-22) —
-attempted fix in Commit 6 confirmed the issue is bench-level, not our
-code.
-
-**Symptom:** Clicking "Open in full form" in Section 6 Audit lands on
-"Page mapping-decision not found" (Frappe's legacy desk-Page lookup
-error). Reaching the form via the URL bar fails the same way.
-
-**What Commit 6 tried:** Switched the link from `<a href="/app/...">`
-to a scripted `window.open` (Path B), then to
-`frappe.set_route("Form", "Mapping Decision", name)` (Path A —
-canonical Frappe in-SPA navigation). Both fail with the same symptom.
-
-**Root cause confirmed via curl probes:**
-
-```
-/app/mapping-decision/<name>      → 301 → /desk/mapping-decision/<name>
-/desk/mapping-decision/<name>     → "Page mapping-decision not found"
-/app/account (any DocType)        → 301 → /desk/account  (same redirect chain)
-```
-
-This bench redirects every `/app/...` URL to `/desk/...`, but the
-desk router on this bench treats the first path segment after
-`/desk/` as a Page name (legacy Frappe routing) and 404s on DocType
-slugs. Frappe's own helper `frappe.utils.get_url_to_form('Mapping
-Decision', '<name>')` returns the broken `/desk/...` URL too — so the
-backend agrees the URL is canonical, but the frontend desk router
-disagrees.
-
-**Likely culprits to investigate (separate session):**
-
-- nginx config doing the `/app/` → `/desk/` rewrite (probably from
-  pre-v15 era when desk lived at `/desk/`)
-- frappe `hooks.py` `website_redirects` doing the rewrite
-- bench's Frappe version having a partial `/app/` router that fell
-  back to legacy `/desk/` routing for non-Page URLs
-- Custom `Page` records named after DocType slugs interfering
-
-**Code currently shipped (Commit 6):** `_wire_audit_actions` in
-`md_review.js` calls `frappe.set_route("Form", "Mapping Decision",
-name)` on click. This is the *correct* canonical Frappe API — the
-button will start working as soon as the bench routing is fixed.
-
-**Not blocking Item 1** — full-form access is rare (audit / debug
-use only). Reviewers do all editing in the detail pane.
 
 ---
 

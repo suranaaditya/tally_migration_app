@@ -548,6 +548,30 @@ design doc because it's infrastructure state, not design.
 If browser verification of any custom Desk page surfaces only
 these Socket.IO errors + no other errors, treat as green.
 
+### Generator refusals gate on `tier`, not `review_action` or `final_*`
+
+Caught twice during Item 2 (Commit 4.2 smoke-scope design). The three
+generators' refusal aggregators (`opening_je._select_contributions`,
+`oit_csv._enforce_preflight`, `advance_je._enforce_preflight`) all
+key on `d.tier` — not on `d.review_action` and not on whether the
+reviewer set a `final_*` Link. That means:
+
+- Setting `final_account` on an `unmapped` row does NOT clear it from
+  the main-JE refusal list — the row still has `tier="unmapped"`.
+- Setting `review_action="Deferred"` does NOT clear a row from any
+  generator's refusal — same reason.
+- To clear a refusal without the reviewer workflows from Items 3/4
+  (SCR/ACR approval which lift the tier as part of their flow), the
+  tier itself must be rewritten.
+
+Implication: any design that expects "reviewer sets `final_*` → generator
+refusal count drops" is wrong under the current architecture. The
+architecture puts tier-lift in the approval workflows (Items 3/4),
+not at `final_*`-set time. If a future iteration wants reviewer edits
+to immediately affect refusal counts, see the "Loader-time tier
+auto-lift" future-design entry in
+`docs/WEEK4_DEFERRED_ITEMS.md`.
+
 ### Select enum drift from mapper-emitted literals
 
 Frappe Select fields validate writes against the `options` list. If a
@@ -1105,3 +1129,4 @@ from readability-at-scale the way JS does.
 | 2026-04-22 | §5 canonical fix for stale Python module cache (third occurrence in two days): `kill -HUP <gunicorn-master-pid>` gracefully reloads workers. Gunicorn's `--preload` flag imports app code in master before forking, so workers never see disk changes without this reload. No sudo required. Applying HUP during Commit 4a verification incidentally cleared Commit 3's deferred root-type-prefix issue — it was always a worker-cache problem, not a code problem. |
 | 2026-04-22 | **§9.1 Week 4 persistence — revised model added.** Reconciles §8.2's cache-only framing with the DocType-authoritative architecture that Item 1 (Week 4 review UI) shipped. Mapping Decision DocType is now the primary persistence layer for reviewer decisions; mapper persists on explicit `Run Mapper` trigger; generators pivot to read `final_*` over `proposed_*` (Item 2 Commit 3). Reparse-and-remap pattern and ParsedTallyTB cache sketch both removed. §9.2 reserved for generator preference-order spec. Change log reference: Week 4 Item 2 Commit 1. |
 | 2026-04-22 | **Mapping Decision schema — 4 supplier fields + tier enum extension.** Added `proposed_supplier` (Link → Supplier), `new_supplier_name` (Data), `supplier_match_score` (Float precision 3), `final_supplier` (Link → Supplier) to persist mapper output and reviewer choice for vendor-party ledgers. Previously, `MappedDecision` dataclass carried these values but the DocType had no columns, so persistence silently dropped them — blocking Item 3 supplier-review UI. Tier Select enum extended with `tier1_supplier_exact` and `tier1_supplier_alias` (mapper emits; enum was missing). Additive-only; existing rows default NULL. Week 4 Item 2 Commit 1. |
+| 2026-04-22 | **Item 2 COMPLETE** — §9.1 architecture pivot validated end-to-end. Four sub-commits: Commit 1 (schema + §9.1 doc), Commit 2 (Run Mapper button + MappedDecision persistence bridge), Commit 3 (generator pivot — read DocType, prefer final_*), Commit 4.1 (parser-boundary dedup on `(tally_name, tally_id)`: 1964 → 1939 on CACSPU), Commit 4.2 (closing smoke — 7 steps green). Plus out-of-sequence hotfix `ab8c5ad` (Mapping Decision permissions regression from Item 1 Commit 1 istable flip). §5 expanded with two new gotchas: Select enum drift + generators refusing on tier-not-review_action. WEEK3_COMPLETE §11 calibrated CACSPU baseline numbers. WEEK4_DEFERRED_ITEMS closed two items (Open in full form = permissions, duplicate identity = parser dedup); added two (create_doctypes.py scaffolder drift, loader-time tier auto-lift future-design). |
