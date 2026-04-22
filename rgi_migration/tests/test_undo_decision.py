@@ -99,23 +99,35 @@ def test_none_final_account_preserved():
     assert result["final_account"] is None
 
 
-def test_missing_field_in_snapshot_raises_keyerror():
-    """A malformed cache entry — e.g. a Commit-4b snapshot written
-    before ``reviewer_notes`` was added to the snapshot, or a
-    corrupt Redis value — must raise rather than silently restore
-    a partial set. The wrapper catches nothing here; the reviewer
-    sees an error dialog (far better than silent corruption)."""
+def test_partial_snapshot_restores_only_its_keys():
+    """Item 3 Commit 1b made undo shape-agnostic: a snapshot with a
+    subset of the original SAVE_DECISION_FIELDS (e.g. a supplier-save
+    snapshot that contains ``final_supplier`` + ``tier`` but not
+    ``final_account``) restores exactly those keys, nothing more,
+    nothing less.
+
+    Pre-Commit-1b behavior raised ``KeyError`` on missing keys,
+    guarding against partial restores of the strict 5-field contract.
+    The new contract accepts any non-empty snapshot dict — the
+    empty-snapshot guard still catches the obvious failure mode
+    (zero fields → no-op save with no audit value → refuses)."""
     current = _current_doc()
-    # Missing reviewer_notes — drop it from the snapshot.
-    bad_snapshot = {
+    partial_snapshot = {
         "review_action": "Pending",
         "final_account": None,
-        "final_dr": 1000.0,
-        "final_cr": 0.0,
     }
+    result = apply_decision_undo(current=current, snapshot=partial_snapshot)
+    assert result == partial_snapshot
 
-    with pytest.raises(KeyError, match="reviewer_notes"):
-        apply_decision_undo(current=current, snapshot=bad_snapshot)
+
+def test_empty_snapshot_raises_valueerror():
+    """Zero-field snapshot is defensively refused — restoring nothing
+    would yield a no-op save that still calls doc.save() and still
+    invalidates the cache entry, producing audit noise without
+    meaningful revert semantics."""
+    current = _current_doc()
+    with pytest.raises(ValueError, match="empty"):
+        apply_decision_undo(current=current, snapshot={})
 
 
 def test_multi_field_restore_no_cross_contamination():
@@ -147,19 +159,20 @@ def test_multi_field_restore_no_cross_contamination():
     assert result["reviewer_notes"] != current["reviewer_notes"]
 
 
-def test_return_shape_matches_undo_restore_fields():
-    """The returned dict must contain exactly the keys in
-    UNDO_RESTORE_FIELDS — no leakage of extra snapshot keys (e.g.
-    a future save_decision that stashes more context), no missing
-    fields. The Frappe wrapper iterates this dict and calls
-    ``doc.set`` per key, so drift here would silently corrupt
-    unrelated fields."""
+def test_return_shape_matches_snapshot_keys_exactly():
+    """Shape-agnostic contract (Item 3 Commit 1b): the returned dict
+    contains exactly the keys present in the snapshot — caller is
+    now responsible for building a well-formed snapshot. The Frappe
+    wrapper's snapshot-shape contract (SAVE_DECISION_FIELDS for
+    account saves, SUPPLIER_SAVE_FIELDS for supplier saves) is
+    enforced at snapshot-build time, not at restore time.
+
+    Sanity bound: account-save snapshots still contain all the
+    UNDO_RESTORE_FIELDS keys since SAVE_DECISION_FIELDS is unchanged."""
     current = _current_doc()
-    # Snapshot includes an extra spurious key to verify it's NOT
-    # copied through.
-    snapshot = _snapshot(spurious_extra_field="should not appear")
+    snapshot = _snapshot()
 
     result = apply_decision_undo(current=current, snapshot=snapshot)
 
-    assert set(result.keys()) == set(UNDO_RESTORE_FIELDS)
-    assert "spurious_extra_field" not in result
+    assert set(result.keys()) == set(snapshot.keys())
+    assert set(result.keys()) >= set(UNDO_RESTORE_FIELDS)

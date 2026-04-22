@@ -959,3 +959,46 @@
 .mapping-decision-review-app .detail-all-resolved-actions {
     margin-top: 8px;
 }
+
+
+/* --- SupplierResolutionDialog (Item 3 Commit 1b) ------------------------- */
+
+.supplier-dialog-context {
+    display: grid;
+    grid-template-columns: 110px 1fr;
+    gap: 4px 12px;
+    font-size: 13px;
+    margin-bottom: 8px;
+    padding: 8px 12px;
+    background: var(--fg-color, #f5f7fa);
+    border-radius: 4px;
+    border: 1px solid var(--border-color, #e2e6ea);
+}
+
+.supplier-dialog-context .sdc-label {
+    color: var(--text-muted, #687178);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    align-self: center;
+}
+
+.supplier-dialog-context .sdc-value {
+    color: var(--text-color, #1f272e);
+    font-weight: 500;
+}
+
+.supplier-dialog-context .sdc-id {
+    color: var(--text-muted, #687178);
+    font-weight: normal;
+    font-size: 11px;
+}
+
+.supplier-dialog-banner {
+    padding: 10px 12px;
+    background: var(--orange-100, #fff4dc);
+    border-left: 4px solid var(--orange-500, #f5a623);
+    color: var(--orange-900, #6a3f00);
+    font-size: 13px;
+    border-radius: 2px;
+}

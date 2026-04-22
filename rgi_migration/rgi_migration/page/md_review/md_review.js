@@ -1566,6 +1566,15 @@ class DetailPane {
         this.container.find(".action-approve-btn")
             .off("click.mdr-approve").on("click.mdr-approve", () => this._onApprove());
 
+        // Button text polymorphism per row type (Item 3 Commit 1b, AMB-12).
+        // Supplier rows → "Resolve Supplier" (opens rich dialog); account
+        // rows → "Request Creation" (opens simple confirm, replaced by
+        // Item 4 Commit).
+        const is_vendor = this._isVendorRow();
+        this.container.find(".action-request-creation-btn").text(
+            is_vendor ? __("Resolve Supplier") : __("Request Creation")
+        );
+
         // Initial button state — freshly loaded row is clean (Approve &
         // Next disabled until reviewer makes an edit; Defer/Reject/
         // Request Creation enabled regardless of dirty state).
@@ -2051,6 +2060,16 @@ class DetailPane {
     }
 
     async _onApprove() {
+        // Supplier-row dispatch (Item 3 Commit 1b, AMB-9): the rich
+        // dialog IS the approval path for supplier rows — final_account
+        // is irrelevant on these, and the dialog performs its own
+        // validation. The a-shortcut / Approve button on supplier rows
+        // opens the dialog instead of going through the account-side
+        // validate-and-save path.
+        if (this._isVendorRow()) {
+            this._openSupplierResolutionDialog();
+            return;
+        }
         // Validate first per §1.6 refinement 4. Short-circuit on
         // either failure — no save, no advance. Reviewer fixes input
         // and retries (validation message clears on next edit via
@@ -2073,24 +2092,70 @@ class DetailPane {
     }
 
     async _onRequestCreation() {
-        // Per A1 default — minimal confirm-style dialog. Item 4 (Account
-        // Creation Request) and Item 3 (Supplier Creation Request) will
-        // replace this with a real form + DocType insert. For now the
-        // button just flips the row into the Pending state for the right
-        // creation pipeline so the row visually drops out of the
-        // standard Pending filter and into its dedicated waiting bucket.
-        const is_vendor = this._isVendorRow();
-        const target_state = is_vendor
-            ? "Pending Supplier Creation"
-            : "Pending Account Creation";
-        const label = is_vendor
-            ? "supplier creation request"
-            : "account creation request";
-
+        // Supplier-row dispatch (Item 3 Commit 1b, AMB-8): rich dialog
+        // on supplier rows; simple confirm on account rows (Item 4
+        // replaces with a real Account Creation Request workflow).
+        if (this._isVendorRow()) {
+            this._openSupplierResolutionDialog();
+            return;
+        }
+        const target_state = "Pending Account Creation";
+        const label = "account creation request";
         frappe.confirm(
             __(`Flag this decision as a ${label}? The full creation workflow will be added in a later commit; for now this only marks the state.`),
             () => this._saveWithAction(target_state),
         );
+    }
+
+    /**
+     * Open the rich supplier resolution dialog on the current
+     * supplier-tier row (Item 3 Commit 1b).
+     *
+     * Caller is responsible for checking `_isVendorRow()` first — the
+     * dialog makes no sense on account-tier rows. The dialog handles
+     * its own save via save_supplier_resolution; on success, calls back
+     * into this pane's auto-advance via `_onSupplierResolutionSaved`.
+     */
+    _openSupplierResolutionDialog() {
+        if (this._saving) return;
+        const d = this.current_decision;
+        if (!d) return;
+
+        const decision_name = this.current_decision_name;
+        const dialog = new SupplierResolutionDialog({
+            decision: d,
+            onSaved: async (saved_doc) =>
+                this._onSupplierResolutionSaved(decision_name, saved_doc),
+        });
+        dialog.show();
+    }
+
+    /**
+     * Post-save callback from the supplier dialog. Parallel to
+     * saveDecision's tail — updates Undo state, notifies the master
+     * pane, shows the Undo toast, and auto-advances. The supplier
+     * backend ``save_supplier_resolution`` already cached the pre-save
+     * snapshot (shape: SUPPLIER_SAVE_FIELDS); ``undoLastSave`` uses
+     * the same shape-agnostic ``undo_decision`` endpoint.
+     */
+    async _onSupplierResolutionSaved(saved_decision_name, saved_doc) {
+        // Stash Undo state (parallel to saveDecision lines 1688-1689).
+        this._last_saved_decision_name = saved_decision_name;
+        this._last_saved_timestamp = Date.now();
+
+        // Notify controller so master-pane row updates optimistically
+        // (parallel to saveDecision line 1693-1695).
+        if (this.on_save_success) {
+            this.on_save_success(saved_decision_name, saved_doc || {});
+        }
+
+        this._showSavedToastWithUndo();
+
+        // Auto-advance via controller's get_next_pending (parallel to
+        // saveDecision line 1699-1704 when advance=true).
+        if (this.on_advance_requested) {
+            this.on_advance_requested(saved_decision_name);
+        }
     }
 
     /**
@@ -2193,9 +2258,9 @@ const SHORTCUT_REFERENCE = [
     {
         group: "Actions",
         bindings: [
-            ["A",            "Approve & Next"],
+            ["A",            "Approve & Next — on supplier rows, opens Resolve Supplier dialog"],
             ["R",            "Reject"],
-            ["C",            "Request Creation"],
+            ["C",            "Request Creation — on supplier rows, opens Resolve Supplier dialog"],
             ["D",            "Defer"],
             ["Ctrl+S",       "Approve & Next (validating; works from notes)"],
             ["Ctrl+Shift+S", "Save Without Advance"],
@@ -2430,6 +2495,199 @@ function renderSessionMissingEmptyState(page, session_name_attempted) {
     page.body.find(".mdr-empty-state-go-list").on("click", () => {
         frappe.set_route("List", "Tally Migration Session");
     });
+}
+
+
+// ============================================================================
+// SupplierResolutionDialog — Item 3 Commit 1b rich dialog
+// ============================================================================
+//
+// Modal dialog for supplier-tier decisions. Two radio paths:
+//
+// 1. "Map to existing supplier" — supplier autocomplete picker wired
+//    to supplier_query backend. Submit calls save_supplier_resolution,
+//    which sets final_supplier + tier=tier1_supplier_exact +
+//    review_action=Approved + reviewer_notes (chronology-header).
+//    Caller's onSaved callback handles Undo + auto-advance.
+//
+// 2. "Create new supplier" — disabled in Commit 1b (per Sub-AMB-8 β).
+//    Helper text redirects reviewer to Defer on un-resolvable rows
+//    until Commit 2 wires the SCR child row insertion.
+//
+// Radio default based on current-state (Sub-AMB-6):
+//   final_supplier set    → Map-to-existing, picker pre-filled
+//   proposed_supplier set → Map-to-existing, picker pre-filled
+//   else                  → Create-new (which is disabled; reviewer
+//                           reads the banner and cancels + Defers)
+
+class SupplierResolutionDialog {
+    static MAP_RADIO = "Map to existing supplier";
+    static CREATE_RADIO = "Create new supplier (ships in next commit)";
+
+    constructor({ decision, onSaved }) {
+        this.decision = decision;
+        this.onSaved = onSaved || (() => {});
+        this._dialog = null;
+    }
+
+    /** Compute initial radio selection per Sub-AMB-6 current-state defaults. */
+    _initial_radio() {
+        const d = this.decision || {};
+        if (d.final_supplier || d.proposed_supplier) {
+            return SupplierResolutionDialog.MAP_RADIO;
+        }
+        return SupplierResolutionDialog.CREATE_RADIO;
+    }
+
+    /** Compute initial picker value — reviewer's prior pick wins over mapper. */
+    _initial_supplier() {
+        const d = this.decision || {};
+        return d.final_supplier || d.proposed_supplier || "";
+    }
+
+    show() {
+        const d = this.decision || {};
+        const initial_radio = this._initial_radio();
+        const initial_supplier = this._initial_supplier();
+
+        // Context line — tally name + parent chain + opening balance
+        // for reviewer orientation; matches the detail-pane Section 1
+        // information without duplicating the whole section.
+        const parent_chain = d.tally_parent_chain || "";
+        const opening = d.opening_cr || d.opening_dr || 0;
+        const context_html = `
+            <div class="supplier-dialog-context">
+                <div class="sdc-label">Tally ledger</div>
+                <div class="sdc-value">${frappe.utils.escape_html(d.tally_name || "")}${
+                    d.tally_id ? ` <span class="sdc-id">[tally_id=${frappe.utils.escape_html(d.tally_id)}]</span>` : ""
+                }</div>
+                ${parent_chain ? `
+                    <div class="sdc-label">Parent chain</div>
+                    <div class="sdc-value">${frappe.utils.escape_html(parent_chain)}</div>
+                ` : ""}
+                <div class="sdc-label">Opening</div>
+                <div class="sdc-value">${frappe.format(opening, { fieldtype: "Currency" })} ${d.net_side || ""}</div>
+            </div>
+        `;
+
+        this._dialog = new frappe.ui.Dialog({
+            title: __("Resolve Supplier"),
+            fields: [
+                {
+                    fieldtype: "HTML",
+                    fieldname: "context_block",
+                    options: context_html,
+                },
+                {
+                    fieldtype: "Section Break",
+                },
+                {
+                    fieldtype: "Select",
+                    fieldname: "resolution_path",
+                    label: __("Resolution"),
+                    options: [
+                        SupplierResolutionDialog.MAP_RADIO,
+                        SupplierResolutionDialog.CREATE_RADIO,
+                    ].join("\n"),
+                    default: initial_radio,
+                    reqd: 1,
+                    change: () => this._on_radio_change(),
+                },
+                {
+                    fieldtype: "Link",
+                    fieldname: "final_supplier",
+                    label: __("Supplier"),
+                    options: "Supplier",
+                    default: initial_supplier,
+                    get_query: () => ({
+                        query: "rgi_migration.rgi_migration.page.md_review.md_review.supplier_query",
+                    }),
+                    depends_on: `eval:doc.resolution_path === "${SupplierResolutionDialog.MAP_RADIO}"`,
+                },
+                {
+                    fieldtype: "HTML",
+                    fieldname: "create_new_banner",
+                    options: `
+                        <div class="supplier-dialog-banner">
+                            ⚠ <strong>${__("Create new supplier workflow ships in next commit")}.</strong>
+                            ${__("In this commit the Create-new path is preview-only — reviewers of rows without any matching supplier should Defer for now.")}
+                        </div>
+                    `,
+                    depends_on: `eval:doc.resolution_path === "${SupplierResolutionDialog.CREATE_RADIO}"`,
+                },
+                {
+                    fieldtype: "Section Break",
+                },
+                {
+                    fieldtype: "Small Text",
+                    fieldname: "reviewer_notes",
+                    label: __("Reviewer notes"),
+                    description: __("Appended to chronology — prior notes preserved above the new entry."),
+                },
+            ],
+            primary_action_label: __("Save"),
+            primary_action: () => this._on_submit(),
+            secondary_action_label: __("Cancel"),
+        });
+
+        this._dialog.show();
+        // Hide Save button initially if Create-new is the default (disabled).
+        this._update_submit_state();
+    }
+
+    _on_radio_change() {
+        this._update_submit_state();
+    }
+
+    _update_submit_state() {
+        if (!this._dialog) return;
+        const path = this._dialog.get_value("resolution_path");
+        const is_create = path === SupplierResolutionDialog.CREATE_RADIO;
+        const btn = this._dialog.get_primary_btn();
+        if (!btn || !btn.length) return;
+        if (is_create) {
+            btn.prop("disabled", true);
+            btn.attr("title", __("Create-new workflow ships in next commit"));
+        } else {
+            btn.prop("disabled", false);
+            btn.removeAttr("title");
+        }
+    }
+
+    async _on_submit() {
+        const values = this._dialog.get_values();
+        if (!values) return;  // Dialog's own validation rejected
+        if (values.resolution_path === SupplierResolutionDialog.CREATE_RADIO) {
+            // Guarded by _update_submit_state but defensive.
+            return;
+        }
+        if (!values.final_supplier) {
+            frappe.msgprint({
+                title: __("Pick a supplier"),
+                message: __("Select a Supplier from the dropdown."),
+                indicator: "orange",
+            });
+            return;
+        }
+
+        try {
+            const r = await frappe.call({
+                method: "rgi_migration.rgi_migration.page.md_review.md_review.save_supplier_resolution",
+                args: {
+                    decision_name: this.decision.name,
+                    final_supplier: values.final_supplier,
+                    reviewer_notes: values.reviewer_notes || "",
+                },
+            });
+            const saved_doc = r.message || {};
+            this._dialog.hide();
+            await this.onSaved(saved_doc);
+        } catch (err) {
+            // Frappe's default error dialog handles display; log for dev.
+            // eslint-disable-next-line no-console
+            console.error("save_supplier_resolution failed", err);
+        }
+    }
 }
 
 

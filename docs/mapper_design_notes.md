@@ -595,6 +595,33 @@ a frozenset of the authoritative emitted literals and diff against
 the Select options; new mapper-side values force the enum to grow
 with them rather than silently bombing on insert.
 
+**Generalisation surfaced in Item 3 Commit 1a**: the same enum
+extension often has downstream consumers beyond the DocType Select.
+Two JS constants in `md_review.js` had to be extended alongside Item
+2's `tier1_supplier_exact` / `_alias` addition:
+
+- `DetailPane.SUPPLIER_TIERS` — controls `_isVendorRow()` routing
+  (Request Creation button behaviour, `c` / `a` shortcut target).
+  Without the supplier-tier values, the rows were silently routed
+  through the account-creation workflow.
+- `MasterPane.TIER_CHIP_STATE` — controls the Tier chip's CSS class
+  in the detail pane. Without entries, chips fell back to grey
+  `muted` styling (visually "excluded") instead of blue `resolved`.
+
+Both were latent because CACSPU's live data produces zero
+`tier1_supplier_exact/_alias` rows (the 10-supplier dev-bench master
+has no close matches to the 18 vendor ledgers), so the bugs never
+fired against real data — would have surfaced on the first entity
+with real supplier-master overlap. Guardrail pattern:
+`rgi_migration/tests/test_md_review_supplier_rendering.py` — regex
+over the JS file asserts both constants cover the supplier-tier set.
+
+**Rule**: when extending a mapper-emitted enum, audit every
+downstream lookup (DocType Select, JS classification sets, CSS-class
+maps, refusal filters, generator tier gates) and add a coverage
+test for each. One-off enum-addition work is the right time to do
+it; catching the ripple later is more painful.
+
 ### Mapper `matched_rule` stores `source_section`, not doc autoname
 
 Caught during Item 2 Commit 2 first real-data run. The mapper's

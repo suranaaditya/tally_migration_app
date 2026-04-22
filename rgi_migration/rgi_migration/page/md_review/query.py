@@ -290,23 +290,12 @@ def apply_decision_save(
     # (which would fail Account-existence validation).
     final_account_clean: str | None = final_account or None
 
-    # reviewer_notes — see Refinement 3 logic above.
-    stored_notes = (current.get("reviewer_notes") or "").strip()
-    new_input = (reviewer_notes_input or "").strip()
-
-    if not new_input:
-        # No new content. Preserve stored exactly (may itself be "").
-        final_notes = current.get("reviewer_notes") or ""
-    elif not stored_notes:
-        # First-note case — write verbatim, no header.
-        final_notes = new_input
-    elif new_input == stored_notes:
-        # Reviewer didn't actually change anything. Leave stored
-        # untouched — avoids adding a header for a no-op save.
-        final_notes = current.get("reviewer_notes") or ""
-    else:
-        header = f"[{session_user}, {now_str}] "
-        final_notes = f"{header}{new_input}\n\n{stored_notes}"
+    final_notes = _apply_chronology_header(
+        stored_notes=current.get("reviewer_notes") or "",
+        new_input=reviewer_notes_input or "",
+        session_user=session_user,
+        now_str=now_str,
+    )
 
     return {
         "review_action": review_action,
@@ -315,6 +304,45 @@ def apply_decision_save(
         "final_cr": opening_cr,
         "reviewer_notes": final_notes,
     }
+
+
+def _apply_chronology_header(
+    *,
+    stored_notes: str,
+    new_input: str,
+    session_user: str,
+    now_str: str,
+) -> str:
+    """Shared reviewer_notes chronology-header logic.
+
+    Rule (`docs/week4_review_ui_design.md §1.4` refinement 3):
+
+    * Empty ``new_input`` → preserve ``stored_notes`` verbatim.
+    * Empty ``stored_notes`` (first-note case) → write ``new_input``
+      verbatim with no header; the doc's ``owner`` / ``creation``
+      already anchor first authorship.
+    * ``new_input == stored_notes`` after strip → no-op save; leave
+      stored unchanged (avoids spurious chronology headers on
+      idempotent re-save).
+    * Else prepend ``[<user>, <YYYY-MM-DD HH:MM>] `` to ``new_input``
+      and concatenate with a blank-line separator before ``stored_notes``.
+
+    Extracted from ``apply_decision_save`` in Item 3 Commit 1b so the
+    supplier resolution path (``apply_supplier_resolution``) can reuse
+    the same reviewer_notes handling without duplicating it.
+    """
+    stored_stripped = stored_notes.strip()
+    new_stripped = new_input.strip()
+
+    if not new_stripped:
+        return stored_notes
+    if not stored_stripped:
+        return new_input
+    if new_stripped == stored_stripped:
+        return stored_notes
+
+    header = f"[{session_user}, {now_str}] "
+    return f"{header}{new_input}\n\n{stored_notes}"
 
 
 def build_account_autocomplete_results(
@@ -467,10 +495,12 @@ def compute_auto_flip(
 # ---------------------------------------------------------------------------
 
 
-# Fields that Undo restores. Must match :data:`SAVE_DECISION_FIELDS` —
-# the snapshot written by ``save_decision`` uses that same tuple, so
-# what gets saved is what gets restored. Duplicated here (rather than
-# aliased) so the Undo contract is legible on its own.
+# Fields Undo was restoring before Item 3 Commit 1b. Preserved as
+# documentation of the account-save contract; not used by the
+# shape-agnostic ``apply_decision_undo`` (Item 3 Commit 1b made it
+# adapt to whatever keys the cached snapshot actually contains, so
+# a supplier-save snapshot restores ``final_supplier`` + ``tier``
+# while an account-save snapshot restores ``final_account`` + amounts).
 UNDO_RESTORE_FIELDS: tuple[str, ...] = SAVE_DECISION_FIELDS
 
 
@@ -481,48 +511,41 @@ def apply_decision_undo(
 ) -> dict:
     """Pure implementation of the undo-save mutation logic.
 
-    Given the current Mapping Decision doc-dict and the pre-save
-    snapshot that ``save_decision`` stashed in ``frappe.cache()``,
-    return a dict of the fields to restore onto the doc before save.
-    The Frappe wrapper applies these and calls ``doc.save()`` —
-    **without** running the chronology-header logic
-    (``apply_decision_save`` is NOT re-invoked on undo; undo means
-    "never happened," so no new header line is added).
+    Given the pre-save snapshot that the Frappe wrapper stashed in
+    ``frappe.cache()``, return a dict of the fields to restore onto
+    the doc. The caller assigns these and calls ``doc.save()``.
 
-    The reviewer_notes field is restored verbatim from the snapshot,
-    so whatever was stored *before* the last save reappears — any
-    chronology header that ``apply_decision_save`` prepended during
-    the save being undone is discarded along with the rest of that
-    save's changes.
+    **Shape-agnostic** (since Item 3 Commit 1b): restores every key
+    present in the snapshot dict, whatever shape it has. Account save
+    snapshots ``SAVE_DECISION_FIELDS``; supplier save snapshots
+    ``SUPPLIER_SAVE_FIELDS``. Each restores the corresponding fields.
+
+    The reviewer_notes field is restored verbatim, so any chronology
+    header that the save being undone prepended is discarded along
+    with the rest of that save's changes (undo means "never happened").
 
     Args:
         current: The current Mapping Decision as a dict. Only used
             as a shape reference — all fields in the return dict
             come from ``snapshot``.
         snapshot: The pre-save snapshot from
-            ``frappe.cache()["mdr_undo:<user>:<decision>"]``. Must
-            contain every key in :data:`UNDO_RESTORE_FIELDS`.
+            ``frappe.cache()["mdr_undo:<user>:<decision>"]``.
 
     Returns:
-        A dict with exactly the keys in :data:`UNDO_RESTORE_FIELDS`.
-        Caller assigns these onto the Frappe doc and calls ``save()``.
+        A dict with the same keys as ``snapshot``. Caller assigns
+        these onto the Frappe doc and calls ``save()``.
 
     Raises:
-        KeyError: if ``snapshot`` is missing any of the required keys
-            (defensive guard — a malformed cache entry would otherwise
-            silently restore partial state and leave the doc in a
-            corrupt shape).
+        ValueError: if ``snapshot`` is empty (defensive — a
+            zero-field restore would be a no-op save with no audit
+            value).
     """
     _ = current  # reserved for future diff-based restoration; unused in v1
-    restored: dict = {}
-    for field in UNDO_RESTORE_FIELDS:
-        if field not in snapshot:
-            raise KeyError(
-                f"undo snapshot missing required field {field!r} — "
-                "snapshot is malformed; refusing partial restore"
-            )
-        restored[field] = snapshot[field]
-    return restored
+    if not snapshot:
+        raise ValueError(
+            "undo snapshot is empty — refusing a zero-field restore"
+        )
+    return dict(snapshot)
 
 
 # ---------------------------------------------------------------------------
@@ -716,3 +739,118 @@ def apply_bulk_approve(decisions: list[dict]) -> dict:
             skipped.append({"name": name, "reason": reason})
 
     return {"eligible": eligible, "skipped": skipped}
+
+
+# ---------------------------------------------------------------------------
+# Item 3 Commit 1b — supplier resolution save + supplier autocomplete
+# ---------------------------------------------------------------------------
+
+
+# Fields written by the supplier-resolution save path (parallel to
+# SAVE_DECISION_FIELDS for the account save path). Dedicated shape so
+# the account save contract stays untouched and the supplier Undo
+# snapshot restores exactly the fields the supplier save wrote.
+SUPPLIER_SAVE_FIELDS: tuple[str, ...] = (
+    "review_action",
+    "final_supplier",
+    "tier",
+    "reviewer_notes",
+)
+
+
+def apply_supplier_resolution(
+    *,
+    current: dict,
+    final_supplier: str | None,
+    reviewer_notes_input: str | None,
+    session_user: str,
+    now_str: str,
+) -> dict:
+    """Pure implementation of the map-to-existing supplier save.
+
+    Called by the ``save_supplier_resolution`` Frappe wrapper when the
+    reviewer picks an existing Supplier from the rich dialog (Item 3
+    Commit 1b). Writes:
+
+    * ``final_supplier`` — the reviewer's picked Supplier doc ID.
+    * ``tier = "tier1_supplier_exact"`` — lifts the decision out of
+      the mapper's original tier so the refusal gates in
+      ``oit_csv`` / ``advance_je`` see it as resolved (Item 3 AMB-2).
+    * ``review_action = "Approved"`` — reviewer authoritatively
+      confirmed the match.
+    * ``reviewer_notes`` — new content concatenated via the shared
+      chronology-header helper (same rule as the account save path).
+
+    The Frappe wrapper is responsible for validating that
+    ``final_supplier`` exists + is not disabled in the Supplier master
+    before calling this. This pure function trusts the Link value.
+
+    Args:
+        current: The current Mapping Decision as a dict. Must contain
+            ``reviewer_notes`` (may be ``None`` / empty).
+        final_supplier: The reviewer's picked Supplier doc ID. Empty
+            string / ``None`` are rejected by the Frappe wrapper — this
+            pure function only sees non-empty values in normal use.
+        reviewer_notes_input: New note content — just the increment,
+            not accumulated history.
+        session_user: ``frappe.session.user`` — captured by the wrapper.
+        now_str: Current ``YYYY-MM-DD HH:MM`` — captured by the wrapper.
+
+    Returns:
+        A dict with exactly the keys in :data:`SUPPLIER_SAVE_FIELDS`.
+    """
+    final_notes = _apply_chronology_header(
+        stored_notes=current.get("reviewer_notes") or "",
+        new_input=reviewer_notes_input or "",
+        session_user=session_user,
+        now_str=now_str,
+    )
+    return {
+        "review_action": "Approved",
+        "final_supplier": final_supplier or None,
+        "tier": "tier1_supplier_exact",
+        "reviewer_notes": final_notes,
+    }
+
+
+def build_supplier_autocomplete_results(
+    suppliers: list[dict],
+) -> list[list[str]]:
+    """Pure implementation of the supplier picker autocomplete formatting.
+
+    Parallel to :func:`build_account_autocomplete_results`. The rich
+    supplier resolution dialog's Supplier Link widget uses a custom
+    ``query`` that returns the supplier's ``supplier_group`` as the
+    grey subtitle on the right, so reviewers can disambiguate between
+    e.g. "Nilesh Traders" (Services) vs. "Nilesh Traders"
+    (Raw Material) without clicking through.
+
+    Frappe Link autocomplete accepts each row as ``[name, description,
+    ...extras]``; this function returns that shape.
+
+    The Frappe wrapper is responsible for the ``disabled=0`` filter at
+    query time — disabled suppliers must never reach this formatter
+    (reviewer-picking a disabled supplier would fail downstream at
+    generator time, per ``oit_csv`` / ``advance_je`` re-check Order A).
+
+    Args:
+        suppliers: Rows from ``frappe.get_all("Supplier", ...)``.
+            Each row must have ``name``; ``supplier_name`` falls back
+            to ``name`` when empty; ``supplier_group`` is optional.
+
+    Returns:
+        A list of ``[name, description]`` pairs. ``description`` is
+        ``"Group: <supplier_group>"`` when the group is populated,
+        ``"(no group)"`` otherwise. Empty list on empty input.
+    """
+    results: list[list[str]] = []
+    for sup in suppliers:
+        name = sup.get("name")
+        if not name:
+            # Defensive — same refusal as build_account_autocomplete_results
+            # for name-less rows that would crash the autocomplete renderer.
+            continue
+        group = (sup.get("supplier_group") or "").strip()
+        description = f"Group: {group}" if group else "(no group)"
+        results.append([name, description])
+    return results

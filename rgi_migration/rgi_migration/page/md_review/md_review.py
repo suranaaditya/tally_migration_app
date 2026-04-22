@@ -18,10 +18,13 @@ import frappe.utils
 from rgi_migration.rgi_migration.page.md_review.query import (
     DEFAULT_ORDER_BY,
     SAVE_DECISION_FIELDS,
+    SUPPLIER_SAVE_FIELDS,
     apply_bulk_approve,
     apply_decision_save,
     apply_decision_undo,
+    apply_supplier_resolution,
     build_account_autocomplete_results,
+    build_supplier_autocomplete_results,
     compute_next_pending,
     fetch_decision_detail,
     fetch_session_decisions,
@@ -263,6 +266,147 @@ def account_query_with_parent(
     )
 
     return build_account_autocomplete_results(accounts)
+
+
+@frappe.whitelist()
+def supplier_query(
+    doctype, txt, searchfield, start, page_len, filters
+):
+    """Custom autocomplete query for the supplier resolution dialog's
+    picker (Item 3 Commit 1b).
+
+    Parallel to :func:`account_query_with_parent` — Frappe's default
+    Link autocomplete shows just the Supplier name; this custom query
+    appends the ``supplier_group`` as the grey subtitle so reviewers
+    can disambiguate same-named suppliers or orient by industry /
+    category at a glance.
+
+    Always filters ``disabled=0`` at query time — a reviewer picking
+    a disabled Supplier would fail the generator's re-check pass
+    (``docs/mapper_design_notes.md §8.3`` Order A). Keeping disabled
+    Suppliers out of the picker prevents that downstream failure.
+
+    Args:
+        doctype: Frappe-supplied; always ``"Supplier"``. Ignored.
+        txt: Reviewer's typed substring, or empty.
+        searchfield: Frappe-supplied field name to OR-match; ignored
+            in favour of our matched-on-name-OR-supplier_name OR_FILTERS.
+        start: Pagination offset.
+        page_len: Pagination page length.
+        filters: Frappe-supplied caller filters. The ``disabled=0``
+            constraint is applied here regardless.
+
+    Returns:
+        List of ``[name, description]`` pairs for the Link autocomplete.
+    """
+    _ = doctype, searchfield, filters  # unused
+
+    suppliers = frappe.get_all(
+        "Supplier",
+        filters={"disabled": 0},
+        or_filters=[
+            ["name", "like", f"%{txt}%"],
+            ["supplier_name", "like", f"%{txt}%"],
+        ] if txt else None,
+        fields=["name", "supplier_name", "supplier_group"],
+        order_by="name asc",
+        start=int(start or 0),
+        page_length=int(page_len or 20),
+    )
+
+    return build_supplier_autocomplete_results(suppliers)
+
+
+@frappe.whitelist()
+def save_supplier_resolution(decision_name, final_supplier, reviewer_notes):
+    """Persist a supplier resolution from the rich dialog (Item 3 Commit 1b).
+
+    Called when the reviewer picks a Supplier via the Map-to-existing
+    path. Writes four fields (see :data:`SUPPLIER_SAVE_FIELDS`):
+    ``final_supplier``, ``tier = "tier1_supplier_exact"``,
+    ``review_action = "Approved"``, and ``reviewer_notes`` (chronology-
+    header-prepended via the shared pure-core helper).
+
+    Guards:
+
+    * ``final_supplier`` must be non-empty and reference an existing,
+      non-disabled Supplier. Empty or unknown values fail here so the
+      reviewer sees a precise error instead of a downstream Link
+      validation error on ``doc.save()``.
+
+    Participates in the Undo pattern: snapshots the pre-save state of
+    ``SUPPLIER_SAVE_FIELDS`` into ``frappe.cache()`` with a 10-second
+    TTL. The :func:`undo_decision` method is shape-agnostic (Item 3
+    Commit 1b) so the same endpoint restores either shape.
+
+    Args:
+        decision_name: The Mapping Decision name to mutate.
+        final_supplier: The reviewer's picked Supplier doc ID.
+        reviewer_notes: New note content (increment only; chronology
+            logic concatenates with any stored history).
+
+    Returns:
+        Dict form of the saved Mapping Decision (post-save).
+
+    Raises:
+        frappe.ValidationError: final_supplier empty, unknown, or
+            disabled.
+        frappe.DoesNotExistError: decision or session missing.
+        frappe.PermissionError: caller lacks session read permission.
+    """
+    if not final_supplier:
+        frappe.throw(
+            "final_supplier is required. Pick a Supplier from the "
+            "dropdown or switch to Create new.",
+        )
+
+    supplier_row = frappe.db.get_value(
+        "Supplier", final_supplier, ["name", "disabled"], as_dict=True,
+    )
+    if not supplier_row:
+        frappe.throw(f"Supplier {final_supplier!r} does not exist.")
+    if supplier_row.get("disabled"):
+        frappe.throw(
+            f"Supplier {final_supplier!r} is disabled. "
+            "Re-enable it in the Supplier master or pick a different "
+            "Supplier.",
+        )
+
+    decision_doc = frappe.get_doc("Mapping Decision", decision_name)
+    session_doc = frappe.get_doc(
+        "Tally Migration Session", decision_doc.session
+    )
+    session_doc.check_permission("read")
+
+    current = decision_doc.as_dict()
+
+    # Snapshot the pre-save state for Undo — shape follows
+    # SUPPLIER_SAVE_FIELDS (not SAVE_DECISION_FIELDS) so undo_decision
+    # restores exactly what save_supplier_resolution wrote. The cache
+    # key space is shared with save_decision; one reviewer can only
+    # have one pending undo at a time per decision, which matches the
+    # 10-second Gmail-style semantics.
+    snapshot = {k: current.get(k) for k in SUPPLIER_SAVE_FIELDS}
+    cache_key = f"mdr_undo:{frappe.session.user}:{decision_name}"
+    frappe.cache().set_value(
+        cache_key,
+        json.dumps(snapshot, default=str),
+        expires_in_sec=10,
+    )
+
+    updates = apply_supplier_resolution(
+        current=current,
+        final_supplier=final_supplier,
+        reviewer_notes_input=reviewer_notes,
+        session_user=frappe.session.user,
+        now_str=frappe.utils.now_datetime().strftime("%Y-%m-%d %H:%M"),
+    )
+
+    for field, value in updates.items():
+        decision_doc.set(field, value)
+    decision_doc.save()
+
+    return decision_doc.as_dict()
 
 
 @frappe.whitelist()
