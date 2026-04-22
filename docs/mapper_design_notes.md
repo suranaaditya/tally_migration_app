@@ -691,6 +691,29 @@ around; kept as a known quirk rather than chased to root cause.
    (`git fetch frappe@…:frappe-bench/apps/rgi_migration …`, then
    `git push origin`).
 
+### Supplier autoname — bench raises `DuplicateEntryError`, does not auto-suffix
+
+Surfaced during Item 3 Commit 3 browser verification and re-confirmed
+in Item 3 Commit 4 closing smoke (2026-04-22).
+
+On `erp.jewonline.in`, inserting a `Supplier` whose `supplier_name`
+matches an existing enabled Supplier raises `DuplicateEntryError`
+instead of silently auto-suffixing with ` 1`, ` 2`, etc. This is
+bench-specific: `Supplier Settings.supp_master_name` on this bench is
+configured so naming uses `supplier_name` directly, not a hash/autoname
+series — so the DB uniqueness constraint fires at insert time.
+
+Handled in `approve_scr`: the exception is caught, the SCR row flips
+to `status=Failed` with an `error_log` block, and the reviewer must
+rename the SCR's `proposed_supplier_name` before retrying Approve.
+See `rgi_migration/rgi_migration/page/md_review/md_review.py:702-720`.
+
+Implication for Item 9 (end-to-end fresh-bench bootstrap): any
+automated test that inserts Suppliers must account for this behavior,
+either by using unique-suffix names per test (e.g., timestamp or
+UUID) or by deleting the Supplier explicitly on cleanup. Do NOT rely
+on Frappe's generic autoname-suffix fallback — it won't fire here.
+
 ---
 
 ## 6. Supplier matching (Tier-1)

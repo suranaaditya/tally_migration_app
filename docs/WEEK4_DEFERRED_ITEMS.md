@@ -40,6 +40,41 @@ may be moot.
 
 ---
 
+## `reset_parse` does not sweep the SCR child table
+
+**Raised:** Item 3 Commit 4 closing smoke (2026-04-22).
+**Target:** Item 7 (session lifecycle hooks) or earlier if a reviewer
+runs into orphan symptoms in the meantime.
+
+**Problem:** `rgi_migration.rgi_migration.doctype.tally_migration_session.tally_migration_session.reset_parse`
+deletes every `Mapping Decision` row for the session and clears the
+parse/map snapshot fields, but it does NOT clear the
+`supplier_creation_requests` child table on the session doc. Any
+SCR rows from a prior run persist; their `source_decisions` CSV
+tokens now reference deleted MD names (orphaned). On re-run of
+`run_mapper`, the child table remains populated with stale history
+while the underlying decisions are freshly minted under new
+MD-YYYY-##### autonames.
+
+**Current smoke workaround:** Item 3 closing smoke
+(`scripts/item3_closing_smoke.py`) calls a helper
+`_clear_scr_child_table(session_name)` that writes
+`session.supplier_creation_requests = []` and saves. Reviewers doing
+Reset Parse from the UI do not get this sweep today.
+
+**Observed symptoms:** none yet in reviewer flow — orphan SCRs are
+inert (no references point to them from live decisions, and the
+Process-SCR dialog filters to `status=Pending/Failed` which may still
+display stale rows). Worth clearing to avoid confusing the reviewer.
+
+**Fix shape:** add an SCR-table clear inside `reset_parse` between
+the Mapping Decision delete and the `session.save()` — single line
+(`session.set("supplier_creation_requests", [])`). Write a unit
+test that seeds decisions + one SCR, calls `reset_parse`, and asserts
+`len(session.supplier_creation_requests) == 0`.
+
+---
+
 ## `create_doctypes.py` scaffolder drift
 
 **Raised:** Item 2 Commit 1 (2026-04-22). **Target:** before Item 9
