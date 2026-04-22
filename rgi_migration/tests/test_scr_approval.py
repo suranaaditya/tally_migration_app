@@ -271,3 +271,40 @@ def test_approve_scr_aggregates_mid_loop_errors(md_review_py: str) -> None:
     The per_decision_errors list accumulates, then appends to
     error_log after the loop."""
     assert "per_decision_errors" in md_review_py
+
+
+def test_bulk_approve_and_reject_whitelists_present(md_review_py: str) -> None:
+    """Commit 3 polish: bulk actions for multi-SCR sessions (CACSPU ~18).
+    Per-row failures must not block the rest — each row carries its
+    own outcome in the response."""
+    assert "def bulk_approve_scrs(" in md_review_py
+    assert "def bulk_reject_scrs(" in md_review_py
+    assert "_parse_whitelist_list_arg" in md_review_py
+
+
+def test_bulk_methods_isolate_per_row_failures(md_review_py: str) -> None:
+    """Response shape: {"ok": [...], "failed": [{"scr", "error"}, ...]}.
+    Failure in row N must not break row N+1."""
+    # Both bulk methods return ok + failed buckets
+    assert md_review_py.count('"ok": ok, "failed": failed') >= 2
+
+
+def test_session_form_bulk_ui_wired(session_js: str) -> None:
+    """Select-all + per-row checkboxes + bulk action buttons present
+    in the dialog. Guard against accidental regression on the rich
+    UX paths."""
+    assert "scr-select-all" in session_js
+    assert "scr-row-select" in session_js
+    assert "scr-bulk-approve" in session_js
+    assert "scr-bulk-reject" in session_js
+    assert "bulk_approve_scrs" in session_js
+    assert "bulk_reject_scrs" in session_js
+
+
+def test_scr_header_shows_proposed_name_not_tally(session_js: str) -> None:
+    """Per reviewer feedback — proposed_supplier_name is the primary
+    heading in the panel row; tally_vendor_name becomes the subtitle."""
+    # The headline var should be built from proposed_supplier_name first
+    assert 'r.proposed_supplier_name || r.tally_vendor_name' in session_js
+    # And the subtitle line should start with "from Tally"
+    assert 'from Tally' in session_js

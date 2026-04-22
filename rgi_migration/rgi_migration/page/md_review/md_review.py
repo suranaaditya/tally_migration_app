@@ -839,6 +839,93 @@ def reject_scr(session_name, scr_row_name):
 
 
 @frappe.whitelist()
+def bulk_approve_scrs(session_name, scr_row_names):
+    """Approve a batch of SCR rows in one RPC.
+
+    Wraps ``approve_scr`` per row, isolating failures. Single-row
+    failures don't block the remaining SCRs — each row's state
+    (Created / Failed) reflects its own outcome.
+
+    Use case: Reviewer has 18 CACSPU pending_supplier_creation rows
+    all with clean proposed names; clicks Select All → Approve
+    Selected → one RPC kicks off the batch. Response carries
+    per-row outcomes so the UI can display which succeeded and
+    which need follow-up.
+
+    Args:
+        session_name: The session.
+        scr_row_names: JSON-serialised list of SCR row names (Frappe
+            whitelist serialises array args as JSON over the wire —
+            accept both the JSON string and a raw list for testability).
+
+    Returns:
+        ``{"ok": [<row_name>, ...], "failed": [{"scr": <row_name>, "error": <str>}, ...]}``
+    """
+    row_names = _parse_whitelist_list_arg(scr_row_names)
+    ok: list[str] = []
+    failed: list[dict] = []
+    for row_name in row_names:
+        try:
+            result = approve_scr(session_name=session_name, scr_row_name=row_name)
+            if result.get("status") == "ok":
+                ok.append(row_name)
+            else:
+                # Supplier.insert failure inside approve_scr returns
+                # {"status": "failed", ...} rather than raising. Surface
+                # as a bulk-row failure without breaking the loop.
+                failed.append({
+                    "scr": row_name,
+                    "error": f"{result.get('error_type', 'Error')}: {result.get('error', 'Supplier insert failed')}",
+                })
+        except Exception as exc:  # noqa: BLE001 — aggregate, don't mask
+            failed.append({
+                "scr": row_name,
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+    return {"ok": ok, "failed": failed}
+
+
+@frappe.whitelist()
+def bulk_reject_scrs(session_name, scr_row_names):
+    """Reject a batch of SCR rows in one RPC. Parallel to
+    :func:`bulk_approve_scrs`.
+
+    Returns ``{"ok": [...], "failed": [...]}``.
+    """
+    row_names = _parse_whitelist_list_arg(scr_row_names)
+    ok: list[str] = []
+    failed: list[dict] = []
+    for row_name in row_names:
+        try:
+            reject_scr(session_name=session_name, scr_row_name=row_name)
+            ok.append(row_name)
+        except Exception as exc:  # noqa: BLE001
+            failed.append({
+                "scr": row_name,
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+    return {"ok": ok, "failed": failed}
+
+
+def _parse_whitelist_list_arg(raw):
+    """Frappe whitelist methods receive list args as JSON strings over
+    HTTP transport + as native Python lists during pytest. Normalise
+    both shapes to a list. Empty / malformed input returns an empty
+    list (the bulk loop then becomes a cheap no-op)."""
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError):
+            return []
+        return parsed if isinstance(parsed, list) else []
+    return []
+
+
+@frappe.whitelist()
 def list_pending_scrs(session_name):
     """Return Pending + Failed SCR rows for the Session form panel
     dialog. Created / Skipped rows are excluded — they're done.

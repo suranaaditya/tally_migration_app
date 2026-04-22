@@ -170,21 +170,28 @@ function renderSCRGridHTML(rows) {
               )}</div>`
             : "";
 
+        // Header: proposed_supplier_name is the primary label (what the
+        // Supplier will be called post-approval). tally_vendor_name is
+        // the secondary subtitle (where the SCR came from). Updated
+        // 2026-04-22 per reviewer feedback — reviewer thinks in terms
+        // of the target Supplier, not the Tally source ledger.
+        const headline = r.proposed_supplier_name || r.tally_vendor_name || "";
+        const tally_sub = r.tally_vendor_id
+            ? `${r.tally_vendor_name || ""} [tally_id=${frappe.utils.escape_html(r.tally_vendor_id)}]`
+            : (r.tally_vendor_name || "");
+
         return `
             <div class="scr-row" data-row-name="${frappe.utils.escape_html(r.row_name)}">
                 <div class="scr-row-head">
+                    <input type="checkbox" class="scr-row-select" aria-label="${__("Select for bulk action")}" />
                     ${status_badge}
                     <div class="scr-row-vendor">
-                        <div class="scr-row-vendor-name">${frappe.utils.escape_html(r.tally_vendor_name || "")}</div>
-                        <div class="scr-row-tally-id">${r.tally_vendor_id ? `tally_id=${frappe.utils.escape_html(r.tally_vendor_id)}` : ""}</div>
+                        <div class="scr-row-vendor-name">${frappe.utils.escape_html(headline)}</div>
+                        <div class="scr-row-tally-id">${__("from Tally")}: ${frappe.utils.escape_html(tally_sub)}</div>
                     </div>
                     <div class="scr-row-balance">${balance}</div>
                 </div>
                 <div class="scr-row-body">
-                    <div class="scr-kv">
-                        <span class="scr-k">${__("Supplier")}:</span>
-                        <span class="scr-v">${frappe.utils.escape_html(r.proposed_supplier_name || "")}</span>
-                    </div>
                     <div class="scr-kv">
                         <span class="scr-k">${__("Group")}:</span>
                         <span class="scr-v">${frappe.utils.escape_html(r.proposed_supplier_group || "(none)")}</span>
@@ -207,14 +214,40 @@ function renderSCRGridHTML(rows) {
         `;
     };
 
-    return `<div class="scr-processing-panel">${rows.map(rowHTML).join("")}</div>`;
+    // Top bar — select-all + bulk actions. Updated 2026-04-22 for bulk
+    // reviewer workflow (per CACSPU's ~18 SCR scale, per-row approval
+    // becomes tedious).
+    const bulk_bar = `
+        <div class="scr-bulk-bar">
+            <label class="scr-select-all-label">
+                <input type="checkbox" class="scr-select-all" />
+                <span>${__("Select all")} (${rows.length})</span>
+            </label>
+            <div class="scr-bulk-actions">
+                <button class="btn btn-default btn-sm scr-bulk-reject" type="button" disabled>
+                    ${__("Reject Selected")} (<span class="scr-bulk-count">0</span>)
+                </button>
+                <button class="btn btn-primary btn-sm scr-bulk-approve" type="button" disabled>
+                    ${__("Approve Selected")} (<span class="scr-bulk-count">0</span>)
+                </button>
+            </div>
+        </div>
+    `;
+
+    return `
+        <div class="scr-processing-panel">
+            ${bulk_bar}
+            <div class="scr-row-list">${rows.map(rowHTML).join("")}</div>
+        </div>
+    `;
 }
 
 function attachSCRActions($body, frm, dialog) {
+    // --- Per-row actions ---
     $body.find(".scr-btn-approve").on("click", (e) => {
         const $row = $(e.currentTarget).closest(".scr-row");
         const row_name = $row.data("row-name");
-        const supplier = $row.find(".scr-v").first().text().trim();
+        const supplier = $row.find(".scr-row-vendor-name").text().trim();
         frappe.confirm(
             __("Create Supplier {0}? Source decision(s) will be Approved.", [supplier]),
             () => doSCRAction(frm, row_name, "approve_scr", "Approved", dialog),
@@ -223,7 +256,6 @@ function attachSCRActions($body, frm, dialog) {
     $body.find(".scr-btn-reject").on("click", (e) => {
         const $row = $(e.currentTarget).closest(".scr-row");
         const row_name = $row.data("row-name");
-        const supplier = $row.find(".scr-v").first().text().trim();
         frappe.confirm(
             __(
                 "Reject this SCR? Source decision(s) will be marked Rejected. " +
@@ -231,6 +263,110 @@ function attachSCRActions($body, frm, dialog) {
             ),
             () => doSCRAction(frm, row_name, "reject_scr", "Rejected", dialog),
         );
+    });
+
+    // --- Checkbox + bulk-action wiring ---
+    const $select_all = $body.find(".scr-select-all");
+    const $row_checks = $body.find(".scr-row-select");
+    const $bulk_approve = $body.find(".scr-bulk-approve");
+    const $bulk_reject = $body.find(".scr-bulk-reject");
+
+    function refresh_bulk_bar() {
+        const selected_count = $body.find(".scr-row-select:checked").length;
+        $body.find(".scr-bulk-count").text(selected_count);
+        $bulk_approve.prop("disabled", selected_count === 0);
+        $bulk_reject.prop("disabled", selected_count === 0);
+        // Sync "select all" indeterminate state
+        const total = $row_checks.length;
+        if (selected_count === 0) {
+            $select_all.prop("checked", false).prop("indeterminate", false);
+        } else if (selected_count === total) {
+            $select_all.prop("checked", true).prop("indeterminate", false);
+        } else {
+            $select_all.prop("checked", false).prop("indeterminate", true);
+        }
+    }
+
+    $row_checks.on("change", refresh_bulk_bar);
+
+    $select_all.on("change", () => {
+        const checked = $select_all.prop("checked");
+        $row_checks.prop("checked", checked);
+        refresh_bulk_bar();
+    });
+
+    function collect_selected_row_names() {
+        return $body.find(".scr-row-select:checked")
+            .map((_, cb) => $(cb).closest(".scr-row").data("row-name"))
+            .get();
+    }
+
+    $bulk_approve.on("click", () => {
+        const names = collect_selected_row_names();
+        if (!names.length) return;
+        frappe.confirm(
+            __(
+                "Approve {0} SCR(s)? A Supplier will be created for each and source decision(s) will be Approved.",
+                [names.length],
+            ),
+            () => doBulkSCRAction(frm, names, "bulk_approve_scrs", dialog),
+        );
+    });
+
+    $bulk_reject.on("click", () => {
+        const names = collect_selected_row_names();
+        if (!names.length) return;
+        frappe.confirm(
+            __(
+                "Reject {0} SCR(s)? Source decision(s) will be marked Rejected. " +
+                "Generators will silent-skip rejected rows.",
+                [names.length],
+            ),
+            () => doBulkSCRAction(frm, names, "bulk_reject_scrs", dialog),
+        );
+    });
+}
+
+
+function doBulkSCRAction(frm, scr_row_names, method, dialog) {
+    frappe.call({
+        method: `rgi_migration.rgi_migration.page.md_review.md_review.${method}`,
+        args: { session_name: frm.doc.name, scr_row_names: JSON.stringify(scr_row_names) },
+        freeze: true,
+        freeze_message: __("Processing {0} SCR(s)...", [scr_row_names.length]),
+        callback: (r) => {
+            const resp = (r && r.message) || {};
+            const ok = (resp.ok || []).length;
+            const failed = (resp.failed || []).length;
+            if (failed === 0) {
+                frappe.show_alert({
+                    message: method === "bulk_approve_scrs"
+                        ? __("Approved {0} SCR(s).", [ok])
+                        : __("Rejected {0} SCR(s).", [ok]),
+                    indicator: "green",
+                }, 5);
+            } else {
+                // Show both counts + detail in a msgprint for visibility
+                const detail = (resp.failed || [])
+                    .map((f) => `<li><strong>${frappe.utils.escape_html(f.scr || "")}</strong>: ${frappe.utils.escape_html(f.error || "")}</li>`)
+                    .join("");
+                frappe.msgprint({
+                    title: __("Bulk action partially completed"),
+                    message: __("Succeeded: {0}. Failed: {1}.", [ok, failed]) +
+                        `<ul style="margin-top:8px">${detail}</ul>`,
+                    indicator: "orange",
+                });
+            }
+            dialog.hide();
+            frm.reload_doc().then(() => {
+                const remaining = (frm.doc.supplier_creation_requests || []).filter(
+                    (r) => r.status === "Pending" || r.status === "Failed"
+                ).length;
+                if (remaining > 0) {
+                    openSCRProcessingDialog(frm);
+                }
+            });
+        },
     });
 }
 

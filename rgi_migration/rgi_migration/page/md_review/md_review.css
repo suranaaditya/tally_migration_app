@@ -1140,3 +1140,56 @@
     justify-content: flex-end;
     gap: 8px;
 }
+
+/* Bulk-action bar (Commit 3 polish — checkbox select + batch Approve/Reject). */
+.scr-bulk-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 12px;
+    background: var(--fg-color, #f5f7fa);
+    border: 1px solid var(--border-color, #e2e6ea);
+    border-radius: 4px;
+    position: sticky;
+    top: 0;
+    z-index: 1;
+}
+.scr-bulk-bar .scr-select-all-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    font-size: 13px;
+    color: var(--text-color, #1f272e);
+    cursor: pointer;
+}
+.scr-bulk-bar .scr-select-all {
+    cursor: pointer;
+}
+.scr-bulk-bar .scr-bulk-actions {
+    display: flex;
+    gap: 8px;
+}
+.scr-bulk-count {
+    font-variant-numeric: tabular-nums;
+}
+
+.scr-processing-panel .scr-row-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: 10px;
+}
+
+/* Place the per-row checkbox at the start of the row head. */
+.scr-row-head .scr-row-select {
+    cursor: pointer;
+    width: 16px;
+    height: 16px;
+}
+
+/* Re-space the existing grid to accommodate the checkbox column. */
+.scr-row-head {
+    grid-template-columns: auto auto 1fr auto;
+}
