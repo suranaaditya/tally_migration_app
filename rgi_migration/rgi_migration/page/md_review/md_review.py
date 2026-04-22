@@ -183,6 +183,7 @@ def save_decision(decision_name, review_action, final_account, reviewer_notes):
     session_doc.check_permission("read")
 
     current = decision_doc.as_dict()
+    previous_review_action = current.get("review_action")
 
     # Snapshot for Undo — captured BEFORE mutation so a save failure
     # doesn't swallow the prior state. Only the fields that
@@ -204,6 +205,11 @@ def save_decision(decision_name, review_action, final_account, reviewer_notes):
     for field, value in updates.items():
         decision_doc.set(field, value)
     decision_doc.save()
+
+    # Item 3 Commit 2 followup: when a decision transitions out of
+    # 'Supplier Creation Requested' (e.g., via Reject / Defer), clean
+    # up any orphan Pending SCR row on the session.
+    _cleanup_pending_scr_on_transition(decision_doc, previous_review_action)
 
     return decision_doc.as_dict()
 
@@ -382,6 +388,7 @@ def save_supplier_resolution(decision_name, final_supplier, reviewer_notes):
     session_doc.check_permission("read")
 
     current = decision_doc.as_dict()
+    previous_review_action = current.get("review_action")
 
     # Snapshot the pre-save state for Undo — shape follows
     # SUPPLIER_SAVE_FIELDS (not SAVE_DECISION_FIELDS) so undo_decision
@@ -409,10 +416,73 @@ def save_supplier_resolution(decision_name, final_supplier, reviewer_notes):
         decision_doc.set(field, value)
     decision_doc.save()
 
+    # Item 3 Commit 2 followup: reviewer switched from Create-new to
+    # Map-to-existing via the dialog → pending SCR for this decision
+    # is stale. Clean it up so approver doesn't process a supersede
+    # request.
+    _cleanup_pending_scr_on_transition(decision_doc, previous_review_action)
+
     return decision_doc.as_dict()
 
 
 _SCR_CREATE_REFUSED_STATUSES = frozenset({"Submitted", "Cancelled"})
+
+
+def _cleanup_pending_scr_on_transition(decision_doc, previous_review_action):
+    """Delete orphan Pending SCR row when a decision transitions out of
+    'Supplier Creation Requested' (Item 3 Commit 2 followup).
+
+    When a reviewer Rejects / Defers / remaps-via-dialog a decision that
+    previously had an SCR request, the SCR row on the session is stale:
+    the approver should not process a request for a decision the reviewer
+    has since changed their mind about. Deleting the Pending SCR keeps
+    the Session form honest.
+
+    Scope:
+      * Only fires when the decision WAS 'Supplier Creation Requested'
+        before this save AND is now something else.
+      * Only deletes Pending SCRs. Created / Skipped / Failed SCRs are
+        preserved — those are terminal states from the approver's side
+        (a Created SCR means a Supplier record was actually created in
+        ERPNext; deleting would lose audit trail). Reviewer rejecting
+        an already-Created SCR should ideally warn them; for now the
+        SCR just stays as an auditable record of what happened.
+      * Only touches SCRs whose source_decisions CSV references this
+        decision.
+
+    Args:
+        decision_doc: The Mapping Decision doc after its review_action
+            mutation + save.
+        previous_review_action: The value BEFORE the save. Caller is
+            responsible for capturing this before the mutation.
+
+    Returns:
+        List of deleted SCR row names (empty when no transition / no
+        matching Pending SCRs).
+    """
+    if previous_review_action != "Supplier Creation Requested":
+        return []
+    if decision_doc.review_action == "Supplier Creation Requested":
+        return []
+
+    session_doc = frappe.get_doc(
+        "Tally Migration Session", decision_doc.session
+    )
+    keep = []
+    deleted = []
+    for row in (session_doc.supplier_creation_requests or []):
+        tokens = parse_source_decisions_csv(row.source_decisions)
+        if decision_doc.name in tokens and row.status == "Pending":
+            deleted.append(row.name)
+        else:
+            keep.append(row)
+
+    if deleted:
+        session_doc.supplier_creation_requests = keep
+        session_doc.save(ignore_permissions=True)
+        frappe.db.commit()
+
+    return deleted
 
 
 @frappe.whitelist()

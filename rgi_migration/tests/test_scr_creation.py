@@ -242,6 +242,32 @@ def test_review_action_state_includes_supplier_creation_requested(js_source: str
     )
 
 
+def test_cleanup_helper_wired_into_save_decision(js_source: str) -> None:
+    """Commit 2 followup: save_decision and save_supplier_resolution
+    call _cleanup_pending_scr_on_transition after doc.save() so
+    reviewer actions like Reject/Defer/remap clean up orphan SCRs.
+    Guard the wiring presence — regression fires if a future refactor
+    removes the call from either save path."""
+    # Check in the backend Python file, not the JS
+    py_path = (
+        Path(__file__).parent.parent
+        / "rgi_migration"
+        / "page"
+        / "md_review"
+        / "md_review.py"
+    )
+    src = py_path.read_text(encoding="utf-8")
+    # Called in save_decision
+    assert src.count("_cleanup_pending_scr_on_transition") >= 3, (
+        "expected _cleanup_pending_scr_on_transition to be defined + called "
+        "by both save_decision and save_supplier_resolution"
+    )
+    # The guard is triggered by comparing previous_review_action
+    assert "previous_review_action" in src
+    # And preserves Pending-status only (terminal SCR statuses preserved)
+    assert 'row.status == "Pending"' in src
+
+
 def test_supplier_group_field_is_link_to_supplier_group_doctype(js_source: str) -> None:
     """Item 3 Commit 2 followup — supplier_group was initially a Data
     free-text field. Reviewer feedback: should autocomplete from the
