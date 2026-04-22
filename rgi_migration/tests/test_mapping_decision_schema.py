@@ -1,0 +1,148 @@
+"""Schema-validation tests for the Mapping Decision DocType JSON.
+
+Pure filesystem tests — reads the DocType JSON and asserts structural
+invariants without touching Frappe. Guardrail for Week 4 Item 2
+Commit 1 schema additions (4 supplier fields + tier enum extension).
+
+If these fail, the DocType JSON drifted from what Item 2 / 3 expect.
+Check ``rgi_migration/rgi_migration/doctype/mapping_decision/mapping_decision.json``.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+_DOCTYPE_JSON = (
+    Path(__file__).parent.parent
+    / "rgi_migration"
+    / "doctype"
+    / "mapping_decision"
+    / "mapping_decision.json"
+)
+
+
+@pytest.fixture(scope="module")
+def doctype() -> dict:
+    with _DOCTYPE_JSON.open("r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+@pytest.fixture(scope="module")
+def fields_by_name(doctype: dict) -> dict[str, dict]:
+    return {f["fieldname"]: f for f in doctype["fields"]}
+
+
+# ---------------------------------------------------------------------------
+# New Item 2 Commit 1 fields
+# ---------------------------------------------------------------------------
+
+
+def test_proposed_supplier_field_present(fields_by_name: dict) -> None:
+    f = fields_by_name.get("proposed_supplier")
+    assert f is not None, "proposed_supplier field missing"
+    assert f["fieldtype"] == "Link"
+    assert f["options"] == "Supplier"
+
+
+def test_final_supplier_field_present(fields_by_name: dict) -> None:
+    f = fields_by_name.get("final_supplier")
+    assert f is not None, "final_supplier field missing"
+    assert f["fieldtype"] == "Link"
+    assert f["options"] == "Supplier"
+
+
+def test_supplier_match_score_field_present(fields_by_name: dict) -> None:
+    f = fields_by_name.get("supplier_match_score")
+    assert f is not None, "supplier_match_score field missing"
+    assert f["fieldtype"] == "Float"
+    # precision=3 captures fuzzy score resolution (WRatio/100 to 3 dp)
+    assert f.get("precision") == "3"
+
+
+def test_new_supplier_name_field_present(fields_by_name: dict) -> None:
+    f = fields_by_name.get("new_supplier_name")
+    assert f is not None, "new_supplier_name field missing"
+    # Data, not Small Text — suggestion is a short label, not prose
+    assert f["fieldtype"] == "Data"
+
+
+# ---------------------------------------------------------------------------
+# Tier enum coverage — every mapper-emitted tier must be in the Select
+# ---------------------------------------------------------------------------
+
+
+# Authoritative list of tier values the mapper emits. Sourced from
+# rgi_migration/mapper/mapper.py and rgi_migration/mapper/tier1_supplier.py.
+# If a new tier is added in mapper code, this assert forces the enum to
+# grow with it — the whole point of this guardrail.
+_MAPPER_EMITTED_TIERS = frozenset({
+    "tier1_exact",
+    "tier1_rule",
+    "tier1_pattern",
+    "tier2_fuzzy",
+    "tier3_claude",
+    "unmapped",
+    "excluded_pnl",
+    "excluded_zero_balance",
+    "group_refused",
+    "anti_pattern_blocked",
+    "pending_account_creation",
+    "tier1_supplier_exact",
+    "tier1_supplier_alias",
+    "tier1_supplier_fuzzy",
+    "pending_supplier_creation",
+})
+
+
+def test_tier_enum_covers_all_mapper_tiers(fields_by_name: dict) -> None:
+    tier = fields_by_name["tier"]
+    assert tier["fieldtype"] == "Select"
+    enum_options = set(tier["options"].split("\n"))
+    missing = _MAPPER_EMITTED_TIERS - enum_options
+    assert not missing, (
+        f"tier Select enum missing mapper-emitted values: {sorted(missing)}. "
+        f"Inserts with these values would silently drop on Frappe write."
+    )
+
+
+def test_tier_enum_includes_item_2_additions(fields_by_name: dict) -> None:
+    """Explicit coverage for Item 2 Commit 1 additions. Narrower than
+    the all-tiers test — regresses specifically if either Item 2
+    addition is removed."""
+    opts = set(fields_by_name["tier"]["options"].split("\n"))
+    assert "tier1_supplier_exact" in opts
+    assert "tier1_supplier_alias" in opts
+
+
+# ---------------------------------------------------------------------------
+# Structural invariants — new fields in field_order, no duplicates
+# ---------------------------------------------------------------------------
+
+
+def test_field_order_contains_new_fields(doctype: dict) -> None:
+    order = doctype["field_order"]
+    for fn in (
+        "proposed_supplier",
+        "new_supplier_name",
+        "supplier_match_score",
+        "final_supplier",
+    ):
+        assert fn in order, f"{fn} defined but not in field_order"
+
+
+def test_field_order_has_no_duplicates(doctype: dict) -> None:
+    order = doctype["field_order"]
+    dups = [fn for fn in set(order) if order.count(fn) > 1]
+    assert not dups, f"duplicate entries in field_order: {dups}"
+
+
+def test_every_field_order_entry_has_a_definition(
+    doctype: dict, fields_by_name: dict
+) -> None:
+    orphans = [fn for fn in doctype["field_order"] if fn not in fields_by_name]
+    assert not orphans, (
+        f"field_order references undefined fields: {orphans}"
+    )

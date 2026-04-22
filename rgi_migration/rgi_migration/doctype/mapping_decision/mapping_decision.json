@@ -21,8 +21,11 @@
   "sb_proposal",
   "tier",
   "proposed_account",
+  "proposed_supplier",
+  "new_supplier_name",
   "matched_rule",
   "confidence",
+  "supplier_match_score",
   "proposed_dr",
   "proposed_cr",
   "anti_pattern_blocked",
@@ -31,6 +34,7 @@
   "sb_review",
   "review_action",
   "final_account",
+  "final_supplier",
   "final_dr",
   "final_cr",
   "reviewer_notes",
@@ -115,7 +119,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Tier",
-   "options": "tier1_exact\ntier1_rule\ntier1_pattern\ntier2_fuzzy\ntier3_claude\nunmapped\nexcluded_pnl\ngroup_refused\nanti_pattern_blocked\npending_account_creation\nexcluded_zero_balance\npending_supplier_creation\ntier1_supplier_fuzzy"
+   "options": "tier1_exact\ntier1_rule\ntier1_pattern\ntier2_fuzzy\ntier3_claude\nunmapped\nexcluded_pnl\ngroup_refused\nanti_pattern_blocked\npending_account_creation\nexcluded_zero_balance\npending_supplier_creation\ntier1_supplier_exact\ntier1_supplier_alias\ntier1_supplier_fuzzy"
   },
   {
    "fieldname": "proposed_account",
@@ -123,6 +127,19 @@
    "in_list_view": 1,
    "label": "Proposed Account",
    "options": "Account"
+  },
+  {
+   "description": "Mapper's resolved Supplier for vendor-party ledgers (tier1_supplier_exact/alias/fuzzy). Mutually exclusive with proposed_account; populated only when tier is a supplier tier.",
+   "fieldname": "proposed_supplier",
+   "fieldtype": "Link",
+   "label": "Proposed Supplier",
+   "options": "Supplier"
+  },
+  {
+   "description": "Mapper's cleaned name suggestion for pending_supplier_creation rows — reviewer's starting point when creating a new Supplier.",
+   "fieldname": "new_supplier_name",
+   "fieldtype": "Data",
+   "label": "New Supplier Name (suggestion)"
   },
   {
    "fieldname": "matched_rule",
@@ -134,6 +151,13 @@
    "fieldname": "confidence",
    "fieldtype": "Float",
    "label": "Confidence"
+  },
+  {
+   "description": "Supplier match score 0.0-1.0 for supplier-tier decisions (1.0 for exact/alias, WRatio/100 for fuzzy, 0.0 for pending_supplier_creation).",
+   "fieldname": "supplier_match_score",
+   "fieldtype": "Float",
+   "label": "Supplier Match Score",
+   "precision": "3"
   },
   {
    "fieldname": "proposed_dr",
@@ -181,6 +205,13 @@
    "fieldtype": "Link",
    "label": "Final Account",
    "options": "Account"
+  },
+  {
+   "description": "Reviewer's chosen Supplier for vendor-party ledgers. Mutually exclusive with final_account; populated only when target_doctype resolves to Supplier (tier1_supplier_* or pending_supplier_creation).",
+   "fieldname": "final_supplier",
+   "fieldtype": "Link",
+   "label": "Final Supplier",
+   "options": "Supplier"
   },
   {
    "fieldname": "final_dr",

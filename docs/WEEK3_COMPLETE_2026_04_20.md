@@ -201,7 +201,7 @@ directly unblocks the next refusal path.
 | 2 | `FrappeRuleSource` / `FrappeSupplierSource` Frappe-native implementations | **Deferred** — generators use `JsonFileRuleSource(docs/seed_plan.json)` + inline `frappe.get_all("Supplier")` wrapped in `InMemorySupplierSource`. Current seed is source of truth; DocType rows were seeded from it. |
 | 3 | `fiscal_year_short` auto-populate hook | **Needed for Week 4** — Desk-created sessions will leave it blank (the field is hidden + read_only with no fetch_from / hook). Trivial `before_insert` on `tally_migration_session.py` computes `"{YY}-{YY+1}"` from `fiscal_year`. |
 | 4 | Bank-account / Library Books / Electrical Fitting name divergence | **Tier-2 fuzzy territory** — Week 4+ work. 6-8 of the 21 unmapped fall here. |
-| 5 | Reparse-and-remap on every generation | **Week 4 persistence work** — cache `ParsedTallyTB` + decisions on session after first parse; invalidate on `source_file_sha256` change. Session-lifecycle concern, not a generator concern. |
+| 5 | Reparse-and-remap on every generation | **In flight — Week 4 Item 2.** Framing revised per mapper_design_notes §9.1: Mapping Decision DocType is the persistence layer; mapper persists on explicit `Run Mapper` trigger; generators pivot to read `final_*` over `proposed_*` (Commit 3). No `ParsedTallyTB` cache — full re-parse on explicit `Reset Parse`. |
 | 6 | `Control Account Pattern` DocType | **Deferred** — 8 patterns are hardcoded in `tier1_supplier.py`. Week-4+ ops can edit via DocType instead of code. |
 | 7 | Automated CSV-to-dux_voucher handoff | **Deferred intentionally** — matches "never auto-submit" principle. Reviewer downloads → attaches → invokes `import_from_csv` via JS button. Week 5+ could chain via API. |
 | 8 | Cross-app state sync | **Out of scope** — no protocol defined. `rgi_migration` doesn't know if dux_voucher has imported the CSV. Reviewer tracks in dux_voucher's Batch. |
@@ -359,7 +359,10 @@ Out of Week 3 scope, noted here for Week 4 planning continuity:
    create `Account Creation Request` → auto-create account
 3. **Session persistence** — cache `ParsedTallyTB` + decisions on session
    after first parse; invalidate on `source_file_sha256` change (design
-   notes §8.2)
+   notes §8.2). *Status 2026-04-22: framing revised in §9.1 — Mapping
+   Decision DocType is the persistence layer (not a cache), populated
+   by explicit `Run Mapper` trigger. In flight as Week 4 Item 2;
+   Commit 1 (schema + doc) shipped.*
 4. **Tier-2 fuzzy account matching** — rapidfuzz-based account resolution
    for the name-divergence cases (banks, library books, etc.)
 5. **First CACSPU end-to-end submission test** — reviewer clears all

@@ -939,6 +939,63 @@ scope partitioning.
 | Stale pre-Decision-1 mappings with `pending_supplier_creation` on now-zero-balance ledgers | Currently moot (no persisted sessions). Week-4 review UI should re-run mapping on load for any session whose source-file SHA-256 matches the stored parse — cheap and always consistent with current mapper behaviour. |
 | ~~CACSPU Company's `Stock Received But Not Billed` default~~ | **Withdrawn 2026-04-20** — post-commit follow-up confirmed the default IS set on CACSPU (`Stock Received But Not Billed - CACSPU`, also set on the two peer companies on the bench). The Q5 Path B failure that surfaced this item was a false alarm: the synthetic `Purchase Invoice` test fixture used `expense_account="Temporary Opening - CACSPU"` (an Equity account, not Expense), which triggered ERPNext's fallback-to-default cascade with a misleading SRBNB error. The real OICT `make_invoices()` production path is unaffected. |
 
+### 9.1 Week 4 persistence — revised model (2026-04-22)
+
+§8.2 (written during Week 3) framed decision persistence as a
+performance cache for the reparse-and-remap pattern. Item 1
+(Week 4 review UI, shipped Commits 1-6) subsequently built
+`Mapping Decision` DocType with full decision fields — including
+reviewer inputs (`final_account`, `review_action`, `reviewer_notes`,
+and in Item 2 Commit 1 also `final_supplier`) — making that
+DocType a primary persistence layer, not a cache.
+
+**Revised architecture (supersedes §8.2):**
+
+- `Mapping Decision` DocType is authoritative for reviewer
+  decisions. One row per Tally ledger per session.
+- Mapper runs once per session on an explicit reviewer trigger
+  (the `Run Mapper` button on `Tally Migration Session`) and
+  persists `MappedDecision` output to `Mapping Decision` rows.
+- Generators read from DocType, preferring `final_*` (reviewer's
+  choice) over `proposed_*` (mapper's proposal). See §9.2 for
+  the preference order.
+- The reparse-and-remap pattern is removed from generators
+  (Item 2 Commit 3). `_parse_and_map` helpers in
+  `opening_je.py` / `oit_csv.py` / `advance_je.py` are deleted;
+  the single canonical parse-and-map entry point lives on the
+  Session controller.
+- `ParsedTallyTB` cache (§8.2 original sketch) is **not
+  implemented**. A full re-parse on the explicit `Reset Parse`
+  action (~2-3 s on CACSPU's 221 MB file) is acceptable
+  latency. The cache can be added later if a real performance
+  need surfaces.
+
+**Implications:**
+
+- Reviewer corrections (`final_supplier` overriding a fuzzy
+  match, `final_account` overriding a rule match under Manual
+  Override semantics) reach generator output directly via the
+  `final_*` read path. No Supplier Alias Rule / Mapping Rule
+  promotion is required for the correction to take effect on
+  the current session's generators — promotion (Item 5) becomes
+  an additive enhancement that improves the *next* session's
+  mapper proposal quality, not a critical path for the current
+  session's artefacts.
+- Single source of truth for decision state. No divergence
+  between "what the review UI shows" and "what the generators
+  emit." Both read the same DocType rows.
+- `source_file_sha256` becomes a persistence guard: if a session
+  has persisted decisions and the reviewer attempts to re-upload
+  a source file with a different SHA, `Run Mapper` refuses with
+  a "Reset Parse first" error. No silent overwrite.
+
+**When §8.2 should be read:** historical context for the
+Week-3 generators. Describes the architecture that shipped in
+Week 3 and was superseded in Item 2. Not current architecture.
+
+**§9.2 reservation:** reserved for the generator preference-order
+spec (Item 2 Commit 3). Added in that commit.
+
 ---
 
 ## 10. Custom-page bundle-refactor threshold
@@ -1005,3 +1062,5 @@ from readability-at-scale the way JS does.
 | 2026-04-22 | §5 expanded further during Week 4 Item 1 Commit 2 page-scaffolding work: (a) Frappe Page names are truncated to 20 characters at runtime autoname regardless of how `name` / `page_name` are passed — fixture-loading is the only path to longer names; (b) pre-existing Socket.IO 404s on this bench are orthogonal to our work and can be ignored during Desk-page browser verification. Guardrail for the next custom Page we create. |
 | 2026-04-22 | §5 expanded again during Week 4 Item 1 Commit 4a detail-pane work: `frappe.desk.form.load.get_docinfo` writes to `frappe.response["docinfo"]` instead of returning, so callers outside HTTP request context get `None`. Use the narrower `get_assignments` / `get_communications` / `get_attachments` helpers instead. Also captured the positional-arg trap: first positional is `doc` (Document instance), not `doctype` (string) — passing a string binds to `doc` and fails on `.doctype`. |
 | 2026-04-22 | §5 canonical fix for stale Python module cache (third occurrence in two days): `kill -HUP <gunicorn-master-pid>` gracefully reloads workers. Gunicorn's `--preload` flag imports app code in master before forking, so workers never see disk changes without this reload. No sudo required. Applying HUP during Commit 4a verification incidentally cleared Commit 3's deferred root-type-prefix issue — it was always a worker-cache problem, not a code problem. |
+| 2026-04-22 | **§9.1 Week 4 persistence — revised model added.** Reconciles §8.2's cache-only framing with the DocType-authoritative architecture that Item 1 (Week 4 review UI) shipped. Mapping Decision DocType is now the primary persistence layer for reviewer decisions; mapper persists on explicit `Run Mapper` trigger; generators pivot to read `final_*` over `proposed_*` (Item 2 Commit 3). Reparse-and-remap pattern and ParsedTallyTB cache sketch both removed. §9.2 reserved for generator preference-order spec. Change log reference: Week 4 Item 2 Commit 1. |
+| 2026-04-22 | **Mapping Decision schema — 4 supplier fields + tier enum extension.** Added `proposed_supplier` (Link → Supplier), `new_supplier_name` (Data), `supplier_match_score` (Float precision 3), `final_supplier` (Link → Supplier) to persist mapper output and reviewer choice for vendor-party ledgers. Previously, `MappedDecision` dataclass carried these values but the DocType had no columns, so persistence silently dropped them — blocking Item 3 supplier-review UI. Tier Select enum extended with `tier1_supplier_exact` and `tier1_supplier_alias` (mapper emits; enum was missing). Additive-only; existing rows default NULL. Week 4 Item 2 Commit 1. |
