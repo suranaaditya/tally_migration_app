@@ -57,7 +57,6 @@ import logging
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Iterable
 
 from rgi_migration.mapper.mapper import MappedDecision
@@ -385,11 +384,6 @@ def _default_reference_id(abbr: str, fiscal_year: str) -> str:
     return f"OB-{abbr}-{start_year}-01"
 
 
-def _repo_root() -> Path:
-    # rgi_migration/generators/opening_je.py → ../../.. → repo root
-    return Path(__file__).resolve().parent.parent.parent
-
-
 def _append_error_log(session: Any, block: str) -> None:
     existing = session.error_log or ""
     separator = "\n\n" if existing else ""
@@ -479,19 +473,31 @@ def generate_main_opening_je(session_name: str) -> str:
                 )
         session.generated_je_draft = None
 
-    # --- 3. Parse + map ----------------------------------------------------
-    source_path = session.source_file_server_path or session.source_file
-    if not source_path:
-        raise MainJEGenerationError(
-            f"Session {session_name} has no source file path "
-            f"(source_file_server_path and source_file are both empty)."
-        )
-    tb, decisions = _parse_and_map(
-        source_path=str(source_path),
+    # --- 3. Load persisted Mapping Decisions (Item 2 §9.1 architecture) ---
+    # Reads from the DocType that run_mapper() populated, preferring the
+    # reviewer's final_account / final_supplier over mapper proposals.
+    # See rgi_migration/session/parse_and_map.py for the loader.
+    from rgi_migration.session.parse_and_map import (
+        load_decisions_from_session,
+        require_generator_status,
+        synthesize_tb_from_ledger_index,
+    )
+
+    require_generator_status(session, "generate_main_opening_je")
+    decisions, ledger_index = load_decisions_from_session(session_name)
+
+    # build_je_payload's signature still takes ``tb: ParsedTallyTB`` because
+    # pure-core tests construct hand-crafted TBs against it. Synthesize a
+    # minimal TB from the reconstructed ledger_index so the signature
+    # stays stable; only tb.ledgers is read downstream.
+    tb = synthesize_tb_from_ledger_index(
+        ledger_index,
+        company_name=session.parsed_company_name or "",
+        tb_date=(
+            session.tb_date.isoformat() if hasattr(session.tb_date, "isoformat")
+            else str(session.tb_date or "")
+        ),
         source_format=session.source_format or "xml",
-        abbr=session.company_abbr,
-        entity_type=abbr_doc.entity_type or "*",
-        erpnext_company=erpnext_company,
     )
 
     zero_count = sum(1 for d in decisions if d.tier == "excluded_zero_balance")
@@ -555,85 +561,3 @@ def generate_main_opening_je(session_name: str) -> str:
     session.save(ignore_permissions=True)
     frappe.db.commit()
     return je.name
-
-
-def _parse_and_map(
-    *,
-    source_path: str,
-    source_format: str,
-    abbr: str,
-    entity_type: str,
-    erpnext_company: str,
-) -> tuple[ParsedTallyTB, list[MappedDecision]]:
-    """Parse the Tally source, load COA + suppliers from Frappe, run Tier-1.
-
-    Week-3 has no end-to-end workflow yet that persists mapper output on
-    the session, so the generator re-parses and re-maps on demand. When
-    Week-4+ adds a standalone ``Mapping Decision`` reader (session-linked
-    records populated by the review page), replace this helper.
-
-    Rule source:    ``JsonFileRuleSource(docs/seed_plan.json)`` — the
-                    committed seed file is the source of truth; the bench's
-                    ``Mapping Rule`` DocType was seeded from it.
-    COA:            ``frappe.get_all('Account', filters={'company': ...})``
-    Supplier:       ``frappe.get_all('Supplier', ...)`` → ``InMemorySupplierSource``
-    """
-    import frappe  # type: ignore[import]
-
-    from rgi_migration.mapper.mapper import CoaAccount, Mapper
-    from rgi_migration.mapper.rule_source import JsonFileRuleSource
-    from rgi_migration.mapper.supplier_source import (
-        InMemorySupplierSource,
-        Supplier,
-    )
-
-    if source_format == "excel":
-        from rgi_migration.parsers.tally_excel_parser import parse_excel  # type: ignore[import]
-        tb = parse_excel(source_path)
-    else:
-        from rgi_migration.parsers.tally_xml_parser import parse_xml  # type: ignore[import]
-        tb = parse_xml(source_path)
-
-    coa_rows = frappe.get_all(
-        "Account",
-        filters={"company": erpnext_company},
-        fields=["name", "parent_account", "root_type", "is_group"],
-        limit_page_length=0,
-    )
-    coa = {
-        r["name"]: CoaAccount(
-            name=r["name"],
-            parent_account=r["parent_account"],
-            root_type=r["root_type"] or "",
-            is_group=bool(r["is_group"]),
-            company_abbr=abbr,
-        )
-        for r in coa_rows
-    }
-
-    supplier_rows = frappe.get_all(
-        "Supplier",
-        fields=["name", "supplier_name", "supplier_group", "disabled", "country"],
-        limit_page_length=0,
-    )
-    suppliers = [
-        Supplier(
-            name=r["name"],
-            supplier_name=r.get("supplier_name") or r["name"],
-            supplier_group=r.get("supplier_group") or "",
-            disabled=bool(r.get("disabled")),
-            country=r.get("country"),
-        )
-        for r in supplier_rows
-    ]
-    supplier_source = InMemorySupplierSource(suppliers)
-
-    seed_path = _repo_root() / "docs" / "seed_plan.json"
-    rule_source = JsonFileRuleSource(seed_path)
-
-    mapper = Mapper(
-        rule_source, coa, abbr=abbr, entity_type=entity_type,
-        supplier_source=supplier_source,
-    )
-    decisions = mapper.map_all(tb.ledgers)
-    return tb, decisions

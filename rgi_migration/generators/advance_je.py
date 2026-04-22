@@ -38,11 +38,9 @@ import logging
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Iterable
 
 from rgi_migration.mapper.mapper import MappedDecision
-from rgi_migration.parsers.normalized_schema import ParsedTallyTB
 
 LOG = logging.getLogger(__name__)
 
@@ -362,10 +360,6 @@ def _default_reference_id(abbr: str, fiscal_year: str) -> str:
     return f"OB-{abbr}-{start_year}-02"
 
 
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parent.parent.parent
-
-
 def _append_error_log(session: Any, block: str) -> None:
     existing = session.error_log or ""
     separator = "\n\n" if existing else ""
@@ -452,20 +446,14 @@ def generate_advance_je(session_name: str) -> str:
                 )
         session.generated_advance_je = None
 
-    # --- 3. Parse + map ---
-    source_path = session.source_file_server_path or session.source_file
-    if not source_path:
-        raise AdvanceJEGenerationError(
-            f"Session {session_name} has no source file path "
-            f"(source_file_server_path and source_file are both empty)."
-        )
-    tb, decisions = _parse_and_map(
-        source_path=str(source_path),
-        source_format=session.source_format or "xml",
-        abbr=session.company_abbr,
-        entity_type=abbr_doc.entity_type or "*",
-        erpnext_company=erpnext_company,
+    # --- 3. Load persisted Mapping Decisions (Item 2 §9.1 architecture) ---
+    from rgi_migration.session.parse_and_map import (
+        load_decisions_from_session,
+        require_generator_status,
     )
+
+    require_generator_status(session, "generate_advance_je")
+    decisions, _ = load_decisions_from_session(session_name)
 
     supplier_index = _load_supplier_index()
 
@@ -545,75 +533,3 @@ def _load_supplier_index() -> dict[str, SupplierInfo]:
     }
 
 
-def _parse_and_map(
-    *,
-    source_path: str,
-    source_format: str,
-    abbr: str,
-    entity_type: str,
-    erpnext_company: str,
-) -> tuple[ParsedTallyTB, list[MappedDecision]]:
-    """Reparse + remap on demand — parallel to gen #1 / gen #2's helpers.
-
-    Extraction to a shared module is intentionally deferred until Week-4
-    adds session-lifecycle caching (design notes §8.2); see the gen #2
-    helper's note on why.
-    """
-    import frappe  # type: ignore[import]
-
-    from rgi_migration.mapper.mapper import CoaAccount, Mapper
-    from rgi_migration.mapper.rule_source import JsonFileRuleSource
-    from rgi_migration.mapper.supplier_source import (
-        InMemorySupplierSource,
-        Supplier,
-    )
-
-    if source_format == "excel":
-        from rgi_migration.parsers.tally_excel_parser import parse_excel  # type: ignore[import]
-        tb = parse_excel(source_path)
-    else:
-        from rgi_migration.parsers.tally_xml_parser import parse_xml  # type: ignore[import]
-        tb = parse_xml(source_path)
-
-    coa_rows = frappe.get_all(
-        "Account",
-        filters={"company": erpnext_company},
-        fields=["name", "parent_account", "root_type", "is_group"],
-        limit_page_length=0,
-    )
-    coa = {
-        r["name"]: CoaAccount(
-            name=r["name"],
-            parent_account=r["parent_account"],
-            root_type=r["root_type"] or "",
-            is_group=bool(r["is_group"]),
-            company_abbr=abbr,
-        )
-        for r in coa_rows
-    }
-
-    supplier_rows = frappe.get_all(
-        "Supplier",
-        fields=["name", "supplier_name", "supplier_group", "disabled", "country"],
-        limit_page_length=0,
-    )
-    suppliers = [
-        Supplier(
-            name=r["name"],
-            supplier_name=r.get("supplier_name") or r["name"],
-            supplier_group=r.get("supplier_group") or "",
-            disabled=bool(r.get("disabled")),
-            country=r.get("country"),
-        )
-        for r in supplier_rows
-    ]
-    supplier_source = InMemorySupplierSource(suppliers)
-
-    seed_path = _repo_root() / "docs" / "seed_plan.json"
-    rule_source = JsonFileRuleSource(seed_path)
-    mapper = Mapper(
-        rule_source, coa, abbr=abbr, entity_type=entity_type,
-        supplier_source=supplier_source,
-    )
-    decisions = mapper.map_all(tb.ledgers)
-    return tb, decisions

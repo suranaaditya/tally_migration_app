@@ -154,6 +154,80 @@ def index_ledgers_by_identity(tb: ParsedTallyTB) -> dict[tuple[str, str], Ledger
     return {(l.name, l.tally_id or ""): l for l in tb.ledgers}
 
 
+def decision_from_doc_row(row: dict[str, Any]) -> MappedDecision:
+    """Reconstruct a ``MappedDecision`` from a persisted Mapping Decision row.
+
+    Applies the reviewer-preference rule: ``proposed_account`` on the
+    returned dataclass is set to ``final_account`` if the reviewer has
+    populated it, else the mapper's original ``proposed_account``. Same
+    pattern for ``proposed_supplier`` vs ``final_supplier``. This means
+    downstream generator code can keep reading ``d.proposed_account`` /
+    ``d.proposed_supplier`` and transparently get the reviewer's final
+    decision when present.
+
+    ``row`` is a dict shaped like ``frappe.get_all("Mapping Decision",
+    fields=["*"], ...)`` output. Values for missing fields default to
+    dataclass defaults (0 / 0.0 / False / None).
+    """
+    return MappedDecision(
+        tally_name=row.get("tally_name") or "",
+        tally_id=row.get("tally_id"),
+        tally_root_type=row.get("tally_root_type") or "",
+        opening_dr=row.get("opening_dr") or 0.0,
+        opening_cr=row.get("opening_cr") or 0.0,
+        tier=row.get("tier") or "unmapped",
+        proposed_account=(
+            row.get("final_account") or row.get("proposed_account")
+        ),
+        review_action=row.get("review_action") or "Pending",
+        matched_rule=row.get("matched_rule"),
+        confidence=row.get("confidence") or 0.0,
+        anti_pattern_blocked=bool(row.get("anti_pattern_blocked")),
+        anti_pattern_rule=row.get("anti_pattern_rule"),
+        anti_pattern_message=row.get("anti_pattern_message"),
+        excluded_reason=row.get("excluded_reason"),
+        # Supplier-resolution payload — reviewer's final_supplier
+        # preferred over mapper's proposed_supplier so advance_je /
+        # oit_csv pick up reviewer overrides transparently.
+        proposed_supplier=(
+            row.get("final_supplier") or row.get("proposed_supplier")
+        ),
+        supplier_match_score=row.get("supplier_match_score") or 0.0,
+        matched_alias_rule=None,  # not persisted; audit-only if needed later
+        new_supplier_name=row.get("new_supplier_name"),
+    )
+
+
+def ledger_from_doc_row(row: dict[str, Any]) -> Ledger:
+    """Reconstruct a ``Ledger`` from a Mapping Decision row.
+
+    Used by the Main JE generator's ``ledger_index`` lookup, which reads
+    ``is_student_ledger``, ``is_system_account``, ``root_type``,
+    ``opening_dr``, ``opening_cr``, and (implicitly) ``is_leaf``. All
+    persisted Mapping Decisions came from leaf ledgers (the parser never
+    emits groups into ``tb.ledgers``), so ``is_leaf=True`` unconditionally.
+
+    ``parent_chain`` is returned empty — no generator reads it. If a
+    downstream consumer ever needs it, split ``tally_parent_chain`` on
+    " > ".
+    """
+    return Ledger(
+        name=row.get("tally_name") or "",
+        tally_id=row.get("tally_id"),
+        parent_group="",
+        parent_chain=[],
+        root_type=row.get("tally_root_type") or "",
+        opening_dr=row.get("opening_dr") or 0.0,
+        opening_cr=row.get("opening_cr") or 0.0,
+        net_amount=row.get("net_amount") or 0.0,
+        net_side=row.get("net_side") or "Zero",
+        is_leaf=True,
+        is_system_account=bool(row.get("is_system_account")),
+        is_student_ledger=bool(row.get("is_student_ledger")),
+        is_pnl_closed_zero=bool(row.get("is_pnl_closed_zero")),
+    )
+
+
 def decision_to_row_dict(
     decision: MappedDecision,
     ledger: Ledger,
@@ -210,3 +284,107 @@ def decision_to_row_dict(
         "reviewer_notes": None,
         "excluded_reason": decision.excluded_reason,
     }
+
+
+# ---------------------------------------------------------------------------
+# Frappe-side loader — used by generators (Item 2 Commit 3 pivot)
+# ---------------------------------------------------------------------------
+
+
+# Session statuses from which generators are permitted to run. Must
+# have gone through `run_mapper` first (status transitions to
+# Reviewing after persistence). Generating / Generated / Submitted
+# are allowed because re-generation of existing artefacts is a
+# legitimate reviewer action.
+GENERATOR_ALLOWED_STATUSES = frozenset({
+    "Reviewing",
+    "Generating",
+    "Generated",
+    "Submitted",
+})
+
+
+def require_generator_status(session: Any, generator_name: str) -> None:
+    """Guard generators from running on un-mapped sessions.
+
+    Raises a descriptive ``frappe.ValidationError`` (resolved via
+    ``frappe.throw``) if the session's status is not in
+    :data:`GENERATOR_ALLOWED_STATUSES`. Caller is responsible for
+    passing a session doc with a ``status`` attribute; the guard does
+    not refetch.
+    """
+    import frappe
+
+    if session.status not in GENERATOR_ALLOWED_STATUSES:
+        frappe.throw(
+            f"{generator_name} cannot run on session "
+            f"{session.name!r} with status {session.status!r}. "
+            f"Run Mapper first from the session form to populate "
+            f"Mapping Decisions; allowed statuses are "
+            f"{sorted(GENERATOR_ALLOWED_STATUSES)}."
+        )
+
+
+def load_decisions_from_session(
+    session_name: str,
+) -> tuple[list[MappedDecision], dict[tuple[str, str], Ledger]]:
+    """Read persisted Mapping Decisions + rebuild ledger_index.
+
+    Returns ``(decisions, ledger_index)``:
+      * ``decisions`` — ``MappedDecision`` list with reviewer's
+        ``final_account`` / ``final_supplier`` preferred over the
+        mapper's ``proposed_*`` fields (see ``decision_from_doc_row``).
+      * ``ledger_index`` — ``{(tally_name, tally_id or ""): Ledger}``
+        map suitable for the main-JE generator's lookups.
+
+    Called by generators in place of the pre-Item-2 ``_parse_and_map``
+    helpers. Does not re-parse the source file.
+    """
+    import frappe
+
+    rows = frappe.get_all(
+        "Mapping Decision",
+        filters={"session": session_name},
+        fields=["*"],
+        order_by="creation",
+        limit_page_length=0,
+    )
+
+    decisions: list[MappedDecision] = []
+    ledger_index: dict[tuple[str, str], Ledger] = {}
+    for row in rows:
+        d = decision_from_doc_row(row)
+        l = ledger_from_doc_row(row)
+        decisions.append(d)
+        # Identity key matches the persistence path — see
+        # index_ledgers_by_identity above.
+        ledger_index[(d.tally_name, d.tally_id or "")] = l
+    return decisions, ledger_index
+
+
+def synthesize_tb_from_ledger_index(
+    ledger_index: dict[tuple[str, str], Ledger],
+    *,
+    company_name: str = "",
+    tb_date: str = "",
+    source_format: str = "",
+) -> ParsedTallyTB:
+    """Build a minimal ``ParsedTallyTB`` from a reconstructed ledger_index.
+
+    Used by ``opening_je.generate_main_opening_je`` to keep the
+    ``build_je_payload(tb=...)`` signature unchanged after the pivot
+    away from reparse-and-remap. Only ``ledgers`` is populated;
+    other fields are placeholders since ``build_je_payload`` only
+    reads ``tb.ledgers``.
+    """
+    return ParsedTallyTB(
+        company_name=company_name,
+        tb_date=tb_date,
+        source_format=source_format,
+        source_file="",
+        ledgers=list(ledger_index.values()),
+        groups=[],
+        total_dr=0.0,
+        total_cr=0.0,
+        is_balanced=False,
+    )

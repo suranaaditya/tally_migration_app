@@ -8,6 +8,44 @@ here and reference the landing commit in the change log.
 
 ---
 
+## Duplicate `(tally_name, tally_id)` identity in CACSPU parser output
+
+**Raised:** Item 2 Commit 3 Phase C (2026-04-22).
+
+**Symptom:** Two Mapping Decision rows exist with **identical
+identity tuple** `(tally_name="Furniture Material Work In Progress",
+tally_id="1141")` in session `TMS-CACSPU--00495`'s 1964 persisted
+decisions. Both have the same opening amounts and the same
+`tier=tier1_exact` proposal. DocType `name` differs only because
+autoname increments.
+
+**Impact today:** Main Opening JE double-counts this ledger's
+opening balance (generator emits one JE line per decision, and here
+we have two decisions contributing the same Dr/Cr amounts). Pre-dates
+Item 2 — the reparse-and-remap path would have produced the same
+duplicate, just never persisted it so it was invisible.
+
+**Why it surfaced now:** Commit 3's verify script hit the same key
+in `(tally_name, tally_id)` lookups; exposed the duplicate during
+reviewer-override testing.
+
+**Root cause hypothesis:** parser is extracting the ledger from two
+parts of the Tally XML export (e.g. masters section + a secondary
+ledgers list) without deduping. Needs a parser-level probe — run
+`rgi_migration.parsers.tally_xml_parser.parse_xml(...)` on the 221 MB
+export directly and count tuples.
+
+**Fix direction:** deduplicate at parser boundary (`ParsedTallyTB.ledgers`
+should be a set of unique identities, or the parser should dedup
+with last-wins-by-source-position semantics). Target: Item 9 prep,
+so reviewer sees clean counts before first production migration.
+
+**Why not blocking Commit 3:** the pivot is behavior-preserving —
+the same double-count was already occurring in the reparse-and-remap
+path. Fixing here would mix two concerns.
+
+---
+
 ## `create_doctypes.py` scaffolder drift
 
 **Raised:** Item 2 Commit 1 (2026-04-22). **Target:** before Item 9

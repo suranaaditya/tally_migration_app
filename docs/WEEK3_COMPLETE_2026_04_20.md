@@ -376,4 +376,50 @@ testing of the 3-tier architecture.
 
 ---
 
+## 11. CACSPU reference numbers — calibrated 2026-04-22
+
+First real end-to-end parse + map through Item 2 Commit 2's
+`run_mapper` on the full 221 MB `cacspu_masters.xml`. These numbers
+are the canonical baseline that Items 3-9 acceptance tests should
+hit; deviations point at regressions (or new mapper rules changing
+the distribution).
+
+| Bucket | Count | % of total |
+|---|---:|---:|
+| Total Mapping Decisions | **1,964** | 100% |
+| Excluded (Zero Balance) | 1,552 | 79% |
+| Excluded (P&L) | 347 | 18% |
+| Actionable pending | 39 | 2% |
+| &nbsp;&nbsp;↳ Unmapped | 21 | |
+| &nbsp;&nbsp;↳ Pending Supplier Creation | 18 | |
+| Auto-resolved (tier1) | 26 | 1% |
+| &nbsp;&nbsp;↳ tier1_exact | 20 | |
+| &nbsp;&nbsp;↳ tier1_rule | 6 | |
+| &nbsp;&nbsp;↳ tier1_pattern | 0 | |
+
+Additional session metadata populated on the first run:
+- `parsed_company_name = "G H R C A C S -A0007"` (Tally's internal name
+  — not the ERPNext `CACSPU` abbr; ok, the two coexist).
+- `student_ledger_count = 4,063` (routed to students-CSV handoff per
+  dux_voucher boundary, NOT persisted to Mapping Decision).
+- `group_count = 280` Tally groups (informational; not persisted).
+- `total_dr = 175,525,974.24` vs `total_cr = 175,183,615.76`
+  → `is_balanced = 0` (diff ≈ 342k, ~0.2% — within the
+  `tally_sign_convention §5` tolerance band but above the parser's
+  `<0.01` threshold).
+
+**Scope-doc drift to retire**: pre-Item-2 docs and handoffs said
+"~400 decisions" or "reviewer clears all 39 decisions." The 39 is
+correct for *actionable pending* only; it's not the total Mapping
+Decision count. The 1,964-row full count exists because zero-balance
+and P&L-excluded rows are emitted too (as deliberate audit trail,
+not lost work for the reviewer — the review UI filters them out of
+the default "Pending" preset).
+
+Item 9 acceptance criterion rephrased: "reviewer clears all 39
+actionable Pending decisions out of 1,964 total; generators succeed
+reading from the full DocType; Temporary Opening nets to zero."
+
+---
+
 *Written 2026-04-20 at commit `412de4d`, tagged `week3-complete`.*

@@ -37,11 +37,9 @@ import io
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Iterable
 
 from rgi_migration.mapper.mapper import MappedDecision
-from rgi_migration.parsers.normalized_schema import ParsedTallyTB
 
 LOG = logging.getLogger(__name__)
 
@@ -297,10 +295,6 @@ def _timestamp_suffix() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
 
 
-def _repo_root() -> Path:
-    return Path(__file__).resolve().parent.parent.parent
-
-
 def _append_error_log(session: Any, block: str) -> None:
     existing = session.error_log or ""
     separator = "\n\n" if existing else ""
@@ -370,20 +364,17 @@ def generate_oit_csv(session_name: str) -> str:
             frappe.delete_doc("File", prior_file_name, force=1)
         session.generated_oit_file = None
 
-    # --- 3. Parse + map ---
-    source_path = session.source_file_server_path or session.source_file
-    if not source_path:
-        raise OITGenerationError(
-            f"Session {session_name} has no source file path "
-            f"(source_file_server_path and source_file are both empty)."
-        )
-    tb, decisions = _parse_and_map(
-        source_path=str(source_path),
-        source_format=session.source_format or "xml",
-        abbr=session.company_abbr,
-        entity_type=abbr_doc.entity_type or "*",
-        erpnext_company=erpnext_company,
+    # --- 3. Load persisted Mapping Decisions (Item 2 §9.1 architecture) ---
+    # Generators no longer reparse-and-remap — they read the DocType
+    # that run_mapper() populated. Reviewer overrides on final_account /
+    # final_supplier are picked up transparently by decision_from_doc_row.
+    from rgi_migration.session.parse_and_map import (
+        load_decisions_from_session,
+        require_generator_status,
     )
+
+    require_generator_status(session, "generate_oit_csv")
+    decisions, _ = load_decisions_from_session(session_name)
 
     # --- 4. Supplier master snapshot ---
     supplier_index = _load_supplier_index()
@@ -459,77 +450,3 @@ def _load_supplier_index() -> dict[str, SupplierInfo]:
     }
 
 
-def _parse_and_map(
-    *,
-    source_path: str,
-    source_format: str,
-    abbr: str,
-    entity_type: str,
-    erpnext_company: str,
-) -> tuple[ParsedTallyTB, list[MappedDecision]]:
-    """Reparse + remap on demand.
-
-    Parallel helper to ``opening_je._parse_and_map``; each generator owns
-    its own helper until Week-4 persists parsed TB + decisions on the
-    session (see ``docs/mapper_design_notes.md §8.2``). Duplication is
-    intentional — extracting to a shared module now would make Week-4's
-    cache swap harder, not easier.
-    """
-    import frappe  # type: ignore[import]
-
-    from rgi_migration.mapper.mapper import CoaAccount, Mapper
-    from rgi_migration.mapper.rule_source import JsonFileRuleSource
-    from rgi_migration.mapper.supplier_source import (
-        InMemorySupplierSource,
-        Supplier,
-    )
-
-    if source_format == "excel":
-        from rgi_migration.parsers.tally_excel_parser import parse_excel  # type: ignore[import]
-        tb = parse_excel(source_path)
-    else:
-        from rgi_migration.parsers.tally_xml_parser import parse_xml  # type: ignore[import]
-        tb = parse_xml(source_path)
-
-    coa_rows = frappe.get_all(
-        "Account",
-        filters={"company": erpnext_company},
-        fields=["name", "parent_account", "root_type", "is_group"],
-        limit_page_length=0,
-    )
-    coa = {
-        r["name"]: CoaAccount(
-            name=r["name"],
-            parent_account=r["parent_account"],
-            root_type=r["root_type"] or "",
-            is_group=bool(r["is_group"]),
-            company_abbr=abbr,
-        )
-        for r in coa_rows
-    }
-
-    supplier_rows = frappe.get_all(
-        "Supplier",
-        fields=["name", "supplier_name", "supplier_group", "disabled", "country"],
-        limit_page_length=0,
-    )
-    suppliers = [
-        Supplier(
-            name=r["name"],
-            supplier_name=r.get("supplier_name") or r["name"],
-            supplier_group=r.get("supplier_group") or "",
-            disabled=bool(r.get("disabled")),
-            country=r.get("country"),
-        )
-        for r in supplier_rows
-    ]
-    supplier_source = InMemorySupplierSource(suppliers)
-
-    seed_path = _repo_root() / "docs" / "seed_plan.json"
-    rule_source = JsonFileRuleSource(seed_path)
-    mapper = Mapper(
-        rule_source, coa, abbr=abbr, entity_type=entity_type,
-        supplier_source=supplier_source,
-    )
-    decisions = mapper.map_all(tb.ledgers)
-    return tb, decisions

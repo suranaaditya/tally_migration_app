@@ -548,6 +548,47 @@ design doc because it's infrastructure state, not design.
 If browser verification of any custom Desk page surfaces only
 these Socket.IO errors + no other errors, treat as green.
 
+### Select enum drift from mapper-emitted literals
+
+Frappe Select fields validate writes against the `options` list. If a
+mapper (or validator, or any programmatic writer) emits a string the
+Select doesn't list, the insert fails with `ValidationError` —
+meaning one missing enum value can block a whole run mid-transaction.
+
+Two instances caught during Week 4 Item 2:
+- `tier` enum missing `tier1_supplier_exact` + `tier1_supplier_alias`
+  (mapper emitted; added in Item 2 Commit 1).
+- `review_action` enum missing `Excluded (Zero Balance)` (validators
+  emitted for 1552/1964 CACSPU decisions; added in Item 2 Commit 2).
+
+**Rule for any DocType Select field the mapper writes to**: ship an
+enum-coverage test that iterates every mapper-emitted literal and
+asserts each is in the Select `options`. Pattern:
+`rgi_migration/tests/test_mapping_decision_schema.py` —
+`test_tier_enum_covers_all_mapper_tiers` and
+`test_review_action_enum_covers_all_emitted_values`. Both tests keep
+a frozenset of the authoritative emitted literals and diff against
+the Select options; new mapper-side values force the enum to grow
+with them rather than silently bombing on insert.
+
+### Mapper `matched_rule` stores `source_section`, not doc autoname
+
+Caught during Item 2 Commit 2 first real-data run. The mapper's
+`MappedDecision.matched_rule` (and `anti_pattern_rule`) carry the
+rule's `source_section` string (e.g. `§4.6`). The Mapping Decision
+DocType's `matched_rule` is a Link → Mapping Rule expecting the
+doc autoname (e.g. `MR-00458`). Persistence fails on Link validation
+unless the wrapper translates.
+
+Translation map — `{source_section: Mapping Rule.name}` — is built
+once per `run_mapper()` invocation via `frappe.get_all("Mapping
+Rule", fields=["name", "source_section"])`. See
+`tally_migration_session.py:_load_rule_name_by_section`. Pure core
+(`decision_to_row_dict`) stays Frappe-free; translation lives in the
+Frappe wrapper. A future `FrappeRuleSource` (Item 8) may rethink
+this — storing `name` directly on `MappedDecision` would be cleaner
+but requires a cross-layer API change.
+
 ### Section Break / Data field fieldname collision
 
 When two fields on the same DocType both claim the same fieldname (e.g.

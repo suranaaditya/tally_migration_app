@@ -22,11 +22,14 @@ from rgi_migration.mapper.supplier_source import Supplier
 from rgi_migration.parsers.normalized_schema import Ledger, ParsedTallyTB
 from rgi_migration.session.parse_and_map import (
     ParseAndMapResult,
+    decision_from_doc_row,
     decision_to_row_dict,
     index_ledgers_by_identity,
+    ledger_from_doc_row,
     parse_source,
     run_mapper_pipeline,
     run_parse_and_map,
+    synthesize_tb_from_ledger_index,
 )
 
 
@@ -417,6 +420,126 @@ def test_index_by_identity_none_tally_id_normalises_to_empty_string() -> None:
 # ---------------------------------------------------------------------------
 # Full pipeline smoke on committed fixture (slow but cheap — 10 MB)
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# decision_from_doc_row — reviewer-preference pivot (Item 2 Commit 3)
+# ---------------------------------------------------------------------------
+
+
+def test_decision_from_doc_row_uses_final_account_when_present() -> None:
+    """Reviewer-preference rule: final_account (if populated) is
+    surfaced as d.proposed_account so generators see the override."""
+    row = {
+        "tally_name": "Foo",
+        "tally_root_type": "Asset",
+        "tier": "tier1_rule",
+        "proposed_account": "ABC - CACSPU",
+        "final_account": "XYZ - CACSPU",  # reviewer override
+        "review_action": "Manual Override",
+    }
+    d = decision_from_doc_row(row)
+    assert d.proposed_account == "XYZ - CACSPU"  # final wins
+
+
+def test_decision_from_doc_row_falls_back_to_proposed_account() -> None:
+    """When the reviewer hasn't set final_account, the mapper's
+    proposed_account flows through unchanged."""
+    row = {
+        "tally_name": "Foo",
+        "tally_root_type": "Asset",
+        "tier": "tier1_rule",
+        "proposed_account": "ABC - CACSPU",
+        "final_account": None,
+        "review_action": "Pending",
+    }
+    d = decision_from_doc_row(row)
+    assert d.proposed_account == "ABC - CACSPU"
+
+
+def test_decision_from_doc_row_supplier_preference() -> None:
+    """final_supplier wins over proposed_supplier on supplier-tier rows."""
+    row = {
+        "tally_name": "Aarna",
+        "tally_root_type": "Liability",
+        "tier": "tier1_supplier_fuzzy",
+        "proposed_supplier": "SUP-AARNA-FUZZY",
+        "final_supplier": "SUP-AARNA-FINAL",  # reviewer override
+        "supplier_match_score": 0.87,
+        "review_action": "Manual Override",
+    }
+    d = decision_from_doc_row(row)
+    assert d.proposed_supplier == "SUP-AARNA-FINAL"
+    assert d.supplier_match_score == 0.87
+
+
+def test_decision_from_doc_row_empty_row_defaults() -> None:
+    """Minimal row (e.g. from frappe.get_all with missing fields) still
+    produces a valid MappedDecision with sensible defaults."""
+    d = decision_from_doc_row({})
+    assert d.tally_name == ""
+    assert d.tally_id is None
+    assert d.tier == "unmapped"
+    assert d.review_action == "Pending"
+    assert d.proposed_account is None
+    assert d.proposed_supplier is None
+
+
+# ---------------------------------------------------------------------------
+# ledger_from_doc_row + synthesize_tb_from_ledger_index
+# ---------------------------------------------------------------------------
+
+
+def test_ledger_from_doc_row_carries_parser_flags() -> None:
+    """is_student_ledger / is_system_account / is_pnl_closed_zero from
+    the persisted row survive the Ledger reconstruction."""
+    row = {
+        "tally_name": "System P&L",
+        "tally_id": "999",
+        "tally_root_type": "Equity",
+        "opening_dr": 0.0,
+        "opening_cr": 0.0,
+        "net_amount": 0.0,
+        "net_side": "Zero",
+        "is_system_account": 1,
+        "is_pnl_closed_zero": 1,
+        "is_student_ledger": 0,
+    }
+    l = ledger_from_doc_row(row)
+    assert l.is_system_account is True
+    assert l.is_pnl_closed_zero is True
+    assert l.is_student_ledger is False
+    assert l.is_leaf is True  # unconditional
+
+
+def test_ledger_from_doc_row_name_and_amounts() -> None:
+    row = {
+        "tally_name": "Bank - Maharashtra",
+        "tally_id": "BOM1",
+        "tally_root_type": "Asset",
+        "opening_dr": 125000.0,
+        "opening_cr": 0.0,
+        "net_amount": -125000.0,
+        "net_side": "Dr",
+    }
+    l = ledger_from_doc_row(row)
+    assert l.name == "Bank - Maharashtra"
+    assert l.tally_id == "BOM1"
+    assert l.opening_dr == 125000.0
+    assert l.net_side == "Dr"
+
+
+def test_synthesize_tb_from_ledger_index_preserves_ledgers() -> None:
+    """Generated TB exposes exactly the ledgers in the index (by identity)."""
+    l1 = _ledger("A", tally_id="1", opening_dr=100.0)
+    l2 = _ledger("B", tally_id="2", opening_cr=50.0)
+    idx = {("A", "1"): l1, ("B", "2"): l2}
+    tb = synthesize_tb_from_ledger_index(
+        idx, company_name="Test Co", tb_date="2026-03-31", source_format="xml",
+    )
+    assert set(id(l) for l in tb.ledgers) == {id(l1), id(l2)}
+    assert tb.company_name == "Test Co"
+    assert tb.groups == []
 
 
 def test_run_parse_and_map_full_pipeline_on_sample_fixture() -> None:
