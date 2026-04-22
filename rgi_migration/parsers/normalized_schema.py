@@ -280,3 +280,76 @@ class ParsedTallyTB:
             f"Dr {self.total_dr:,.2f}  Cr {self.total_cr:,.2f} [{balanced}] | "
             f"{len(self.parse_warnings)} warning(s)>"
         )
+
+
+def dedupe_ledgers_by_identity(
+    ledgers: list[Ledger],
+    warnings: list[str],
+) -> list[Ledger]:
+    """First-wins dedup on (name, tally_id) identity tuple.
+
+    Surfaced during Week 4 Item 2 Commit 3 reviewer-override testing:
+    CACSPU's real export contains 25 Ledger pairs with byte-identical
+    identity + balance + parent_chain (e.g. "Furniture Material Work
+    In Progress" tally_id=1141 appears twice with opening_dr=455.48 on
+    both, which would double-count to 910.96 in the Main JE without
+    dedup).
+
+    Strategy — first-wins:
+      * If two Ledgers share ``(name, tally_id)`` AND have identical
+        opening_dr + opening_cr, keep the first and silently drop the
+        rest (they carry no new information). Still record a concise
+        parse_warning so reviewers can audit the source.
+      * If opening balances differ between same-identity rows, this is
+        data corruption or a parser bug — keep first but log a LOUD
+        warning with both values. Caller can decide whether to refuse.
+
+    Runs BEFORE the main/student partition in both parsers so
+    downstream code never sees duplicates. Identity is tuple
+    ``(name, tally_id or "")`` — matches the persistence layer's
+    identity key in ``session.parse_and_map.index_ledgers_by_identity``.
+    """
+    seen: dict[tuple[str, str], Ledger] = {}
+    dup_identical: list[tuple[str, str]] = []
+    dup_diverging: list[str] = []
+
+    deduped: list[Ledger] = []
+    for l in ledgers:
+        key = (l.name, l.tally_id or "")
+        if key in seen:
+            prior = seen[key]
+            if (
+                abs(l.opening_dr - prior.opening_dr) < 0.005
+                and abs(l.opening_cr - prior.opening_cr) < 0.005
+            ):
+                dup_identical.append(key)
+            else:
+                dup_diverging.append(
+                    f"{l.name!r} (tally_id={l.tally_id!r}): "
+                    f"Dr {prior.opening_dr:.2f}/{l.opening_dr:.2f}, "
+                    f"Cr {prior.opening_cr:.2f}/{l.opening_cr:.2f}"
+                )
+            continue
+        seen[key] = l
+        deduped.append(l)
+
+    if dup_identical:
+        sample = ", ".join(
+            f"{name!r}(id={tid!r})" for name, tid in dup_identical[:5]
+        )
+        more = (
+            f" (+{len(dup_identical) - 5} more)"
+            if len(dup_identical) > 5 else ""
+        )
+        warnings.append(
+            f"Deduped {len(dup_identical)} identity-identical ledger "
+            f"duplicate(s) at parser boundary. Samples: {sample}{more}."
+        )
+    if dup_diverging:
+        warnings.append(
+            f"DIVERGING DUPLICATES ({len(dup_diverging)}) — same "
+            f"identity but different balances; first-wins applied but "
+            f"inspect the Tally export for corruption. "
+            + "; ".join(dup_diverging[:5])
+        )
+    return deduped

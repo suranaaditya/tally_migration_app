@@ -52,6 +52,7 @@ from rgi_migration.parsers.normalized_schema import (
     Group,
     Ledger,
     ParsedTallyTB,
+    dedupe_ledgers_by_identity,
 )
 from rgi_migration.parsers.tally_xml_parser import (
     TALLY_ROOT_TYPES,
@@ -194,6 +195,10 @@ def parse_excel(
                 f"Grand Total Cr mismatch: leaf sum Rs.{sum_cr:,.2f} != "
                 f"Excel row Rs.{exp_cr:,.2f}"
             )
+
+    # --- Dedup on (name, tally_id) before partition (parity with XML parser;
+    # see rgi_migration.parsers.normalized_schema.dedupe_ledgers_by_identity). ---
+    leaves = dedupe_ledgers_by_identity(leaves, warnings)
 
     # --- Partition leaves into main / student / system ---
     main_ledgers: list[Ledger] = []

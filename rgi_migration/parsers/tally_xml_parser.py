@@ -22,7 +22,13 @@ from pathlib import Path
 
 from lxml import etree
 
-from rgi_migration.parsers.normalized_schema import BillAllocation, Group, Ledger, ParsedTallyTB
+from rgi_migration.parsers.normalized_schema import (
+    BillAllocation,
+    Group,
+    Ledger,
+    ParsedTallyTB,
+    dedupe_ledgers_by_identity,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -294,6 +300,12 @@ def _parse_masters(
         if ledger is not None:
             parsed_ledgers.append(ledger)
         bill_dates.extend(dates)
+
+    # Dedupe on (name, tally_id) before partition — Tally real-world
+    # exports (e.g. CACSPU 221 MB) emit 25 identity-duplicate pairs.
+    # See dedupe_ledgers_by_identity docstring + WEEK4_DEFERRED_ITEMS
+    # for the audit trail.
+    parsed_ledgers = dedupe_ledgers_by_identity(parsed_ledgers, warnings)
 
     # Partitioning cut-line is only between main_ledgers and student_ledgers.
     # is_system_account-flagged ledgers (currently: Profit & Loss A/c, which
