@@ -2124,38 +2124,70 @@ class DetailPane {
         const decision_name = this.current_decision_name;
         const dialog = new SupplierResolutionDialog({
             decision: d,
-            onSaved: async (saved_doc) =>
-                this._onSupplierResolutionSaved(decision_name, saved_doc),
+            onSaved: async (saved_doc, opts) =>
+                this._onSupplierResolutionSaved(decision_name, saved_doc, opts),
         });
         dialog.show();
     }
 
     /**
      * Post-save callback from the supplier dialog. Parallel to
-     * saveDecision's tail — updates Undo state, notifies the master
-     * pane, shows the Undo toast, and auto-advances. The supplier
-     * backend ``save_supplier_resolution`` already cached the pre-save
-     * snapshot (shape: SUPPLIER_SAVE_FIELDS); ``undoLastSave`` uses
-     * the same shape-agnostic ``undo_decision`` endpoint.
+     * saveDecision's tail — updates master pane, shows the appropriate
+     * toast, and auto-advances.
+     *
+     * Undo behaviour split by path (Item 3 Commit 2):
+     * - Map-to-existing (``undoable=true``): cache snapshot was
+     *   written server-side by save_supplier_resolution; shows the
+     *   standard "Saved + Undo" toast; Ctrl+Z routes through the
+     *   shape-agnostic undo_decision endpoint.
+     * - Create-new (``undoable=false``): no cache snapshot was
+     *   written (SCR creation has side effects that make clean Undo
+     *   expensive); shows a plain "Saved" toast without Undo. Reviewer
+     *   recovery is manual per the 2026-04-22 design decision.
      */
-    async _onSupplierResolutionSaved(saved_decision_name, saved_doc) {
-        // Stash Undo state (parallel to saveDecision lines 1688-1689).
-        this._last_saved_decision_name = saved_decision_name;
-        this._last_saved_timestamp = Date.now();
+    async _onSupplierResolutionSaved(saved_decision_name, saved_doc, opts = {}) {
+        const { undoable = true } = opts;
 
-        // Notify controller so master-pane row updates optimistically
-        // (parallel to saveDecision line 1693-1695).
+        if (undoable) {
+            // Stash Undo state only when the save path actually cached
+            // a snapshot. Otherwise Ctrl+Z / the toast's Undo would
+            // either find a stale entry from an earlier save (wrong
+            // decision) or hit the expired-window guard.
+            this._last_saved_decision_name = saved_decision_name;
+            this._last_saved_timestamp = Date.now();
+        } else {
+            // Defensive: clear any stale Undo state so Ctrl+Z on this
+            // row doesn't revert a prior decision's save.
+            this._last_saved_decision_name = null;
+            this._last_saved_timestamp = 0;
+        }
+
         if (this.on_save_success) {
             this.on_save_success(saved_decision_name, saved_doc || {});
         }
 
-        this._showSavedToastWithUndo();
+        if (undoable) {
+            this._showSavedToastWithUndo();
+        } else {
+            this._showSavedToast();
+        }
 
-        // Auto-advance via controller's get_next_pending (parallel to
-        // saveDecision line 1699-1704 when advance=true).
         if (this.on_advance_requested) {
             this.on_advance_requested(saved_decision_name);
         }
+    }
+
+    /** Plain "Saved" toast without Undo — used by Create-new path
+     *  (Item 3 Commit 2). Intentionally no Undo button so the absence
+     *  teaches reviewers that this save is non-reversible. */
+    _showSavedToast() {
+        frappe.show_alert(
+            {
+                message: __("Saved"),
+                indicator: "green",
+            },
+            3,
+        );
     }
 
     /**
@@ -2522,7 +2554,7 @@ function renderSessionMissingEmptyState(page, session_name_attempted) {
 
 class SupplierResolutionDialog {
     static MAP_RADIO = "Map to existing supplier";
-    static CREATE_RADIO = "Create new supplier (ships in next commit)";
+    static CREATE_RADIO = "Create new supplier";
 
     constructor({ decision, onSaved }) {
         this.decision = decision;
@@ -2605,12 +2637,28 @@ class SupplierResolutionDialog {
                     depends_on: `eval:doc.resolution_path === "${SupplierResolutionDialog.MAP_RADIO}"`,
                 },
                 {
+                    fieldtype: "Data",
+                    fieldname: "proposed_supplier_name",
+                    label: __("Proposed Supplier Name"),
+                    default: d.new_supplier_name || d.tally_name || "",
+                    depends_on: `eval:doc.resolution_path === "${SupplierResolutionDialog.CREATE_RADIO}"`,
+                    mandatory_depends_on: `eval:doc.resolution_path === "${SupplierResolutionDialog.CREATE_RADIO}"`,
+                    description: __("Used as the Supplier's display name once the SCR is approved."),
+                },
+                {
+                    fieldtype: "Data",
+                    fieldname: "supplier_group",
+                    label: __("Supplier Group"),
+                    default: "",
+                    depends_on: `eval:doc.resolution_path === "${SupplierResolutionDialog.CREATE_RADIO}"`,
+                    description: __("Optional here — SCR approval will require it before the Supplier record can be created."),
+                },
+                {
                     fieldtype: "HTML",
-                    fieldname: "create_new_banner",
+                    fieldname: "create_new_note",
                     options: `
-                        <div class="supplier-dialog-banner">
-                            ⚠ <strong>${__("Create new supplier workflow ships in next commit")}.</strong>
-                            ${__("In this commit the Create-new path is preview-only — reviewers of rows without any matching supplier should Defer for now.")}
+                        <div class="supplier-dialog-note">
+                            ${__("A Supplier Creation Request will be added to this session. The decision stays Pending Supplier Creation until an approver resolves the request (Item 3 Commit 3). This action does NOT participate in Undo.")}
                         </div>
                     `,
                     depends_on: `eval:doc.resolution_path === "${SupplierResolutionDialog.CREATE_RADIO}"`,
@@ -2640,27 +2688,30 @@ class SupplierResolutionDialog {
     }
 
     _update_submit_state() {
+        // Item 3 Commit 2: both Map-to-existing and Create-new paths
+        // submit; the previous Commit 1b disabled-state on Create-new
+        // is removed. Primary button always enabled (field-level
+        // mandatory_depends_on on proposed_supplier_name catches the
+        // empty-name case for Create-new).
         if (!this._dialog) return;
-        const path = this._dialog.get_value("resolution_path");
-        const is_create = path === SupplierResolutionDialog.CREATE_RADIO;
         const btn = this._dialog.get_primary_btn();
         if (!btn || !btn.length) return;
-        if (is_create) {
-            btn.prop("disabled", true);
-            btn.attr("title", __("Create-new workflow ships in next commit"));
-        } else {
-            btn.prop("disabled", false);
-            btn.removeAttr("title");
-        }
+        btn.prop("disabled", false);
+        btn.removeAttr("title");
     }
 
     async _on_submit() {
         const values = this._dialog.get_values();
-        if (!values) return;  // Dialog's own validation rejected
+        if (!values) return;  // Dialog's own validation rejected (required fields)
+
         if (values.resolution_path === SupplierResolutionDialog.CREATE_RADIO) {
-            // Guarded by _update_submit_state but defensive.
-            return;
+            await this._submit_create_new(values);
+        } else {
+            await this._submit_map_to_existing(values);
         }
+    }
+
+    async _submit_map_to_existing(values) {
         if (!values.final_supplier) {
             frappe.msgprint({
                 title: __("Pick a supplier"),
@@ -2669,7 +2720,6 @@ class SupplierResolutionDialog {
             });
             return;
         }
-
         try {
             const r = await frappe.call({
                 method: "rgi_migration.rgi_migration.page.md_review.md_review.save_supplier_resolution",
@@ -2681,11 +2731,47 @@ class SupplierResolutionDialog {
             });
             const saved_doc = r.message || {};
             this._dialog.hide();
-            await this.onSaved(saved_doc);
+            // Item 3 Commit 1b: Map-to-existing participates in Undo.
+            await this.onSaved(saved_doc, { undoable: true });
         } catch (err) {
-            // Frappe's default error dialog handles display; log for dev.
             // eslint-disable-next-line no-console
             console.error("save_supplier_resolution failed", err);
+        }
+    }
+
+    async _submit_create_new(values) {
+        // Item 3 Commit 2: Create-new path. Submit creates an SCR
+        // child row on the session and flags the decision as
+        // Pending Supplier Creation. Explicitly NOT undoable per the
+        // 2026-04-22 design decision — child-row insert has side
+        // effects that make clean Undo expensive without proportional
+        // UX benefit. The caller's onSaved hook is invoked with
+        // `undoable: false` so the toast path skips the Undo button.
+        const proposed_name = (values.proposed_supplier_name || "").trim();
+        if (!proposed_name) {
+            frappe.msgprint({
+                title: __("Proposed name required"),
+                message: __("Type the supplier's name before submitting Create-new."),
+                indicator: "orange",
+            });
+            return;
+        }
+        try {
+            const r = await frappe.call({
+                method: "rgi_migration.rgi_migration.page.md_review.md_review.create_supplier_creation_request",
+                args: {
+                    decision_name: this.decision.name,
+                    proposed_supplier_name: proposed_name,
+                    supplier_group: (values.supplier_group || "").trim(),
+                    reviewer_notes: values.reviewer_notes || "",
+                },
+            });
+            const resp = r.message || {};
+            this._dialog.hide();
+            await this.onSaved(resp.decision || {}, { undoable: false });
+        } catch (err) {
+            // eslint-disable-next-line no-console
+            console.error("create_supplier_creation_request failed", err);
         }
     }
 }

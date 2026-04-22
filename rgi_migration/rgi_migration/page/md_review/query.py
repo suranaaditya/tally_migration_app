@@ -854,3 +854,77 @@ def build_supplier_autocomplete_results(
         description = f"Group: {group}" if group else "(no group)"
         results.append([name, description])
     return results
+
+
+# ---------------------------------------------------------------------------
+# Item 3 Commit 2 — Supplier Creation Request payload builder
+# ---------------------------------------------------------------------------
+
+
+def build_scr_payload(
+    *,
+    decision: dict,
+    proposed_supplier_name: str,
+    supplier_group: str | None,
+    reviewer_notes: str | None,
+) -> dict:
+    """Pure implementation of the SCR child-row payload.
+
+    Called by the ``create_supplier_creation_request`` Frappe wrapper
+    when the reviewer submits the Create-new path in the
+    SupplierResolutionDialog (Item 3 Commit 2). Returns a dict suitable
+    for ``session.append("supplier_creation_requests", <dict>)``.
+
+    The ``detected_balance`` signed-net-Cr convention matches the SCR
+    DocType's field label ("Detected Balance (net Cr)"): positive for
+    normal vendor payables, negative for vendor advances (Dr balances).
+    Derived from ``decision.net_amount`` which the parser + Item 2
+    persistence layer compute as ``opening_cr - opening_dr``.
+
+    ``source_decisions`` is a CSV string field on the SCR DocType;
+    Commit 2 writes a single decision name. Future merge workflows
+    would CSV-concat multiple decision names here.
+
+    Args:
+        decision: Current Mapping Decision as a dict. Must contain
+            ``name``, ``tally_name``, ``tally_id``, ``net_amount``.
+        proposed_supplier_name: Reviewer-typed name for the Supplier
+            to be created. Must be non-empty (caller validates).
+        supplier_group: Reviewer-typed group, or ``None`` / empty
+            (allowed — SCR field is not reqd; downstream approval
+            will require it before creating the Supplier).
+        reviewer_notes: Verbatim reviewer note (no chronology header;
+            SCR is a single-use record). ``None`` / empty allowed.
+
+    Returns:
+        A dict with keys matching the SCR DocType fields:
+        status, tally_vendor_name, tally_vendor_id,
+        proposed_supplier_name, proposed_supplier_group,
+        detected_balance, reviewer_notes, source_decisions.
+    """
+    return {
+        "status": "Pending",
+        "tally_vendor_name": decision.get("tally_name") or "",
+        "tally_vendor_id": decision.get("tally_id"),
+        "proposed_supplier_name": proposed_supplier_name,
+        "proposed_supplier_group": (supplier_group or "").strip() or None,
+        "detected_balance": float(decision.get("net_amount") or 0.0),
+        "reviewer_notes": reviewer_notes or None,
+        "source_decisions": decision.get("name") or "",
+    }
+
+
+def parse_source_decisions_csv(raw: str | None) -> list[str]:
+    """Split a ``source_decisions`` CSV string into clean tokens.
+
+    Used by the duplicate-detection guard in
+    ``create_supplier_creation_request`` — exact-token match on the
+    decision name, not substring (prevents false positives like
+    ``MD-2026-00001`` matching ``MD-2026-00010``).
+
+    Empty / ``None`` input → empty list. Whitespace around tokens is
+    stripped; empty tokens (from trailing commas) are dropped.
+    """
+    if not raw:
+        return []
+    return [t.strip() for t in raw.split(",") if t.strip()]

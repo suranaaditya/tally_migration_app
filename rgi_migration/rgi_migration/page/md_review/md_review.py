@@ -19,15 +19,18 @@ from rgi_migration.rgi_migration.page.md_review.query import (
     DEFAULT_ORDER_BY,
     SAVE_DECISION_FIELDS,
     SUPPLIER_SAVE_FIELDS,
+    _apply_chronology_header,
     apply_bulk_approve,
     apply_decision_save,
     apply_decision_undo,
     apply_supplier_resolution,
     build_account_autocomplete_results,
+    build_scr_payload,
     build_supplier_autocomplete_results,
     compute_next_pending,
     fetch_decision_detail,
     fetch_session_decisions,
+    parse_source_decisions_csv,
 )
 
 
@@ -407,6 +410,133 @@ def save_supplier_resolution(decision_name, final_supplier, reviewer_notes):
     decision_doc.save()
 
     return decision_doc.as_dict()
+
+
+_SCR_CREATE_REFUSED_STATUSES = frozenset({"Submitted", "Cancelled"})
+
+
+@frappe.whitelist()
+def create_supplier_creation_request(
+    decision_name,
+    proposed_supplier_name,
+    supplier_group,
+    reviewer_notes,
+):
+    """Create-new path submit (Item 3 Commit 2).
+
+    Inserts a Supplier Creation Request child row on the decision's
+    parent session, flags the decision as ``Pending Supplier Creation``,
+    and appends the reviewer's note to the decision's reviewer_notes
+    via the shared chronology-header helper.
+
+    Design decision (per 2026-04-22 authorisation): this path does NOT
+    participate in the Undo toast pattern. SCR creation has side
+    effects (child row insert, potential cascading Supplier creation
+    in Commit 3) that make a clean Undo expensive. Reviewer recovery
+    is manual — re-open the dialog + pick a different action, or
+    clean up via the Session form / Supplier list later. The frontend
+    shows a plain "Saved" toast without an Undo button to distinguish
+    from undoable saves.
+
+    Guards:
+
+    * Session status must not be ``Submitted`` or ``Cancelled`` —
+      those are terminal states where SCR creation is meaningless.
+    * No existing SCR on this session can already reference the
+      decision (exact-token CSV match on ``source_decisions``).
+      Protects against fast-double-click duplicates + explicit re-
+      submits.
+    * ``proposed_supplier_name`` required.
+
+    Args:
+        decision_name: The Mapping Decision being resolved.
+        proposed_supplier_name: Reviewer's typed supplier name.
+        supplier_group: Reviewer's typed group (may be empty; SCR
+            approval in Commit 3 will require it before Supplier
+            creation).
+        reviewer_notes: New note content. Written verbatim to the SCR
+            row; chronology-header-prepended to the Mapping Decision.
+
+    Returns:
+        ``{"status": "ok", "scr_row_name": str, "decision": dict}``.
+
+    Raises:
+        frappe.ValidationError: guard failure (status, duplicate,
+            empty name).
+        frappe.DoesNotExistError: decision or session missing.
+        frappe.PermissionError: caller lacks session read permission.
+    """
+    if not proposed_supplier_name or not str(proposed_supplier_name).strip():
+        frappe.throw("Proposed supplier name is required.")
+    proposed_supplier_name = str(proposed_supplier_name).strip()
+
+    decision_doc = frappe.get_doc("Mapping Decision", decision_name)
+    session_doc = frappe.get_doc(
+        "Tally Migration Session", decision_doc.session
+    )
+    session_doc.check_permission("read")
+
+    if session_doc.status in _SCR_CREATE_REFUSED_STATUSES:
+        frappe.throw(
+            f"Session {session_doc.name!r} has status {session_doc.status!r}; "
+            f"Supplier Creation Request creation is no longer allowed "
+            f"(refused statuses: {sorted(_SCR_CREATE_REFUSED_STATUSES)}).",
+        )
+
+    # Duplicate-refusal guard: exact-token CSV match on existing SCRs.
+    # source_decisions is a Small Text CSV field; substring match
+    # would false-positive on MD-2026-00001 ∈ MD-2026-00010 and friends,
+    # so parse + compare tokens explicitly. Empty source_decisions
+    # (possible on legacy rows) is treated as "no match."
+    for existing in (session_doc.supplier_creation_requests or []):
+        tokens = parse_source_decisions_csv(existing.source_decisions)
+        if decision_name in tokens:
+            frappe.throw(
+                f"An SCR row already exists for decision "
+                f"{decision_name!r} on this session (SCR status: "
+                f"{existing.status!r}). Edit it on the Session form, "
+                f"or mark the existing row Rejected before creating a "
+                f"new one.",
+            )
+
+    # Build + append the child row via pure-core helper.
+    payload = build_scr_payload(
+        decision=decision_doc.as_dict(),
+        proposed_supplier_name=proposed_supplier_name,
+        supplier_group=supplier_group,
+        reviewer_notes=reviewer_notes,
+    )
+    session_doc.append("supplier_creation_requests", payload)
+
+    # Append chronology-header note to the decision in parallel. The
+    # SCR's reviewer_notes carries the verbatim reviewer comment;
+    # the Mapping Decision's reviewer_notes accumulates the full audit
+    # trail like every other save path on the page.
+    current = decision_doc.as_dict()
+    decision_doc.reviewer_notes = _apply_chronology_header(
+        stored_notes=current.get("reviewer_notes") or "",
+        new_input=reviewer_notes or "",
+        session_user=frappe.session.user,
+        now_str=frappe.utils.now_datetime().strftime("%Y-%m-%d %H:%M"),
+    )
+    decision_doc.review_action = "Pending Supplier Creation"
+    # tier intentionally unchanged — still pending_supplier_creation.
+    # Commit 3's SCR approval flow will lift tier to tier1_supplier_exact.
+
+    session_doc.save(ignore_permissions=True)
+    decision_doc.save(ignore_permissions=True)
+    frappe.db.commit()
+
+    # Resolve the freshly-inserted SCR row's name for the response.
+    # Frappe generates a hash-like name on save (SCR DocType has
+    # autoname=None). Last row in the child list is the new one.
+    new_row = session_doc.supplier_creation_requests[-1] if session_doc.supplier_creation_requests else None
+
+    return {
+        "status": "ok",
+        "scr_row_name": new_row.name if new_row else None,
+        "decision": decision_doc.as_dict(),
+    }
 
 
 @frappe.whitelist()

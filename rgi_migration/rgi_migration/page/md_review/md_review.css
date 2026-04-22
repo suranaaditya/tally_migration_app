@@ -1009,3 +1009,16 @@
     font-size: 13px;
     border-radius: 2px;
 }
+
+/* Item 3 Commit 2: Create-new path informational note (non-blocking,
+ * informational — reviewer proceeds; contrast with the orange banner
+ * used in Commit 1b for the disabled-preview state). */
+.supplier-dialog-note {
+    padding: 8px 12px;
+    background: var(--blue-50, #eff6ff);
+    border-left: 3px solid var(--blue-500, #2490ef);
+    color: var(--blue-900, #0b4d87);
+    font-size: 12px;
+    border-radius: 2px;
+    line-height: 1.4;
+}

@@ -285,12 +285,17 @@ def test_dialog_save_calls_save_supplier_resolution(js_source: str) -> None:
     assert "save_supplier_resolution" in js_source
 
 
-def test_create_new_radio_is_disabled_per_commit_1b_scope(js_source: str) -> None:
-    """Sub-AMB-8 β: Create-new path is visible but submit is blocked
-    in Commit 1b. The dialog's _update_submit_state must disable the
-    primary button when Create-new is selected."""
-    assert "Create new supplier (ships in next commit)" in js_source
-    assert "Create-new workflow ships in next commit" in js_source
+def test_create_new_radio_renamed_in_commit_2(js_source: str) -> None:
+    """Item 3 Commit 2 enables the Create-new submit path (the Commit-1b
+    β gate is removed) and renames the radio option from
+    'Create new supplier (ships in next commit)' to the cleaner
+    'Create new supplier' — the parenthetical stopped being true as
+    soon as Commit 2 wired the backend.
+    """
+    assert '"Create new supplier"' in js_source
+    # The old Commit-1b "ships in next commit" radio value copy must be
+    # gone — regresses if a future commit accidentally restores it.
+    assert "Create new supplier (ships in next commit)" not in js_source
 
 
 def test_button_text_polymorphism_by_row_type(js_source: str) -> None:
