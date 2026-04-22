@@ -902,24 +902,31 @@
  * The auto-margin on the primary consumes whatever horizontal space
  * is left after the three secondaries are laid out, pinning it to
  * the right edge regardless of how wide the row is. */
+/* Item 3 Commit 1b: allow wrap on narrow detail panes. The
+ * "Resolve Supplier" button text (12 chars) pushes the four-button
+ * row past ~28% detail-pane width at typical Desk type scale; the
+ * primary "Approve & Next" (14 chars) compounds the overflow. Wrap
+ * to a second line when needed rather than clipping mid-word. */
 .mapping-decision-review-app .action-button-row {
     display: flex;
-    flex-wrap: nowrap;
+    flex-wrap: wrap;
     align-items: center;
     gap: 6px;
+    row-gap: 8px;
 }
 
 .mapping-decision-review-app .action-button-row .btn {
     min-width: 0;
-    white-space: nowrap;
+    white-space: normal;
+    line-height: 1.2;
+    /* Internal text can still wrap inside a single button if a label
+     * ever grows longer than the narrow-pane width — defensive against
+     * future i18n longer than "Resolve Supplier". */
 }
 
-/* Primary action's auto-margin on its left side is what does all
- * the layout work — it absorbs the gap between the trailing
- * secondary ("Request Creation") and itself, pushing it against the
- * right edge of the row. Because margin-left: auto lives on the
- * flex item itself (not the container), it survives any further
- * flex-level changes. */
+/* Primary action's auto-margin on its left side keeps it pinned to
+ * the right edge of the row on single-line layouts; when the row
+ * wraps, the primary falls onto its own line + still aligns right. */
 .mapping-decision-review-app .action-approve-btn {
     margin-left: auto;
 }
