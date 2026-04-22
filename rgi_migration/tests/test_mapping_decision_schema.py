@@ -118,6 +118,45 @@ def test_tier_enum_includes_item_2_additions(fields_by_name: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# review_action enum coverage — every mapper-emitted value must be in Select
+# ---------------------------------------------------------------------------
+
+
+# Authoritative list of review_action strings emitted by the mapper +
+# validators. Sourced by grep of ``rgi_migration/mapper/`` for
+# ``review_action=`` literals. Reviewer-facing values (Approved,
+# Rejected, Manual Override, Deferred, Skipped) are included because
+# save_decision (Item 1 Commit 4b) writes them.
+_MAPPER_AND_REVIEWER_REVIEW_ACTIONS = frozenset({
+    # Mapper emissions
+    "Pending",
+    "Excluded (P&L)",
+    "Excluded (Zero Balance)",
+    "Pending Account Creation",
+    "Pending Group Account Resolution",
+    "Pending Supplier Creation",
+    # Reviewer-facing
+    "Approved",
+    "Rejected",
+    "Manual Override",
+    "Deferred",
+    "Skipped",
+})
+
+
+def test_review_action_enum_covers_all_emitted_values(fields_by_name: dict) -> None:
+    ra = fields_by_name["review_action"]
+    assert ra["fieldtype"] == "Select"
+    enum_options = set(ra["options"].split("\n"))
+    missing = _MAPPER_AND_REVIEWER_REVIEW_ACTIONS - enum_options
+    assert not missing, (
+        f"review_action Select enum missing values emitted by "
+        f"mapper/validators/reviewer: {sorted(missing)}. Inserts with "
+        f"these values would fail Frappe Select validation."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Structural invariants — new fields in field_order, no duplicates
 # ---------------------------------------------------------------------------
 

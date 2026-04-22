@@ -6,6 +6,24 @@ land in a subsequent commit before Week 4 is declared complete.
 Keep entries short; when a deferred item lands, delete its section
 here and reference the landing commit in the change log.
 
+---
+
+## `create_doctypes.py` scaffolder drift
+
+**Raised:** Item 2 Commit 1 (2026-04-22). **Target:** before Item 9
+fresh-bench bootstrap test.
+
+The Week-3 `rgi_migration/rgi_migration/setup/create_doctypes.py`
+scaffolder is stale vs. the live DocType JSON. Drift known to include
+(at least): Mapping Decision still lists `istable=1`, misses session
+Link + naming_series + requires_combine + combine_with + the 4 Item-2
+supplier fields; Tally Migration Session shell excludes post-Week-3
+fields added via direct JSON edit. JSON is authoritative under
+`bench migrate`, so no runtime impact today — but a fresh-bench
+bootstrap run from this scaffolder would produce a stale schema.
+Reconcile (or deprecate the scaffolder in favour of fixture-based
+bootstrap) before Item 9 end-to-end test on a clean bench.
+
 **Landed in Commit 6 (Item 1 polish):**
 
 - Path-B bulk auto-approve tier-1 matches (`bulk_approve_tier1`
