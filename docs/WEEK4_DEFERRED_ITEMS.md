@@ -6,46 +6,70 @@ land in a subsequent commit before Week 4 is declared complete.
 Keep entries short; when a deferred item lands, delete its section
 here and reference the landing commit in the change log.
 
+**Landed in Commit 6 (Item 1 polish):**
+
+- Path-B bulk auto-approve tier-1 matches (`bulk_approve_tier1`
+  whitelist + `Bulk-Approve Tier-1` inner button + dry-run preview
+  + summary toast / partial-failure dialog).
+- Switch Session dropdown + last_session redirect on no-segment
+  route (§1.1 OQ5 resolution).
+- `?` keyboard shortcut → custom shortcut-reference dialog
+  grouping bindings by §1.6 Action / Navigation / Editing.
+- §1.9 distinct empty states — case 1 (session not found),
+  case 2 (zero parsed decisions), case 3 (all resolved on default
+  preset), case 4 (filter eliminated everything) each get their own
+  copy + CTA.
+- §1.11 prose fix — "column 5" → "column 6" for the Tier chip.
+
 ---
 
-## Auto-approve tier-1 matched decisions
+## "Open in full form" button (Section 6) — bench URL routing quirk
 
-**Raised:** Commit 4b Phase D.3 browser verification (2026-04-22).
+**Raised:** Commit 4b (2026-04-21). **Re-deferred:** Commit 6 (2026-04-22) —
+attempted fix in Commit 6 confirmed the issue is bench-level, not our
+code.
 
-**Problem:** CACSPU has ~115 tier-1 matches (`tier1_exact` +
-`tier1_rule` + `tier1_pattern`) with high-confidence
-`proposed_account` values. Requiring the reviewer to click through
-each one and press Save is tedious for zero decision value — the
-reviewer's time is better spent on the ~39 actually-pending
-decisions that require judgement. 59 entities × 115 tier-1 matches
-× manual save = ~6,800 unnecessary clicks across the project.
+**Symptom:** Clicking "Open in full form" in Section 6 Audit lands on
+"Page mapping-decision not found" (Frappe's legacy desk-Page lookup
+error). Reaching the form via the URL bar fails the same way.
 
-**Options:**
+**What Commit 6 tried:** Switched the link from `<a href="/app/...">`
+to a scripted `window.open` (Path B), then to
+`frappe.set_route("Form", "Mapping Decision", name)` (Path A —
+canonical Frappe in-SPA navigation). Both fail with the same symptom.
 
-- **Path A — server-side auto-resolution in the mapper.** Tier-1
-  matches with `proposed_account` set would be written into
-  `Mapping Decision` with `review_action = "Approved"` and
-  `final_account = proposed_account` during the mapper run. The
-  reviewer never sees these rows in the Pending filter. Pro: no
-  reviewer action needed. Con: loses the reviewer's opportunity to
-  catch a systematically-wrong tier-1 rule before it's treated as
-  approved.
-- **Path B — frontend bulk-approve button.** "Approve all tier-1
-  matches" action on the review page. Reviewer clicks once,
-  backend bulk-saves all Pending tier-1 rows that have a
-  `proposed_account`. Pro: reviewer still has eyeball-level
-  oversight; can spot-check before committing. Con: still one-click
-  per session rather than zero.
-- **Path C — bulk-actions UX.** Full row-select + bulk-action
-  pattern (checkbox column in the master pane, footer "approve
-  selected" button). Deferred in §1.10 scope fence — broader scope
-  than we need for this specific problem.
+**Root cause confirmed via curl probes:**
 
-**Recommendation:** Path B for speed-to-ship. Can land in Commit 5
-or as a separate Commit 4c depending on Commit 5's scope weight.
+```
+/app/mapping-decision/<name>      → 301 → /desk/mapping-decision/<name>
+/desk/mapping-decision/<name>     → "Page mapping-decision not found"
+/app/account (any DocType)        → 301 → /desk/account  (same redirect chain)
+```
 
-**Not blocking Commit 4b** — reviewer can still save tier-1 matches
-one by one. Just tedious.
+This bench redirects every `/app/...` URL to `/desk/...`, but the
+desk router on this bench treats the first path segment after
+`/desk/` as a Page name (legacy Frappe routing) and 404s on DocType
+slugs. Frappe's own helper `frappe.utils.get_url_to_form('Mapping
+Decision', '<name>')` returns the broken `/desk/...` URL too — so the
+backend agrees the URL is canonical, but the frontend desk router
+disagrees.
+
+**Likely culprits to investigate (separate session):**
+
+- nginx config doing the `/app/` → `/desk/` rewrite (probably from
+  pre-v15 era when desk lived at `/desk/`)
+- frappe `hooks.py` `website_redirects` doing the rewrite
+- bench's Frappe version having a partial `/app/` router that fell
+  back to legacy `/desk/` routing for non-Page URLs
+- Custom `Page` records named after DocType slugs interfering
+
+**Code currently shipped (Commit 6):** `_wire_audit_actions` in
+`md_review.js` calls `frappe.set_route("Form", "Mapping Decision",
+name)` on click. This is the *correct* canonical Frappe API — the
+button will start working as soon as the bench routing is fixed.
+
+**Not blocking Item 1** — full-form access is rare (audit / debug
+use only). Reviewers do all editing in the detail pane.
 
 ---
 
@@ -64,25 +88,6 @@ the session was manually patched. Verify the session-insert path
 **Not blocking Commit 4b** — the one test session was patched in
 Phase C sync; future session inserts need verification, not code
 changes yet.
-
----
-
-## "Open in full form" button (Section 6) — broken link
-
-**Raised:** Commit 4b Phase C walk-through (2026-04-21).
-
-**Problem:** The "Open in full form" link in Section 6 Audit
-points to `/app/mapping-decision/<name>` but does not actually
-navigate when clicked (observed by Aditya). Possibly a missing
-`target` attribute handling or event-delegation intercept.
-
-**Fix scope:** Single-file investigation on
-`rgi_migration/rgi_migration/page/md_review/md_review.js` (the
-`_render_audit` method renders the `<a>` tag). Likely one-line fix
-once reproduced.
-
-**Not blocking Commit 4b** — cosmetic; full form is reachable via
-the URL directly.
 
 ---
 

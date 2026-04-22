@@ -593,3 +593,126 @@ def compute_next_pending(
         return names[after_position]
 
     return None
+
+
+# ---------------------------------------------------------------------------
+# Commit 6 — bulk-approve tier-1 matches (Path B per WEEK4_DEFERRED_ITEMS.md)
+# ---------------------------------------------------------------------------
+
+
+# Tiers eligible for bulk auto-approval. Excludes ``tier1_supplier_fuzzy``
+# because supplier resolution UX (Final Supplier picker, default-payable
+# auto-derivation) is owned by Items 3-4 — bulk-approving suppliers via
+# the Final Account path would write the wrong field. Excludes tier-2 /
+# tier-3 because those are reviewer-judgement tiers by definition.
+BULK_APPROVE_TIER1_TIERS: frozenset[str] = frozenset({
+    "tier1_exact",
+    "tier1_rule",
+    "tier1_pattern",
+})
+
+
+def is_bulk_approve_eligible(decision: dict) -> tuple[bool, str | None]:
+    """Eligibility predicate for bulk tier-1 approval.
+
+    Per Phase A confirmation (Item 1, eligibility filter):
+
+    * ``tier`` must be one of :data:`BULK_APPROVE_TIER1_TIERS`.
+    * ``review_action`` must be one of :data:`PENDING_REVIEW_STATES`
+      — never overwrite a reviewer-resolved row (Approved, Rejected,
+      Manual Override, Deferred, Skipped, Excluded).
+    * ``proposed_account`` must be non-empty — the bulk action sets
+      ``final_account = proposed_account``, so a missing proposal
+      can't be auto-approved.
+    * ``final_account`` must be empty — never overwrite a reviewer's
+      manual pick. A row where the reviewer typed a Final Account
+      but didn't change Review Action away from Pending is still
+      "user has touched this"; defer to them.
+
+    Returns:
+        ``(True, None)`` if eligible, ``(False, reason)`` otherwise.
+        ``reason`` is a short human-readable string suitable for the
+        bulk-approve summary toast / dialog.
+    """
+    tier = (decision.get("tier") or "").strip()
+    if tier not in BULK_APPROVE_TIER1_TIERS:
+        return False, f"tier {tier!r} not in tier-1 set"
+
+    review_action = decision.get("review_action") or ""
+    if review_action not in PENDING_REVIEW_STATES:
+        return False, f"already resolved ({review_action})"
+
+    proposed_account = (decision.get("proposed_account") or "").strip()
+    if not proposed_account:
+        return False, "no proposed_account"
+
+    final_account = (decision.get("final_account") or "").strip()
+    if final_account:
+        return False, "final_account already set by reviewer"
+
+    return True, None
+
+
+def compute_bulk_approve_mutations(decision: dict) -> dict:
+    """Field updates for a single bulk-approved row.
+
+    Mirrors :func:`apply_decision_save` but skips chronology-header
+    logic — reviewer_notes is left untouched on a bulk save (Phase A
+    confirmation: "no chronology header on bulk"). Caller is
+    responsible for calling :func:`is_bulk_approve_eligible` first;
+    this function trusts the caller and produces the mutation dict
+    unconditionally.
+
+    Returns a dict with the same shape as :data:`SAVE_DECISION_FIELDS`
+    minus ``reviewer_notes`` (which the wrapper leaves alone). Caller
+    assigns these onto the Frappe doc and calls ``save()``.
+    """
+    opening_dr = float(decision.get("opening_dr") or 0.0)
+    opening_cr = float(decision.get("opening_cr") or 0.0)
+    proposed_account = (decision.get("proposed_account") or "").strip()
+
+    return {
+        "review_action": "Approved",
+        "final_account": proposed_account,
+        "final_dr": opening_dr,
+        "final_cr": opening_cr,
+    }
+
+
+def apply_bulk_approve(decisions: list[dict]) -> dict:
+    """Pure split of a session's decisions into bulk-approve buckets.
+
+    Given the full set of decisions for a session (or any iterable
+    slice the caller wants to bulk-action), partition into:
+
+    * **eligible**: rows that pass :func:`is_bulk_approve_eligible`.
+      Each entry includes the precomputed ``updates`` dict from
+      :func:`compute_bulk_approve_mutations` so the Frappe wrapper
+      can assign-and-save in one loop.
+    * **skipped**: rows that failed eligibility, with a short
+      ``reason`` for the summary dialog.
+
+    The Frappe wrapper layers per-row save try/except on top of this
+    output (catching ``frappe.ValidationError`` etc.) — actual save
+    failures are tracked separately as ``failed`` in the wrapper's
+    final summary. This pure function never raises.
+
+    Returns:
+        ``{"eligible": [{"name", "updates"}, ...],
+           "skipped":  [{"name", "reason"}, ...]}``
+    """
+    eligible: list[dict] = []
+    skipped: list[dict] = []
+
+    for decision in decisions:
+        name = decision.get("name")
+        ok, reason = is_bulk_approve_eligible(decision)
+        if ok:
+            eligible.append({
+                "name": name,
+                "updates": compute_bulk_approve_mutations(decision),
+            })
+        else:
+            skipped.append({"name": name, "reason": reason})
+
+    return {"eligible": eligible, "skipped": skipped}

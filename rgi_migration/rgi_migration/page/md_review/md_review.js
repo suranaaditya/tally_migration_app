@@ -176,6 +176,38 @@ class FilterBar {
         this._fire_change();
     }
 
+    /**
+     * Reset all filter state to defaults: Pending preset, no tier /
+     * root-type / search filters. Used by the master-pane's §1.9
+     * case 4 empty-state "Clear filters" CTA.
+     *
+     * Updates DOM and state in lock-step, then fires a single change
+     * event so the master pane reloads once (not four times).
+     */
+    reset() {
+        this.state.preset = "pending";
+        this.state.tiers = [];
+        this.state.root_types = [];
+        this.state.search = "";
+
+        // Sync DOM — preset pills, multi-checks, search input.
+        this.container.find(".filter-preset-pill").removeClass("active");
+        this.container.find(`.filter-preset-pill[data-preset="pending"]`).addClass("active");
+        // ControlMultiCheck doesn't expose a public "uncheck all" — the
+        // simplest portable path is to uncheck the underlying input
+        // boxes directly. The MultiCheck reads back via DOM scan, so
+        // the next get_checked_options() call returns the empty list.
+        this.container
+            .find(".filter-tier input[type=checkbox]:checked")
+            .prop("checked", false);
+        this.container
+            .find(".filter-root-type input[type=checkbox]:checked")
+            .prop("checked", false);
+        this.container.find(".filter-search-input").val("");
+
+        this._fire_change();
+    }
+
     // Build the filter dict for the backend call per the §1.3 spec.
     getFilters() {
         const filters = {};
@@ -351,6 +383,7 @@ class MasterPane {
             }
             this.total_count = result.total_count;
             this.filtered_count = result.filtered_count;
+            this.session_missing = false;
 
             this._render_rows(this.current_decisions);
             this._update_footer();
@@ -362,6 +395,29 @@ class MasterPane {
                 // after load completes.
             }
         } catch (err) {
+            // §1.9 case 1: invalid session segment. The Frappe wrapper
+            // raises DoesNotExistError when the session can't be loaded;
+            // surface that as the "Session not found" empty state inside
+            // the master pane (detail pane stays cleared by the
+            // controller). Other errors stay as red toast — most likely
+            // permission or transport.
+            const exc_type = (err && err._server_messages) || "";
+            const is_missing = (
+                err && err.exc_type === "DoesNotExistError"
+            ) || /DoesNotExistError|does not exist|not found/i.test(
+                String(err && (err.message || exc_type))
+            );
+
+            if (is_missing) {
+                this.session_missing = true;
+                this.current_decisions = [];
+                this.total_count = 0;
+                this.filtered_count = 0;
+                this._render_rows([]);
+                this._update_footer();
+                return;
+            }
+
             console.error("md-review: get_session_decisions failed", err);
             frappe.show_alert({
                 message: "Failed to load decisions — see console.",
@@ -374,20 +430,146 @@ class MasterPane {
         const tbody = this.container.find(".master-rows");
 
         if (!decisions || decisions.length === 0) {
-            tbody.html(`
-                <tr class="master-empty-row">
-                    <td colspan="7">
-                        <div class="master-empty-state">
-                            No decisions in this session match the current filters.
-                        </div>
-                    </td>
-                </tr>
-            `);
+            tbody.html(this._render_empty_state_row());
+            this._wire_empty_state_actions();
             return;
         }
 
         const rows_html = decisions.map((d, idx) => this._render_row(d, idx)).join("");
         tbody.html(rows_html);
+    }
+
+    /**
+     * Pick the right §1.9 empty-state for the current load context.
+     *
+     * Branches:
+     *   - session_missing → case 1 ("Session not found")
+     *   - total_count == 0 → case 2 (zero parsed decisions)
+     *   - filtered_count == 0 + has extra non-default filters → case 4
+     *   - filtered_count == 0 + only default Pending filter → case 3
+     *     ("All decisions resolved" — duplicates the detail-pane
+     *     showAllResolvedEmpty for the initial-load case where no save
+     *     is in flight)
+     *
+     * Returns the full <tr> HTML; ``_wire_empty_state_actions`` binds
+     * the buttons after insertion.
+     */
+    _render_empty_state_row() {
+        if (this.session_missing) {
+            return `
+                <tr class="master-empty-row">
+                    <td colspan="7">
+                        <div class="master-empty-state master-empty-session-missing">
+                            <h5>${__("Session not found.")}</h5>
+                            <p class="text-muted">
+                                ${__("The session {0} doesn't exist on this bench.",
+                                    [`<code>${frappe.utils.escape_html(this.session_name || "")}</code>`])}
+                            </p>
+                            <button class="btn btn-default btn-sm master-empty-go-list">
+                                ${__("Go to Session list")}
+                            </button>
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }
+
+        if (this.total_count === 0) {
+            return `
+                <tr class="master-empty-row">
+                    <td colspan="7">
+                        <div class="master-empty-state master-empty-no-decisions">
+                            <h5>${__("No decisions for this session.")}</h5>
+                            <p class="text-muted">
+                                ${__("Run parse + map on the session before reviewing. Generators can't run without mapped decisions.")}
+                            </p>
+                            <button class="btn btn-default btn-sm master-empty-back-session">
+                                ${__("Back to Session")}
+                            </button>
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }
+
+        if (MasterPane._hasExtraFilters(this.current_filters)) {
+            // Case 4 — non-default filter eliminated everything.
+            return `
+                <tr class="master-empty-row">
+                    <td colspan="7">
+                        <div class="master-empty-state master-empty-filtered-out">
+                            <h5>${__("No decisions match this filter.")}</h5>
+                            <p class="text-muted">
+                                ${__("Try clearing filters or switching back to the Pending preset.")}
+                            </p>
+                            <button class="btn btn-default btn-sm master-empty-clear-filters">
+                                ${__("Clear filters")}
+                            </button>
+                        </div>
+                    </td>
+                </tr>
+            `;
+        }
+
+        // Case 3 — default Pending preset matches zero rows = all
+        // decisions resolved. Detail-pane already renders a richer
+        // version when triggered post-save (showAllResolvedEmpty);
+        // master-pane variant is for the initial-load case.
+        return `
+            <tr class="master-empty-row">
+                <td colspan="7">
+                    <div class="master-empty-state master-empty-all-resolved">
+                        <h5>${__("All decisions in the current filter are resolved.")} \u{1F389}</h5>
+                        <p class="text-muted">
+                            ${__("The session is ready to regenerate its four output artefacts.")}
+                        </p>
+                        <button class="btn btn-default btn-sm master-empty-show-all">
+                            ${__("Show All Decisions")}
+                        </button>
+                    </div>
+                </td>
+            </tr>
+        `;
+    }
+
+    _wire_empty_state_actions() {
+        // Click handlers for the empty-state CTAs. Bound after each
+        // render because the buttons are recreated each time.
+        this.container.find(".master-empty-go-list").off("click").on("click", () => {
+            frappe.set_route("List", "Tally Migration Session");
+        });
+        this.container.find(".master-empty-back-session").off("click").on("click", () => {
+            frappe.set_route("Form", "Tally Migration Session", this.session_name);
+        });
+        this.container.find(".master-empty-clear-filters").off("click").on("click", () => {
+            // Defer to the FilterBar via the controller's empty-state hook.
+            // Falls back to a route reload if the hook isn't wired.
+            if (this.controller && typeof this.controller.on_clear_filters === "function") {
+                this.controller.on_clear_filters();
+            } else {
+                window.location.reload();
+            }
+        });
+        this.container.find(".master-empty-show-all").off("click").on("click", () => {
+            if (this.controller && typeof this.controller.on_show_all === "function") {
+                this.controller.on_show_all();
+            }
+        });
+    }
+
+    /**
+     * "Default Pending preset" check for empty-state branching. Anything
+     * beyond a single ``review_action`` filter — tier multi-select,
+     * root-type multi-select, search box — counts as an "extra" filter
+     * and routes to §1.9 case 4 ("clear filters"). The "all decisions"
+     * preset (no review_action key at all) ALSO counts as extra so the
+     * filtered-out copy fires when the reviewer dropped the Pending
+     * filter manually.
+     */
+    static _hasExtraFilters(filters) {
+        const keys = Object.keys(filters || {});
+        if (keys.length === 0) return true;  // "all" preset, no other filters
+        return keys.some(k => k !== "review_action");
     }
 
     _render_row(decision, idx) {
@@ -934,6 +1116,32 @@ class DetailPane {
         this.section4_controls = {};
         this._mount_reviewer_action_controls();
         this._mount_assignment();
+        this._wire_audit_actions();
+    }
+
+    /**
+     * Wire the Section 6 "Open in full form" button.
+     *
+     * History: this bench redirects ``/app/<doctype>/<name>`` →
+     * ``/desk/<doctype>/<name>``, but the desk router on this bench
+     * treats the first path segment after ``/desk/`` as a Page name
+     * (legacy Frappe convention) and 404s on DocType slugs.
+     * ``frappe.utils.get_url_to_form`` returns the broken URL too —
+     * it's a bench-level routing quirk, not a code bug.
+     *
+     * Workaround: ``frappe.set_route("Form", ...)`` uses Frappe's
+     * internal in-SPA navigation, which works regardless of the URL
+     * the address bar settles on. Trade-off: same-tab navigation —
+     * the reviewer loses the new-tab UX but the link actually works.
+     * Commit 6 fix.
+     */
+    _wire_audit_actions() {
+        this.container.find(".open-full-form").off("click").on("click", (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const name = $(e.currentTarget).data("decision-name");
+            if (name) frappe.set_route("Form", "Mapping Decision", name);
+        });
     }
 
     // --- Section renderers ---------------------------------------------------
@@ -1854,7 +2062,7 @@ class DetailPane {
             ? `<a href="/app/mapping-rule/${encodeURIComponent(promoted)}" target="_blank" rel="noopener">${frappe.utils.escape_html(promoted)} <span class="nav-icon">↗</span></a>`
             : `<span class="muted">—</span>`;
 
-        const open_form_url = `/app/mapping-decision/${encodeURIComponent(d.name || "")}`;
+        const decision_name = d.name || "";
 
         return `
             <section class="detail-section detail-audit">
@@ -1868,13 +2076,272 @@ class DetailPane {
                     <div class="kv-value">${promoted_html}</div>
                 </div>
                 <div class="audit-actions">
-                    <a class="btn btn-default btn-xs open-full-form" href="${open_form_url}" target="_blank" rel="noopener">
+                    <button class="btn btn-default btn-xs open-full-form" data-decision-name="${frappe.utils.escape_html(decision_name)}" type="button">
                         Open in full form <span class="nav-icon">↗</span>
-                    </a>
+                    </button>
                 </div>
             </section>
         `;
     }
+}
+
+
+// ============================================================================
+// Shortcut reference dialog — Commit 6
+// ============================================================================
+//
+// Custom dialog rather than Frappe's built-in
+// ``show_keyboard_shortcut_dialog`` because the built-in flattens all
+// page-scoped shortcuts into one alphabetical list — useless for
+// scanning. This mirrors §1.6's three-group structure (Action /
+// Navigation / Editing) so reviewers see the row-action group
+// together.
+//
+// If reviewers later want the built-in's broader coverage (Frappe-
+// global shortcuts too), expose it via a "Show all Frappe shortcuts"
+// link in the footer.
+
+const SHORTCUT_REFERENCE = [
+    {
+        group: "Actions",
+        bindings: [
+            ["A",            "Approve & Next"],
+            ["R",            "Reject"],
+            ["C",            "Request Creation"],
+            ["D",            "Defer"],
+            ["Ctrl+S",       "Approve & Next (validating; works from notes)"],
+            ["Ctrl+Shift+S", "Save Without Advance"],
+            ["Ctrl+Z",       "Undo last save (10s window)"],
+        ],
+    },
+    {
+        group: "Navigation",
+        bindings: [
+            ["↑",        "Previous decision"],
+            ["↓",        "Next decision"],
+            ["Home",     "First decision"],
+            ["End",      "Last decision"],
+            ["Enter",    "Focus Final Account picker"],
+        ],
+    },
+    {
+        group: "Editing",
+        bindings: [
+            ["Esc",  "Discard unsaved changes"],
+            ["?",    "Show this shortcut reference"],
+        ],
+    },
+];
+
+function showShortcutReferenceDialog() {
+    const groups_html = SHORTCUT_REFERENCE.map(group => {
+        const rows = group.bindings.map(([keys, desc]) => `
+            <tr>
+                <td style="width: 35%; white-space: nowrap;">
+                    <kbd>${frappe.utils.escape_html(keys)}</kbd>
+                </td>
+                <td>${frappe.utils.escape_html(desc)}</td>
+            </tr>
+        `).join("");
+        return `
+            <h6 style="margin-top: 1rem;">${frappe.utils.escape_html(group.group)}</h6>
+            <table class="table table-sm" style="margin-bottom: 0;">
+                <tbody>${rows}</tbody>
+            </table>
+        `;
+    }).join("");
+
+    const dialog = new frappe.ui.Dialog({
+        title: __("Keyboard shortcuts"),
+        size: "small",
+    });
+    dialog.$body.html(`<div class="mdr-shortcut-reference">${groups_html}</div>`);
+    dialog.show();
+}
+
+
+// ============================================================================
+// Bulk-Approve Tier-1 handler — Commit 6 (Path B per WEEK4_DEFERRED_ITEMS.md)
+// ============================================================================
+
+/**
+ * Two-phase bulk-approve flow: dry_run preview → confirm → live → toast.
+ *
+ * Why dry_run instead of a separate count endpoint: the eligibility
+ * filter is non-trivial (4 checks across tier / review_action /
+ * proposed_account / final_account) and lives server-side in
+ * ``query.is_bulk_approve_eligible``. A separate count would risk
+ * preview/execute drift if the predicate changed. Same code path,
+ * different output shape.
+ */
+async function bulkApproveTier1Handler(session_name, master_pane, detail_pane) {
+    let preview;
+    try {
+        const r = await frappe.call({
+            method: "rgi_migration.rgi_migration.page.md_review.md_review.bulk_approve_tier1",
+            args: { session_name: session_name, dry_run: true },
+        });
+        preview = r.message || {};
+    } catch (err) {
+        console.error("md-review: bulk_approve_tier1 dry_run failed", err);
+        frappe.show_alert({
+            message: __("Could not preview bulk approval — see console."),
+            indicator: "red",
+        }, 7);
+        return;
+    }
+
+    const eligible_count = preview.eligible_count || 0;
+    if (eligible_count === 0) {
+        frappe.msgprint({
+            title: __("Nothing to bulk-approve"),
+            message: __(
+                "No eligible tier-1 matches in this session. Bulk approval " +
+                "only applies to tier-1 (exact / rule / pattern) matches " +
+                "that are still pending and have a proposed account."
+            ),
+            indicator: "blue",
+        });
+        return;
+    }
+
+    const message = __(
+        "Approve {0} tier-1 matches in {1}?",
+        [`<strong>${eligible_count}</strong>`, `<strong>${frappe.utils.escape_html(session_name)}</strong>`]
+    );
+    const detail_message = __(
+        "This sets <code>review_action = Approved</code> and " +
+        "<code>final_account = proposed_account</code> on each eligible row. " +
+        "Reviewer notes are left untouched. Skips any row where the reviewer " +
+        "has already typed a manual Final Account or marked the row resolved."
+    );
+
+    frappe.confirm(
+        `${message}<br><br><span class="text-muted">${detail_message}</span>`,
+        async () => {
+            // Live execute. Re-runs the eligibility filter server-side,
+            // so any rows the reviewer touched between preview and confirm
+            // are correctly skipped (count may differ from preview).
+            let result;
+            try {
+                const r = await frappe.call({
+                    method: "rgi_migration.rgi_migration.page.md_review.md_review.bulk_approve_tier1",
+                    args: { session_name: session_name },
+                    freeze: true,
+                    freeze_message: __("Bulk-approving tier-1 matches…"),
+                });
+                result = r.message || {};
+            } catch (err) {
+                console.error("md-review: bulk_approve_tier1 failed", err);
+                frappe.show_alert({
+                    message: __("Bulk approval failed — see console."),
+                    indicator: "red",
+                }, 7);
+                return;
+            }
+
+            const approved_count = (result.approved || []).length;
+            const failed = result.failed || [];
+            const failed_count = failed.length;
+
+            // Refresh master pane — approved rows drop out of the
+            // Pending filter, indicator dots flip to green under "all"
+            // preset. Detail pane reloads via the standard selection
+            // change path.
+            master_pane.pagination_start = 0;
+            await master_pane.loadDecisions();
+            const selected = master_pane.getSelectedDecisionName();
+            if (selected) {
+                detail_pane.current_decision_name = null;
+                await detail_pane.loadDecision(selected);
+            } else {
+                detail_pane.clear();
+            }
+
+            if (failed_count === 0) {
+                frappe.show_alert({
+                    message: __("Approved {0} tier-1 matches.", [approved_count]),
+                    indicator: "green",
+                }, 6);
+                return;
+            }
+
+            // Partial failure — surface the failed names + reasons in a
+            // follow-up dialog so the reviewer can hand-fix each one.
+            const failed_rows = failed.map(f => `
+                <tr>
+                    <td><a href="/app/mapping-decision/${encodeURIComponent(f.name)}" target="_blank">${frappe.utils.escape_html(f.name)}</a></td>
+                    <td>${frappe.utils.escape_html(f.reason || "")}</td>
+                </tr>
+            `).join("");
+            frappe.msgprint({
+                title: __("Bulk approval partial — {0} approved, {1} failed",
+                    [approved_count, failed_count]),
+                message: `
+                    <p>${__("These rows could not be saved and need manual attention:")}</p>
+                    <table class="table table-bordered" style="font-size: 12px">
+                        <thead><tr><th>${__("Decision")}</th><th>${__("Reason")}</th></tr></thead>
+                        <tbody>${failed_rows}</tbody>
+                    </table>
+                `,
+                indicator: "orange",
+                wide: true,
+            });
+        }
+    );
+}
+
+
+// ============================================================================
+// last_session helpers — Commit 6 (§1.1 OQ5 resolution)
+// ============================================================================
+//
+// Reviewers auditing across multiple entities want to land back on the
+// session they were last reviewing rather than a blank /app/md-review.
+// We persist last_session into Frappe's user_settings store, which
+// round-trips to the server on save and reloads from frappe.boot on
+// next login. Namespace string ("Mapping Decision Review") matches the
+// design-doc spec verbatim.
+
+const MDR_USER_SETTINGS_KEY = "Mapping Decision Review";
+
+function readLastSessionFromUserSettings() {
+    const us = frappe.model.user_settings[MDR_USER_SETTINGS_KEY];
+    return (us && us.last_session) || null;
+}
+
+function writeLastSessionToUserSettings(session_name) {
+    if (!session_name) return;
+    frappe.model.user_settings.save(
+        MDR_USER_SETTINGS_KEY,
+        "last_session",
+        session_name
+    );
+}
+
+/**
+ * Render §1.9 case 1 — "Session not found." Mounts into the page body
+ * (replacing the split-pane shell). Used for both invalid-segment and
+ * fell-through-from-no-segment cases.
+ */
+function renderSessionMissingEmptyState(page, session_name_attempted) {
+    const message = session_name_attempted
+        ? __("The session {0} doesn't exist on this bench.",
+             [`<code>${frappe.utils.escape_html(session_name_attempted)}</code>`])
+        : __("No session selected and no recent session found.");
+    page.body.empty().append(`
+        <div class="mdr-empty-state mdr-empty-state-session-missing">
+            <h4>${__("Session not found.")}</h4>
+            <p class="text-muted">${message}</p>
+            <p class="text-muted">${__("Pick a session from the list, or go back to the Session form view.")}</p>
+            <button class="btn btn-primary mdr-empty-state-go-list">
+                ${__("Go to Session list")}
+            </button>
+        </div>
+    `);
+    page.body.find(".mdr-empty-state-go-list").on("click", () => {
+        frappe.set_route("List", "Tally Migration Session");
+    });
 }
 
 
@@ -1899,6 +2366,29 @@ frappe.pages["md-review"].on_page_load = function(wrapper) {
         decision_hash: decision_hash
     });
 
+    // No-segment route handling per §1.1 / §1.9 case 1a:
+    //   1. Read last_session from user_settings.
+    //   2. If present + still exists → frappe.set_route to it (which
+    //      re-fires this on_page_load with the segment present).
+    //   3. Otherwise → render §1.9 case 1 empty state ("session not
+    //      found"), so the reviewer has a click-through to pick.
+    // Done before any DOM scaffold so the empty state owns page.body.
+    if (!session_name) {
+        const last = readLastSessionFromUserSettings();
+        if (last) {
+            frappe.db.exists("Tally Migration Session", last).then(exists => {
+                if (exists) {
+                    frappe.set_route("md-review", last);
+                } else {
+                    renderSessionMissingEmptyState(page, last);
+                }
+            });
+        } else {
+            renderSessionMissingEmptyState(page, null);
+        }
+        return;
+    }
+
     // 6/4 split-pane shell per §1.2. Master pane now hosts FilterBar +
     // MasterPane; detail pane stays as placeholder until Commit 4.
     const container = $(`
@@ -1913,13 +2403,30 @@ frappe.pages["md-review"].on_page_load = function(wrapper) {
         </div>
     `).appendTo(page.body);
 
-    if (!session_name) {
-        frappe.show_alert({
-            message: "No session specified. Navigate from a Tally Migration Session form via the 'Review Decisions' button.",
-            indicator: "orange"
-        }, 7);
-        return;
-    }
+    // Persist this session as the last-viewed for the current user.
+    // Fire-and-forget — server roundtrip; not awaited because the
+    // value is only consumed by future page loads.
+    writeLastSessionToUserSettings(session_name);
+
+    // Switch Session dropdown — Link picker in the page form area
+    // (above the split pane) per §1.1. Link autocomplete naturally
+    // sorts by modified desc and respects read permissions, which
+    // covers the "recent sessions" intent without a custom query.
+    const switch_session_field = page.add_field({
+        fieldname: "switch_session",
+        label: __("Switch Session"),
+        fieldtype: "Link",
+        options: "Tally Migration Session",
+        change() {
+            const target = switch_session_field.get_value();
+            if (target && target !== session_name) {
+                // Clear before navigating so the field doesn't briefly
+                // show the old value if the reviewer hits Back.
+                switch_session_field.set_value("");
+                frappe.set_route("md-review", target);
+            }
+        },
+    });
 
     // DetailPane instantiates FIRST so the controller's on_selection_change
     // callback can close over it. The detail-pane container is already in
@@ -2017,6 +2524,23 @@ frappe.pages["md-review"].on_page_load = function(wrapper) {
                 history.replaceState(null, "", "#" + decision.name);
                 detail_pane.loadDecision(decision.name);
             }
+        },
+
+        // §1.9 case 4 — "Clear filters" CTA from the master-pane
+        // empty-state. Resets FilterBar to its default Pending preset
+        // and reloads. Wired here (not in MasterPane) because only
+        // on_page_load has the FilterBar reference.
+        on_clear_filters: () => {
+            if (!filter_bar) return;
+            filter_bar.reset();
+        },
+
+        // §1.9 case 3 — "Show All Decisions" CTA from the master-pane
+        // all-resolved empty-state. Mirrors the DetailPane variant
+        // (on_show_all_requested) so both entry points behave the
+        // same.
+        on_show_all: () => {
+            if (filter_bar) filter_bar.setPreset("all");
         },
     };
 
@@ -2126,6 +2650,23 @@ frappe.pages["md-review"].on_page_load = function(wrapper) {
         ignore_inputs: false,
     });
 
+    // ? — keyboard-shortcut reference dialog. Renders the canonical
+    // list of shortcuts registered on this page so reviewers don't
+    // have to dig through the spec doc. Frappe's built-in
+    // ``frappe.ui.keys.show_keyboard_shortcut_dialog`` picks up
+    // standard-shortcut registrations but groups them generically;
+    // our custom modal mirrors §1.6 grouping (Action / Navigation /
+    // Editing) so it's actually useful at the keyboard. Bound under
+    // ignore_inputs: false so typing literal "?" in a textarea
+    // doesn't fire it.
+    frappe.ui.keys.add_shortcut({
+        shortcut: "shift+/",
+        action: () => showShortcutReferenceDialog(),
+        description: __("Show keyboard shortcuts"),
+        page: page,
+        ignore_inputs: false,
+    });
+
     // Esc — discard unsaved field changes per §1.6. Only fires when
     // focus is inside the detail pane (not elsewhere on the page) so
     // it doesn't hijack Esc from, say, a Frappe dialog.
@@ -2149,6 +2690,22 @@ frappe.pages["md-review"].on_page_load = function(wrapper) {
     page.add_menu_item(__("Save Without Advance"), () => {
         if (!detail_pane.isDirty() || detail_pane._saving) return;
         detail_pane.saveWithoutAdvance();
+    });
+
+    // Bulk-Approve Tier-1 — Path B per docs/WEEK4_DEFERRED_ITEMS.md.
+    // One-click action for the ~115 obvious tier-1 matches that would
+    // otherwise eat ~6,800 unnecessary clicks across the 59-entity
+    // project. Server-side eligibility filter excludes:
+    //   - tier1_supplier_fuzzy (Items 3-4 supplier UX scope)
+    //   - already-resolved rows
+    //   - rows with no proposed_account
+    //   - rows where the reviewer typed a manual final_account
+    // Two-step UX: dry_run preview → confirm dialog with count +
+    // session name → live execute → toast summary. Refreshes the
+    // master pane on success so approved rows leave the Pending
+    // filter and the indicator dots flip to green.
+    page.add_inner_button(__("Bulk-Approve Tier-1"), () => {
+        bulkApproveTier1Handler(session_name, master_pane, detail_pane);
     });
 
     // Initial load

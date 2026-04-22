@@ -269,8 +269,63 @@
 .mapping-decision-review-app .master-empty-state {
     text-align: center;
     color: var(--text-muted, #6c7680);
-    font-style: italic;
     font-size: 13px;
+    padding: 16px;
+}
+
+/* §1.9 distinct empty-state variants — Commit 6.
+   Title gets a normal-weight heading; copy stays muted. CTA button
+   sits below the copy with a small top margin. */
+.mapping-decision-review-app .master-empty-state h5 {
+    margin-top: 0;
+    margin-bottom: 8px;
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--text-color, #36414c);
+    font-style: normal;
+}
+.mapping-decision-review-app .master-empty-state p {
+    margin-bottom: 12px;
+    font-size: 13px;
+}
+
+/* Page-body-level empty state for the no-segment-fall-through case
+   in on_page_load — replaces the split-pane shell entirely. */
+.mdr-empty-state {
+    text-align: center;
+    padding: 60px 16px;
+    max-width: 480px;
+    margin: 0 auto;
+}
+.mdr-empty-state h4 {
+    margin-bottom: 12px;
+    font-weight: 500;
+}
+.mdr-empty-state p {
+    color: var(--text-muted, #6c7680);
+    margin-bottom: 8px;
+}
+.mdr-empty-state .btn {
+    margin-top: 16px;
+}
+
+/* Shortcut reference dialog (Commit 6) — kbd elements look better
+   when slightly chunky; restore Bootstrap's <kbd> styling that
+   Frappe sometimes overrides. */
+.mdr-shortcut-reference kbd {
+    background: var(--gray-100, #f4f5f6);
+    border: 1px solid var(--gray-300, #d1d8dd);
+    border-radius: 3px;
+    color: var(--text-color, #36414c);
+    padding: 2px 6px;
+    font-size: 12px;
+    font-family: var(--font-stack-monospace, monospace);
+}
+.mdr-shortcut-reference h6 {
+    color: var(--text-muted, #6c7680);
+    text-transform: uppercase;
+    font-size: 11px;
+    letter-spacing: 0.05em;
 }
 
 

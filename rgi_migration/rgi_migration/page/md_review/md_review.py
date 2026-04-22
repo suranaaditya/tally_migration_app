@@ -18,6 +18,7 @@ import frappe.utils
 from rgi_migration.rgi_migration.page.md_review.query import (
     DEFAULT_ORDER_BY,
     SAVE_DECISION_FIELDS,
+    apply_bulk_approve,
     apply_decision_save,
     apply_decision_undo,
     build_account_autocomplete_results,
@@ -405,4 +406,112 @@ def get_next_pending(
     return {
         "next_decision_name": next_name,
         "filtered_count": len(decisions),
+    }
+
+
+@frappe.whitelist()
+def bulk_approve_tier1(session_name, dry_run=False):
+    """Bulk-approve all eligible tier-1 matches in a session.
+
+    Implements Path B from ``docs/WEEK4_DEFERRED_ITEMS.md``: a
+    one-click action on the Mapping Decision Review page that approves
+    every tier-1 match (``tier1_exact`` / ``tier1_rule`` /
+    ``tier1_pattern``) with a non-empty ``proposed_account`` and a
+    Pending* ``review_action``. Saves ~115 manual clicks per CACSPU-
+    sized session × 59 entities = ~6,800 clicks across the project.
+
+    Eligibility (per :func:`query.is_bulk_approve_eligible`): never
+    overwrites a reviewer's manual ``final_account`` pick or a
+    resolved ``review_action``; never approves supplier-fuzzy or
+    tier-2/tier-3 rows. Frontend should still preview the eligible
+    count via a confirm dialog before invoking.
+
+    Per-row save uses try/except so a single failure (e.g. stale
+    Account Link) doesn't abort the rest. The summary returns:
+
+    * ``approved``: list of decision names successfully saved
+    * ``skipped``: list of ``{"name", "reason"}`` for ineligible rows
+    * ``failed``: list of ``{"name", "reason"}`` for save failures
+
+    No chronology header is prepended to ``reviewer_notes`` — bulk
+    saves leave notes alone (Phase A confirmation, Item 1 audit
+    point).
+
+    Args:
+        session_name: The session whose decisions to scan.
+        dry_run: If truthy, return the eligible-row count without
+            saving anything. Used by the frontend confirm-dialog to
+            preview the action with the *exact* count the same code
+            path would approve — avoids preview/execute drift if
+            another reviewer edits a row mid-flow. Frappe serialises
+            booleans as the strings ``"true"`` / ``"false"`` over the
+            wire, so accept either truthy form.
+
+    Returns:
+        Live mode: ``{"approved": [...], "skipped": [...], "failed": [...]}``.
+        Dry-run mode: ``{"eligible_count": N, "skipped": [...],
+        "approved": [], "failed": []}`` — same keys so the frontend
+        can branch on ``eligible_count`` presence.
+
+    Raises:
+        frappe.DoesNotExistError: if the session is missing.
+        frappe.PermissionError: if the caller lacks read permission
+            on the session.
+    """
+    # Frappe serialises booleans as strings in HTTP transport. Handle
+    # both shapes so the test harness (passes Python bool) and the
+    # browser (passes "true"/"false") both work.
+    is_dry_run = dry_run is True or (
+        isinstance(dry_run, str) and dry_run.lower() == "true"
+    )
+
+    session_doc = frappe.get_doc("Tally Migration Session", session_name)
+    session_doc.check_permission("read")
+
+    decisions = frappe.get_all(
+        "Mapping Decision",
+        filters={"session": session_name},
+        fields=[
+            "name",
+            "tier",
+            "review_action",
+            "proposed_account",
+            "final_account",
+            "opening_dr",
+            "opening_cr",
+        ],
+    )
+
+    buckets = apply_bulk_approve(decisions)
+
+    if is_dry_run:
+        return {
+            "eligible_count": len(buckets["eligible"]),
+            "skipped": buckets["skipped"],
+            "approved": [],
+            "failed": [],
+        }
+
+    approved: list[str] = []
+    failed: list[dict] = []
+
+    for entry in buckets["eligible"]:
+        name = entry["name"]
+        updates = entry["updates"]
+        try:
+            decision_doc = frappe.get_doc("Mapping Decision", name)
+            for field, value in updates.items():
+                decision_doc.set(field, value)
+            decision_doc.save()
+            approved.append(name)
+        except Exception as exc:
+            # Per Phase A: per-row try/except, continue on failure.
+            # A single stale Account Link or validation error must not
+            # abort the rest of the bulk action.
+            failed.append({"name": name, "reason": str(exc)})
+
+    return {
+        "approved": approved,
+        "skipped": buckets["skipped"],
+        "failed": failed,
     }

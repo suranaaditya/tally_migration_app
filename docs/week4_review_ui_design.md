@@ -678,7 +678,7 @@ a Week-5+ scope, or post-RGI enhancement.
 | `Deferred` / `Skipped` | grey | muted |
 | `Excluded (P&L)` | grey | muted |
 
-Tier chips in the list (column 5) and detail (§1.4 section 2):
+Tier chips in the list (column 6) and detail (§1.4 section 2):
 
 | `tier` | Chip colour |
 |---|---|
