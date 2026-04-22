@@ -244,6 +244,11 @@ class MasterPane {
         "Pending Account Creation": "blocking",
         "Pending Supplier Creation": "blocking",
         "Pending Group Account Resolution": "blocking",
+        // Item 3 Commit 2 followup — reviewer-has-acted state for
+        // supplier Create-new. Indicator renders green (done) so the
+        // Pending filter excludes these; reviewer's work is done
+        // until the SCR approval workflow (Commit 3) runs.
+        "Supplier Creation Requested": "done",
         "Approved": "done",
         "Manual Override": "done",
         "Rejected": "muted",
@@ -2646,12 +2651,13 @@ class SupplierResolutionDialog {
                     description: __("Used as the Supplier's display name once the SCR is approved."),
                 },
                 {
-                    fieldtype: "Data",
+                    fieldtype: "Link",
                     fieldname: "supplier_group",
                     label: __("Supplier Group"),
+                    options: "Supplier Group",
                     default: "",
                     depends_on: `eval:doc.resolution_path === "${SupplierResolutionDialog.CREATE_RADIO}"`,
-                    description: __("Optional here — SCR approval will require it before the Supplier record can be created."),
+                    description: __("Pick from existing Supplier Groups. Optional here — SCR approval will require it before the Supplier record can be created."),
                 },
                 {
                     fieldtype: "HTML",

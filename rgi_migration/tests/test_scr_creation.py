@@ -215,3 +215,59 @@ def test_submit_state_button_always_enabled_in_commit_2(js_source: str) -> None:
     Create-new radio. Commit 2 removes that gate — both paths submit."""
     # Presence of the updated comment / logic: primary always enabled
     assert "btn.prop(\"disabled\", false)" in js_source
+
+
+# ---------------------------------------------------------------------------
+# Commit 2 followup — review_action state + supplier_group Link
+# ---------------------------------------------------------------------------
+
+
+def test_review_action_state_includes_supplier_creation_requested(js_source: str) -> None:
+    """REVIEW_ACTION_STATE map must classify 'Supplier Creation Requested'
+    as 'done' — the reviewer-has-acted state should render green in the
+    master pane indicator so the Pending filter excludes it."""
+    # Locate the REVIEW_ACTION_STATE block and parse it out
+    m = re.search(
+        r"static\s+REVIEW_ACTION_STATE\s*=\s*\{([^}]+)\}",
+        js_source,
+        re.DOTALL,
+    )
+    assert m is not None, "REVIEW_ACTION_STATE static map missing"
+    block = m.group(1)
+    # Parse "key": "value" pairs
+    pairs = dict(re.findall(r'"([^"]+)"\s*:\s*"([^"]+)"', block))
+    assert pairs.get("Supplier Creation Requested") == "done", (
+        f"Supplier Creation Requested must map to 'done' (green); got "
+        f"{pairs.get('Supplier Creation Requested')!r}"
+    )
+
+
+def test_supplier_group_field_is_link_to_supplier_group_doctype(js_source: str) -> None:
+    """Item 3 Commit 2 followup — supplier_group was initially a Data
+    free-text field. Reviewer feedback: should autocomplete from the
+    Supplier Group DocType. Changed to fieldtype=Link, options=Supplier Group.
+    Native Frappe Link autocomplete handles the query.
+    """
+    # Tight regex around the supplier_group dialog field definition
+    m = re.search(
+        r'fieldname:\s*"supplier_group"[^}]*?fieldtype:\s*"([^"]+)"[^}]*?options:\s*"([^"]+)"',
+        js_source,
+        re.DOTALL,
+    )
+    if m is None:
+        # Field ordering inside the object literal can vary — also try
+        # the reverse (fieldtype before fieldname).
+        m = re.search(
+            r'fieldtype:\s*"([^"]+)"[^}]*?fieldname:\s*"supplier_group"[^}]*?options:\s*"([^"]+)"',
+            js_source,
+            re.DOTALL,
+        )
+    assert m is not None, "supplier_group field definition not found"
+    fieldtype, options = m.group(1), m.group(2)
+    assert fieldtype == "Link", (
+        f"supplier_group should be fieldtype=Link for Supplier Group "
+        f"autocomplete; got {fieldtype!r}"
+    )
+    assert options == "Supplier Group", (
+        f"supplier_group options should be 'Supplier Group'; got {options!r}"
+    )

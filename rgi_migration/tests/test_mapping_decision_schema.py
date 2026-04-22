@@ -141,6 +141,8 @@ _MAPPER_AND_REVIEWER_REVIEW_ACTIONS = frozenset({
     "Manual Override",
     "Deferred",
     "Skipped",
+    # Reviewer-initiated workflow states (Item 3 Commit 2)
+    "Supplier Creation Requested",
 })
 
 

@@ -519,7 +519,14 @@ def create_supplier_creation_request(
         session_user=frappe.session.user,
         now_str=frappe.utils.now_datetime().strftime("%Y-%m-%d %H:%M"),
     )
-    decision_doc.review_action = "Pending Supplier Creation"
+    # "Supplier Creation Requested" is the reviewer-has-acted state —
+    # distinguishes from "Pending Supplier Creation" (untouched) so the
+    # reviewer's Pending filter stops surfacing rows they've already
+    # initiated SCRs on. Indicator renders green (done); generator
+    # refusal is unaffected because gates are tier-based, not
+    # review_action-based. Commit 3's SCR approval flow will transition
+    # this to "Approved" + lift the tier to tier1_supplier_exact.
+    decision_doc.review_action = "Supplier Creation Requested"
     # tier intentionally unchanged — still pending_supplier_creation.
     # Commit 3's SCR approval flow will lift tier to tier1_supplier_exact.
 

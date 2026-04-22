@@ -197,7 +197,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Review Action",
-   "options": "Pending\nApproved\nRejected\nManual Override\nDeferred\nSkipped\nExcluded (P&L)\nExcluded (Zero Balance)\nPending Account Creation\nPending Group Account Resolution\nPending Supplier Creation",
+   "options": "Pending\nApproved\nRejected\nManual Override\nDeferred\nSkipped\nExcluded (P&L)\nExcluded (Zero Balance)\nPending Account Creation\nPending Group Account Resolution\nPending Supplier Creation\nSupplier Creation Requested",
    "reqd": 1
   },
   {
