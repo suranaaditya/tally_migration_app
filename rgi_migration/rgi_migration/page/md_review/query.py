@@ -928,3 +928,91 @@ def parse_source_decisions_csv(raw: str | None) -> list[str]:
     if not raw:
         return []
     return [t.strip() for t in raw.split(",") if t.strip()]
+
+
+# ---------------------------------------------------------------------------
+# Item 3 Commit 3 — SCR approval / rejection pure-core helpers
+# ---------------------------------------------------------------------------
+
+
+def build_supplier_doc_payload(
+    *,
+    scr_row: dict,
+    default_supplier_type: str = "Company",
+) -> dict:
+    """Build the Supplier DocType insert payload from an SCR row.
+
+    Called by ``approve_scr`` when transitioning a Pending / Failed SCR
+    to Created — the payload here goes straight into
+    ``frappe.get_doc({...}).insert()``.
+
+    ``supplier_type`` is a required Supplier field (Select: Company /
+    Individual / Partnership). The SCR form doesn't collect it today —
+    most CACSPU-style Indian vendors are Company entities, so we
+    default silently and let the reviewer edit on the Supplier form
+    post-creation for edge cases (per 2026-04-22 design decision).
+
+    Args:
+        scr_row: The SCR child row as a dict. Must contain
+            ``proposed_supplier_name``; ``proposed_supplier_group`` is
+            optional.
+        default_supplier_type: Override for tests. Production callers
+            should let the ``"Company"`` default stand.
+
+    Returns:
+        Dict with ``doctype``, ``supplier_name``, ``supplier_group``,
+        ``supplier_type``. Additional Supplier fields (country,
+        tax_id, payment_terms) are not set — the Supplier defaults
+        cover them.
+    """
+    return {
+        "doctype": "Supplier",
+        "supplier_name": scr_row.get("proposed_supplier_name") or "",
+        "supplier_group": scr_row.get("proposed_supplier_group") or None,
+        "supplier_type": default_supplier_type,
+    }
+
+
+def apply_scr_approval_to_decision(
+    *,
+    resolved_supplier_name: str,
+) -> dict:
+    """Decision field updates when an SCR is approved.
+
+    Lifts the decision out of pending_supplier_creation: generators
+    will now see it as ``tier1_supplier_exact`` (pointing at the
+    freshly-created Supplier) and ``review_action=Approved``.
+    Reviewer's master-pane indicator flips green.
+
+    ``resolved_supplier_name`` is the Supplier's DocType name AS
+    CREATED by Frappe — may differ from the SCR's
+    ``proposed_supplier_name`` if a naming collision triggered a
+    suffix (e.g. proposed "Acme Pvt Ltd" → resolved "Acme Pvt Ltd 1"
+    when one already existed). Always read post-insert; never trust
+    the proposed name.
+    """
+    return {
+        "final_supplier": resolved_supplier_name,
+        "tier": "tier1_supplier_exact",
+        "review_action": "Approved",
+    }
+
+
+def apply_scr_rejection_to_decision() -> dict:
+    """Decision field updates when an SCR is rejected.
+
+    ``review_action`` flips to ``Rejected``; ``tier`` stays at
+    ``pending_supplier_creation`` (mapper-authoritative — the mapper
+    can't "unmap" a decision just because the reviewer said no).
+    Generator refusal gates (oit_csv / advance_je) were extended
+    in Item 3 Commit 3 to SKIP rejected rows rather than refuse on
+    them, so Rejected-with-pending-tier is generator-friendly.
+
+    ``final_supplier`` is explicitly cleared (any prior Map-to-existing
+    pick on this decision is stale — the reviewer's latest intent
+    is Rejected).
+    """
+    return {
+        "review_action": "Rejected",
+        "final_supplier": None,
+    }

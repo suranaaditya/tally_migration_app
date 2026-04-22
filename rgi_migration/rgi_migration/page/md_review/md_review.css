@@ -1022,3 +1022,121 @@
     border-radius: 2px;
     line-height: 1.4;
 }
+
+
+/* --- SCR processing dialog (Item 3 Commit 3) ------------------------------
+ *
+ * Scope note: the panel lives inside a frappe.ui.Dialog opened from the
+ * Tally Migration Session form, NOT inside the md-review page, so strictly
+ * speaking it could live in tally_migration_session.css. Keeping it here
+ * because (a) we don't have per-DocType stylesheets wired in the app, and
+ * (b) the md-review CSS is already the home for SCR-dialog styles (see
+ * .supplier-dialog-* above).
+ */
+
+.scr-processing-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    max-height: 70vh;
+    overflow-y: auto;
+    padding: 4px;
+}
+
+.scr-row {
+    border: 1px solid var(--border-color, #e2e6ea);
+    border-radius: 6px;
+    padding: 12px;
+    background: var(--bg-color, #fff);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.scr-row-head {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: 12px;
+}
+
+.scr-status-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+.scr-status-badge.scr-pending {
+    background: var(--orange-100, #ffe5b4);
+    color: var(--orange-700, #8a5a00);
+}
+.scr-status-badge.scr-failed {
+    background: var(--red-100, #f8d7da);
+    color: var(--red-700, #842029);
+}
+
+.scr-row-vendor-name {
+    font-weight: 600;
+    font-size: 14px;
+    color: var(--text-color, #1f272e);
+}
+
+.scr-row-tally-id {
+    font-size: 11px;
+    color: var(--text-muted, #687178);
+}
+
+.scr-row-balance {
+    font-weight: 600;
+    font-family: var(--font-stack-monospace, monospace);
+    color: var(--text-color, #1f272e);
+}
+
+.scr-row-body {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 4px 12px;
+    font-size: 12px;
+    padding: 4px 8px;
+    background: var(--fg-color, #f5f7fa);
+    border-radius: 4px;
+}
+
+.scr-row-body .scr-k {
+    color: var(--text-muted, #687178);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+.scr-row-body .scr-v {
+    color: var(--text-color, #1f272e);
+    word-break: break-word;
+}
+
+.scr-row-body .scr-v.scr-notes {
+    font-style: italic;
+    color: var(--text-color, #495057);
+}
+
+.scr-error-preview {
+    grid-column: 1 / -1;
+    margin-top: 6px;
+    padding: 6px 10px;
+    background: var(--red-50, #fdf2f2);
+    border-left: 3px solid var(--red-500, #e53e3e);
+    color: var(--red-900, #4c1010);
+    font-size: 11px;
+    font-family: var(--font-stack-monospace, monospace);
+    white-space: pre-wrap;
+    border-radius: 2px;
+}
+
+.scr-row-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+}

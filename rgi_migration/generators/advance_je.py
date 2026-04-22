@@ -148,8 +148,14 @@ def _enforce_preflight(
     supplier_index: dict[str, SupplierInfo],
     session_name: str,
 ) -> None:
+    # Item 3 Commit 3: reviewer-Rejected decisions silent-skip the
+    # refusal gate. Parallel to oit_csv._enforce_preflight — tier stays
+    # mapper-authoritative; review_action=Rejected means drop from the
+    # advance-JE pipeline.
     pending_count = sum(
-        1 for d in decisions if d.tier == "pending_supplier_creation"
+        1 for d in decisions
+        if d.tier == "pending_supplier_creation"
+        and getattr(d, "review_action", None) != "Rejected"
     )
     issues = _collect_supplier_issues(aggregated, supplier_index)
 

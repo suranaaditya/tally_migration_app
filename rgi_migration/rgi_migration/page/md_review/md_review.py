@@ -23,10 +23,13 @@ from rgi_migration.rgi_migration.page.md_review.query import (
     apply_bulk_approve,
     apply_decision_save,
     apply_decision_undo,
+    apply_scr_approval_to_decision,
+    apply_scr_rejection_to_decision,
     apply_supplier_resolution,
     build_account_autocomplete_results,
     build_scr_payload,
     build_supplier_autocomplete_results,
+    build_supplier_doc_payload,
     compute_next_pending,
     fetch_decision_detail,
     fetch_session_decisions,
@@ -614,6 +617,267 @@ def create_supplier_creation_request(
         "scr_row_name": new_row.name if new_row else None,
         "decision": decision_doc.as_dict(),
     }
+
+
+# ---------------------------------------------------------------------------
+# Item 3 Commit 3 — SCR approval / rejection workflow
+# ---------------------------------------------------------------------------
+
+
+_SCR_ACTION_ALLOWED_STATUSES = frozenset({"Pending", "Failed"})
+_SCR_ACTION_TERMINAL_STATUSES = frozenset({"Created", "Skipped"})
+
+
+def _append_scr_error_log(scr_row, block: str) -> None:
+    """Append a timestamped block to an SCR's error_log. Matches the
+    ``session.error_log`` convention from the Week-3 generators."""
+    existing = scr_row.error_log or ""
+    separator = "\n\n" if existing else ""
+    scr_row.error_log = f"{existing}{separator}{block}"
+
+
+def _iso_timestamp() -> str:
+    return frappe.utils.now_datetime().isoformat(timespec="seconds")
+
+
+@frappe.whitelist()
+def approve_scr(session_name, scr_row_name):
+    """Approve a Supplier Creation Request: create the Supplier record
+    and write-back to the source Mapping Decision(s).
+
+    Flow:
+      1. Load session + locate the SCR child row by name.
+      2. Validate SCR.status in {Pending, Failed}; refuse on Created /
+         Skipped with explicit message.
+      3. Build Supplier payload (supplier_type defaults to Company per
+         Item 3 Commit 3 AMB — reviewer edits on Supplier form
+         post-creation for Individual / Partnership edge cases).
+      4. Insert Supplier via Frappe ORM. Read the RESOLVED
+         Supplier.name post-insert (Frappe may suffix on naming
+         collision). On failure, set SCR.status=Failed, append
+         error_log block, source decisions untouched, return error.
+      5. Update SCR: status=Created, created_supplier=<resolved>,
+         clear error_log on first-time success (preserve on retry
+         success as history).
+      6. Loop each decision name in SCR.source_decisions CSV:
+         set final_supplier + tier=tier1_supplier_exact + review_action=Approved.
+         Mid-loop failures: continue, aggregate errors into
+         error_log (reviewer can retry via Approve-on-Failed to
+         complete partial state).
+
+    Empty / malformed ``source_decisions`` → SCR goes Created with a
+    warning appended to error_log; no decision write-back. Defensive
+    benign (matches AMB Q6 resolution).
+
+    Returns ``{"status": "ok", "created_supplier": str, "updated_decisions": [str, ...], "scr_status": "Created"}``
+    on success. On Supplier.insert failure returns
+    ``{"status": "failed", "scr_status": "Failed", "error": str}``
+    (200 OK — caller inspects ``status`` field; not an exception
+    because the UI needs to refresh the SCR row's error_log display).
+    """
+    session_doc = frappe.get_doc("Tally Migration Session", session_name)
+    session_doc.check_permission("read")
+
+    scr_row = _find_scr_row(session_doc, scr_row_name)
+    if scr_row is None:
+        frappe.throw(f"SCR row {scr_row_name!r} not found on session {session_name!r}.")
+
+    if scr_row.status in _SCR_ACTION_TERMINAL_STATUSES:
+        if scr_row.status == "Created":
+            frappe.throw(
+                f"SCR already created Supplier {scr_row.created_supplier!r}. "
+                f"Edit that Supplier directly, or create a new SCR if you need "
+                f"a different record."
+            )
+        frappe.throw(
+            f"SCR was Rejected ({scr_row.status!r}). Create a new SCR on the "
+            f"decision if you've changed your mind."
+        )
+
+    if not scr_row.proposed_supplier_name or not (scr_row.proposed_supplier_name or "").strip():
+        frappe.throw("SCR proposed_supplier_name is empty — cannot approve.")
+
+    # --- Build + insert Supplier ---
+    payload = build_supplier_doc_payload(scr_row=scr_row.as_dict())
+    try:
+        new_supplier = frappe.get_doc(payload).insert(ignore_permissions=True)
+        resolved_name = new_supplier.name
+    except Exception as exc:
+        # Mark SCR Failed with context; source decisions untouched.
+        block = (
+            f"[{_iso_timestamp()}] approve_scr failed creating Supplier: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        _append_scr_error_log(scr_row, block)
+        scr_row.status = "Failed"
+        session_doc.save(ignore_permissions=True)
+        frappe.db.commit()
+        return {
+            "status": "failed",
+            "scr_status": "Failed",
+            "error": str(exc),
+            "error_type": type(exc).__name__,
+        }
+
+    # --- Update SCR on Supplier.insert success ---
+    scr_row.status = "Created"
+    scr_row.created_supplier = resolved_name
+    # Leave error_log intact on retry success — prior-attempt history
+    # is useful audit trail. Fresh-approve with no prior failures
+    # starts with empty error_log already.
+
+    # --- Loop source decisions ---
+    decision_names = parse_source_decisions_csv(scr_row.source_decisions)
+    updated = []
+    per_decision_errors: list[str] = []
+
+    if not decision_names:
+        _append_scr_error_log(
+            scr_row,
+            f"[{_iso_timestamp()}] approve succeeded — Supplier "
+            f"{resolved_name!r} created — but no source_decisions CSV "
+            f"tokens were found. SCR has no Mapping Decisions to write "
+            f"back to. Check the SCR's source_decisions field manually.",
+        )
+
+    for md_name in decision_names:
+        try:
+            decision_doc = frappe.get_doc("Mapping Decision", md_name)
+            updates = apply_scr_approval_to_decision(
+                resolved_supplier_name=resolved_name
+            )
+            for field, value in updates.items():
+                decision_doc.set(field, value)
+            decision_doc.save(ignore_permissions=True)
+            updated.append(md_name)
+        except Exception as exc:  # noqa: BLE001 — aggregate, don't mask
+            per_decision_errors.append(
+                f"  - {md_name}: {type(exc).__name__}: {exc}"
+            )
+
+    if per_decision_errors:
+        block = (
+            f"[{_iso_timestamp()}] approve succeeded for Supplier "
+            f"{resolved_name!r} but {len(per_decision_errors)}/"
+            f"{len(decision_names)} source decision update(s) failed:\n"
+            + "\n".join(per_decision_errors)
+            + "\nRetry via Approve-on-Failed to complete the remaining writes."
+        )
+        _append_scr_error_log(scr_row, block)
+
+    session_doc.save(ignore_permissions=True)
+    frappe.db.commit()
+
+    return {
+        "status": "ok",
+        "scr_status": "Created",
+        "created_supplier": resolved_name,
+        "updated_decisions": updated,
+        "failed_decisions": len(per_decision_errors),
+    }
+
+
+@frappe.whitelist()
+def reject_scr(session_name, scr_row_name):
+    """Reject a Supplier Creation Request: close the SCR (status=Skipped)
+    and flag source decisions as review_action=Rejected.
+
+    Per Item 3 Commit 3 AMB Q4: decision.tier stays
+    ``pending_supplier_creation`` (mapper-authoritative). Generator
+    refusal gates in oit_csv + advance_je now SKIP rows where
+    review_action=Rejected, so rejected rows silently drop out of
+    the generator pipeline without contributing or refusing.
+
+    Validates SCR.status in {Pending, Failed} (reject accepted on both —
+    Failed SCR that reviewer gives up retrying goes Skipped).
+
+    Returns ``{"status": "ok", "scr_status": "Skipped", "updated_decisions": [...]}``.
+    """
+    session_doc = frappe.get_doc("Tally Migration Session", session_name)
+    session_doc.check_permission("read")
+
+    scr_row = _find_scr_row(session_doc, scr_row_name)
+    if scr_row is None:
+        frappe.throw(f"SCR row {scr_row_name!r} not found on session {session_name!r}.")
+
+    if scr_row.status in _SCR_ACTION_TERMINAL_STATUSES:
+        if scr_row.status == "Created":
+            frappe.throw(
+                f"Cannot reject — SCR already created Supplier "
+                f"{scr_row.created_supplier!r}. Delete that Supplier from the "
+                f"master if you need to undo."
+            )
+        frappe.throw("SCR was already rejected (status=Skipped).")
+
+    scr_row.status = "Skipped"
+
+    decision_names = parse_source_decisions_csv(scr_row.source_decisions)
+    updated = []
+    for md_name in decision_names:
+        try:
+            decision_doc = frappe.get_doc("Mapping Decision", md_name)
+            updates = apply_scr_rejection_to_decision()
+            for field, value in updates.items():
+                decision_doc.set(field, value)
+            decision_doc.save(ignore_permissions=True)
+            updated.append(md_name)
+        except Exception as exc:  # noqa: BLE001
+            _append_scr_error_log(
+                scr_row,
+                f"[{_iso_timestamp()}] reject: decision {md_name} update "
+                f"failed: {type(exc).__name__}: {exc}",
+            )
+
+    session_doc.save(ignore_permissions=True)
+    frappe.db.commit()
+
+    return {
+        "status": "ok",
+        "scr_status": "Skipped",
+        "updated_decisions": updated,
+    }
+
+
+@frappe.whitelist()
+def list_pending_scrs(session_name):
+    """Return Pending + Failed SCR rows for the Session form panel
+    dialog. Created / Skipped rows are excluded — they're done.
+
+    Returned dicts are the SCR row fields plus ``_row_name`` (Frappe's
+    child-row docname used for approve_scr / reject_scr dispatch).
+    Ordered by creation (oldest first) so reviewer processes FIFO.
+    """
+    session_doc = frappe.get_doc("Tally Migration Session", session_name)
+    session_doc.check_permission("read")
+
+    open_statuses = _SCR_ACTION_ALLOWED_STATUSES
+    rows = []
+    for r in (session_doc.supplier_creation_requests or []):
+        if r.status not in open_statuses:
+            continue
+        rows.append({
+            "row_name": r.name,
+            "status": r.status,
+            "tally_vendor_name": r.tally_vendor_name,
+            "tally_vendor_id": r.tally_vendor_id,
+            "proposed_supplier_name": r.proposed_supplier_name,
+            "proposed_supplier_group": r.proposed_supplier_group,
+            "detected_balance": r.detected_balance,
+            "reviewer_notes": r.reviewer_notes,
+            "source_decisions": r.source_decisions,
+            "error_log": r.error_log,
+            "creation": str(r.creation) if r.creation else None,
+        })
+    rows.sort(key=lambda x: x.get("creation") or "")
+    return rows
+
+
+def _find_scr_row(session_doc, row_name: str):
+    """Look up an SCR child row by its Frappe-generated name."""
+    for r in (session_doc.supplier_creation_requests or []):
+        if r.name == row_name:
+            return r
+    return None
 
 
 @frappe.whitelist()

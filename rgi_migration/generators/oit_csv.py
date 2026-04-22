@@ -181,8 +181,16 @@ def _enforce_preflight(
     (Order A) — the exception message surfaces every problem at once so
     the reviewer fixes the full set in one trip.
     """
+    # Item 3 Commit 3: reviewer-Rejected decisions silent-skip the
+    # refusal gate. The mapper tier stays pending_supplier_creation
+    # (mapper-authoritative) but the reviewer's intent (review_action
+    # == "Rejected") means no Supplier should be created + no OIT row
+    # contributed. Such rows are effectively dropped from the OIT
+    # pipeline.
     pending_count = sum(
-        1 for d in decisions if d.tier == "pending_supplier_creation"
+        1 for d in decisions
+        if d.tier == "pending_supplier_creation"
+        and getattr(d, "review_action", None) != "Rejected"
     )
     issues = _collect_supplier_issues(aggregated, supplier_index)
 
