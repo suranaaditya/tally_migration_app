@@ -159,6 +159,23 @@ class FilterBar {
         this._change_callback = callback;
     }
 
+    /**
+     * Programmatically flip the preset pill. Used by the all-resolved
+     * empty state's "Show All Decisions" button so the reviewer can
+     * exit the empty state without the hunt-and-click to the preset
+     * pill at the top of the page.
+     *
+     * @param {"pending"|"all"} preset
+     */
+    setPreset(preset) {
+        if (preset === this.state.preset) return;
+        if (preset !== "pending" && preset !== "all") return;
+        this.container.find(".filter-preset-pill").removeClass("active");
+        this.container.find(`.filter-preset-pill[data-preset="${preset}"]`).addClass("active");
+        this.state.preset = preset;
+        this._fire_change();
+    }
+
     // Build the filter dict for the backend call per the §1.3 spec.
     getFilters() {
         const filters = {};
@@ -773,6 +790,20 @@ class DetailPane {
         // pane row in place (optimistic UX — no full list refetch).
         // Signature: (decision_name, saved_decision_dict) => void.
         this.on_save_success = opts.on_save_success || null;
+        // Optional callback — invoked by saveDecision() when the
+        // save path advances (Approve & Next / Defer / Reject /
+        // Request Creation). Controller calls get_next_pending and
+        // selects the next row. Signature: (decision_name) => void.
+        this.on_advance_requested = opts.on_advance_requested || null;
+        // Optional callback — invoked by undoLastSave() on success so
+        // the controller can re-select the reverted row in the master
+        // pane (important when the save had auto-advanced the
+        // reviewer away from it). Signature: (decision_name) => void.
+        this.on_undo_success = opts.on_undo_success || null;
+        // Optional callback — fires when the "Show All Decisions"
+        // link is clicked from the all-resolved empty state.
+        // Controller flips the filter preset. Signature: () => void.
+        this.on_show_all_requested = opts.on_show_all_requested || null;
         this.current_decision_name = null;
         this.current_decision = null;
         this.current_docinfo = null;
@@ -796,6 +827,12 @@ class DetailPane {
         // always starts empty per the chronology-separation UX).
         this._original_review_action = null;
         this._original_final_account = null;
+        // Undo-window tracking: set on every successful save, cleared
+        // on timeout / successful undo / second-undo attempt. The
+        // 5-second client window is enforced in undoLastSave() (the
+        // backend has a 10-second TTL as defence against clock skew).
+        this._last_saved_decision_name = null;
+        this._last_saved_timestamp = 0;
         // True during initial ``set_value`` calls that populate the
         // controls. Blocks the onchange handler from firing the auto-
         // flip + dirty-check logic on controlled state changes.
@@ -824,6 +861,8 @@ class DetailPane {
         this._original_proposed_account = null;
         this._original_review_action = null;
         this._original_final_account = null;
+        this._last_saved_decision_name = null;
+        this._last_saved_timestamp = 0;
         this._loading_controls = false;
         this._saving = false;
         this._render_empty();
@@ -1080,9 +1119,21 @@ class DetailPane {
                     </div>
                 </div>
                 <div class="reviewer-action-footer">
-                    <button class="btn btn-primary btn-sm save-decision-btn" disabled>
-                        Save
-                    </button>
+                    <div class="action-validation-message" role="alert"></div>
+                    <div class="action-button-row">
+                        <button class="btn btn-default btn-sm action-defer-btn" type="button">
+                            Defer
+                        </button>
+                        <button class="btn btn-default btn-sm action-reject-btn" type="button">
+                            Reject
+                        </button>
+                        <button class="btn btn-default btn-sm action-request-creation-btn" type="button">
+                            Request Creation
+                        </button>
+                        <button class="btn btn-primary btn-sm action-approve-btn" type="button" disabled>
+                            Approve &amp; Next
+                        </button>
+                    </div>
                 </div>
             </section>
         `;
@@ -1196,7 +1247,7 @@ class DetailPane {
         if (notes_input && notes_input.length) {
             notes_input.off("input.mdr-notes").on("input.mdr-notes", () => {
                 if (this._loading_controls) return;
-                this._update_save_button_state();
+                this._update_action_button_states();
             });
         }
 
@@ -1215,19 +1266,24 @@ class DetailPane {
         // the handler.
         this._loading_controls = false;
 
-        // Wire the Save button click handler. Event-delegated on the
-        // Section 4 container so it survives the shell-re-render
-        // between row switches. jQuery .on("click") is idempotent per
-        // selector+handler, but we use .off+on to guarantee no stale
-        // handler from a prior mount lingers (belt-and-braces — in
-        // practice _render() replaces innerHTML so handlers die with
-        // the DOM, but explicit off defends against any code path
-        // that mutates without a full _render).
-        const btn = this.container.find(".save-decision-btn");
-        btn.off("click.mdr-save").on("click.mdr-save", () => this.saveDecision());
+        // Wire the four action button click handlers. Event-bound
+        // directly to the button elements (not delegated) — _render()
+        // replaces innerHTML between rows, so handlers die with the
+        // DOM naturally. .off+on per click namespace defends against
+        // any future code path that mutates without a full _render.
+        this.container.find(".action-defer-btn")
+            .off("click.mdr-defer").on("click.mdr-defer", () => this._onDefer());
+        this.container.find(".action-reject-btn")
+            .off("click.mdr-reject").on("click.mdr-reject", () => this._onReject());
+        this.container.find(".action-request-creation-btn")
+            .off("click.mdr-request").on("click.mdr-request", () => this._onRequestCreation());
+        this.container.find(".action-approve-btn")
+            .off("click.mdr-approve").on("click.mdr-approve", () => this._onApprove());
 
-        // Initial button state — freshly loaded row is clean.
-        this._update_save_button_state();
+        // Initial button state — freshly loaded row is clean (Approve &
+        // Next disabled until reviewer makes an edit; Defer/Reject/
+        // Request Creation enabled regardless of dirty state).
+        this._update_action_button_states();
     }
 
     /**
@@ -1259,12 +1315,26 @@ class DetailPane {
         );
     }
 
-    _update_save_button_state() {
-        const btn = this.container.find(".save-decision-btn");
-        if (!btn.length) return;
-        // During an in-flight save, button stays disabled regardless of
-        // dirty state — prevents double-submit before the await resolves.
-        btn.prop("disabled", this._saving || !this.isDirty());
+    _update_action_button_states() {
+        // Approve & Next mirrors the Commit-4b Save semantics: only
+        // enabled when the form is dirty, since an "approve" with no
+        // edits would either re-save the same Pending state (no-op)
+        // or auto-flip an already-clean row into a fresh Approved
+        // state without any reviewer signal that they reviewed it.
+        // The dirty gate forces a meaningful interaction first.
+        const approve = this.container.find(".action-approve-btn");
+        if (approve.length) {
+            approve.prop("disabled", this._saving || !this.isDirty());
+        }
+        // Defer / Reject / Request Creation are intentionally NOT
+        // gated by isDirty(). Reviewers commonly want to reject or
+        // defer a row they haven't touched — e.g. "this Tally ledger
+        // is junk, no analysis needed". Only the in-flight save guard
+        // applies, to block button-spam during the await.
+        const others = this.container.find(
+            ".action-defer-btn, .action-reject-btn, .action-request-creation-btn"
+        );
+        others.prop("disabled", this._saving);
     }
 
     /**
@@ -1272,25 +1342,32 @@ class DetailPane {
      *
      * Flow:
      *   1. Collect values, send to backend
-     *   2. On success: reload decision (chronology header is added
-     *      server-side, so the new stored notes block reflects the
-     *      concatenated value immediately), reset dirty snapshots,
-     *      fire on_save_success callback for the master-pane
-     *      optimistic row update
-     *   3. On error: Frappe's default dialog surfaces the message;
-     *      we just log and keep the current dirty state so the
-     *      reviewer can retry without retyping
+     *   2. On success:
+     *      - Stash Undo-window state (decision name + timestamp)
+     *      - Show Undo toast with clickable link (5s window)
+     *      - Notify controller for master-pane optimistic row update
+     *      - Either: advance to next decision (opts.advance=true,
+     *        via controller callback) OR reload current row (advance=false)
+     *   3. On error: Frappe surfaces whitelist-method errors via its
+     *      error dialog; we log and preserve state for retry
      *
      * The _saving guard blocks re-entry between click and await
-     * resolution.
+     * resolution. opts.advance controls the post-save navigation —
+     * Approve & Next / Defer / Reject / Request Creation all advance,
+     * Save Without Advance stays put.
+     *
+     * @param {object} opts
+     * @param {boolean} [opts.advance=false] - if true, fire
+     *   on_advance_requested after save to move to next decision.
      */
-    async saveDecision() {
+    async saveDecision(opts = {}) {
+        const { advance = false } = opts;
         if (this._saving) return;
         if (!this.isDirty()) return;  // button should be disabled; defensive.
         if (!this.current_decision_name) return;
 
         this._saving = true;
-        this._update_save_button_state();
+        this._update_action_button_states();
 
         const decision_name = this.current_decision_name;
         const review_action = this.section4_controls.review_action.get_value() || "";
@@ -1309,7 +1386,12 @@ class DetailPane {
             });
 
             const saved = r.message || {};
-            frappe.show_alert({ message: __("Saved"), indicator: "green" }, 3);
+
+            // Stash Undo state BEFORE showing the toast — if the
+            // reviewer slams Ctrl+Z immediately after the save
+            // resolves, we want the state in place to handle it.
+            this._last_saved_decision_name = decision_name;
+            this._last_saved_timestamp = Date.now();
 
             // Notify the controller so it can update the master pane
             // row in place (optimistic UX — no list refetch).
@@ -1317,15 +1399,22 @@ class DetailPane {
                 this.on_save_success(decision_name, saved);
             }
 
-            // Reload the decision so the chronology block, updated
-            // modified/modified_by timestamps, and any server-side
-            // value transformations are visible to the reviewer.
-            // Force re-fetch by clearing the idempotency guard.
-            this.current_decision_name = null;
-            await this.loadDecision(decision_name);
-            // loadDecision → _render → _mount_reviewer_action_controls
-            // re-snapshots originals, so dirty state is naturally
-            // clean on the reloaded row.
+            this._showSavedToastWithUndo();
+
+            if (advance && this.on_advance_requested) {
+                // Controller walks get_next_pending + selects the next
+                // row via master_pane.selectByName, which re-fires
+                // on_selection_change → this.loadDecision. We don't
+                // reload current row because we're moving away from it.
+                this.on_advance_requested(decision_name);
+            } else {
+                // Stay on current row — reload so the chronology block,
+                // modified_by / modified timestamps, and any server-
+                // derived value transforms are visible to the reviewer.
+                // Force re-fetch by clearing the idempotency guard.
+                this.current_decision_name = null;
+                await this.loadDecision(decision_name);
+            }
         } catch (err) {
             // Frappe surfaces whitelist-method errors automatically via
             // its error dialog (frappe.call handles the response
@@ -1334,8 +1423,218 @@ class DetailPane {
             console.error("md-review: save_decision failed", err);
         } finally {
             this._saving = false;
-            this._update_save_button_state();
+            this._update_action_button_states();
         }
+    }
+
+    /**
+     * Post-save Undo toast. Green "Saved" alert with a clickable
+     * "Undo" link that triggers undoLastSave() for the 5-second
+     * window per §1.7. Ctrl+Z is bound separately (in on_page_load)
+     * and calls undoLastSave directly — both paths converge on the
+     * same method.
+     *
+     * Uses frappe.show_alert's return value (a jQuery element) to
+     * bind the click handler post-render. The toast auto-dismisses
+     * at 5s; if the reviewer clicks Undo, we also explicitly remove
+     * the toast (so it doesn't sit around showing a now-stale link).
+     */
+    _showSavedToastWithUndo() {
+        const undo_html = `<a class="mdr-undo-link" style="cursor:pointer;text-decoration:underline;margin-left:8px;color:inherit">${__("Undo")}</a>`;
+        const alert_el = frappe.show_alert(
+            {
+                message: __("Saved") + undo_html,
+                indicator: "green",
+            },
+            5,
+        );
+        if (alert_el && alert_el.find) {
+            alert_el.find(".mdr-undo-link").on("click", (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.undoLastSave();
+                alert_el.remove();
+            });
+        }
+    }
+
+    /**
+     * Revert the most recent save via the undo_decision backend.
+     *
+     * Client-side 5-second window check (vs the 10-second backend TTL
+     * — the backend buffer covers clock skew). On success:
+     *   - Reloads the decision so the pre-save values re-render
+     *   - Notifies master pane so the row indicator reverts
+     *   - Fires on_undo_success so the controller can re-select the
+     *     reverted row (important: if the save triggered an advance,
+     *     the reviewer is now on the next row — undo should bring
+     *     them back to the original one)
+     *
+     * Single-use: _last_saved_decision_name is cleared after the
+     * attempt, so a second Ctrl+Z / Undo-click is a no-op.
+     */
+    async undoLastSave() {
+        if (!this._last_saved_decision_name) return;
+        const age = Date.now() - (this._last_saved_timestamp || 0);
+        if (age > 5000) {
+            frappe.show_alert(
+                { message: __("Too late to undo"), indicator: "orange" },
+                3,
+            );
+            this._last_saved_decision_name = null;
+            return;
+        }
+
+        const decision_name = this._last_saved_decision_name;
+        // Clear stash BEFORE the RPC so parallel Ctrl+Z spam can't
+        // double-fire the undo against a cache entry that's already
+        // been consumed (backend would return "Too late to undo"
+        // but a client-side guard is cleaner).
+        this._last_saved_decision_name = null;
+
+        try {
+            const r = await frappe.call({
+                method: "rgi_migration.rgi_migration.page.md_review.md_review.undo_decision",
+                args: { decision_name: decision_name },
+            });
+            const undone = r.message || {};
+
+            frappe.show_alert({ message: __("Undone"), indicator: "blue" }, 3);
+
+            if (this.on_save_success) {
+                this.on_save_success(decision_name, undone);
+            }
+            if (this.on_undo_success) {
+                // Controller re-selects the row in the master pane so
+                // the reviewer sees their revert. If they'd already
+                // auto-advanced, this brings them back.
+                this.on_undo_success(decision_name);
+            }
+
+            // Reload detail to show the reverted values. If
+            // on_undo_success already triggered a selectByName that
+            // re-fired loadDecision, this is a no-op (idempotent).
+            if (this.current_decision_name !== decision_name) {
+                this.current_decision_name = null;
+                await this.loadDecision(decision_name);
+            }
+        } catch (err) {
+            console.error("md-review: undo_decision failed", err);
+        }
+    }
+
+    // ---- Validation (Approve & Next only per §1.6) -----------------------
+
+    _validateApprove() {
+        const fa = this.section4_controls.final_account.get_value() || "";
+        const ra = this.section4_controls.review_action.get_value() || "";
+
+        // Order matters — final_account missing is the more actionable
+        // message, surface it first.
+        if (!fa) {
+            return {
+                ok: false,
+                message: __("Pick a Final Account before approving."),
+            };
+        }
+        if (DetailPane.PENDING_REVIEW_STATES.has(ra)) {
+            return {
+                ok: false,
+                message: __(
+                    "Review Action is still Pending — pick a terminal state (or trigger auto-flip by changing Final Account).",
+                ),
+            };
+        }
+        return { ok: true };
+    }
+
+    _showValidationMessage(msg) {
+        // Inline under the button row (§1.6). Phase C reserved the
+        // slot; this fills it. :empty CSS collapses the slot when
+        // cleared, avoiding layout-shift.
+        this.container.find(".action-validation-message").text(msg);
+    }
+
+    _clearValidationMessage() {
+        this.container.find(".action-validation-message").empty();
+    }
+
+    // ---- Focus + discard helpers (for Enter / Esc shortcuts) -------------
+
+    /**
+     * Move focus to the Final Account input — the Enter shortcut's
+     * landing target when focus is in the master pane list.
+     * §1.6 Additional shortcuts table.
+     */
+    focusFinalAccount() {
+        const control = this.section4_controls.final_account;
+        if (!control) return;
+        const $input = control.$input;
+        if ($input && $input.length) $input.focus();
+    }
+
+    /**
+     * Revert all three writable fields to their row-load originals.
+     * Bound to Esc per §1.6 ("discard unsaved field changes, keep row
+     * selection"). The _loading_controls guard prevents the
+     * programmatic set_value calls from triggering auto-flip or
+     * dirty-state-change chatter.
+     */
+    discardChanges() {
+        if (!this.section4_controls.review_action) return;
+        this._loading_controls = true;
+        try {
+            this.section4_controls.review_action.set_value(
+                this._original_review_action || "Pending",
+            );
+            this.section4_controls.final_account.set_value(
+                this._original_final_account || "",
+            );
+            this.section4_controls.reviewer_notes.set_value("");
+        } finally {
+            this._loading_controls = false;
+        }
+        this._clearValidationMessage();
+        this._update_action_button_states();
+    }
+
+    // ---- All-resolved empty state (§1.9 case 3) --------------------------
+
+    /**
+     * Render the detail pane's "all resolved" empty state. Triggered
+     * by the controller when get_next_pending returns null AND
+     * filtered_count is 0 — reviewer has exhausted the filter.
+     * Master pane stays visible (showing its own "no decisions match"
+     * row); detail pane shows celebration + actions.
+     */
+    showAllResolvedEmpty() {
+        // Clear tracked state — subsequent row selection will
+        // re-populate via loadDecision.
+        this.current_decision_name = null;
+        this.current_decision = null;
+        this.section4_controls = {};
+        this._last_saved_decision_name = null;
+
+        this.container.html(`
+            <div class="detail-all-resolved">
+                <div class="detail-all-resolved-icon">\u{1F389}</div>
+                <div class="detail-all-resolved-title">${__("All decisions in the current filter are resolved.")}</div>
+                <div class="detail-all-resolved-subtitle">${__("The session is ready to regenerate its four output artefacts.")}</div>
+                <div class="detail-all-resolved-actions">
+                    <button class="btn btn-default btn-sm detail-all-resolved-show-all">${__("Show All Decisions")}</button>
+                </div>
+            </div>
+        `);
+
+        // Wire the "Show All Decisions" click — fires the
+        // on_show_all_requested callback so the controller can flip
+        // the filter preset. Back-to-Session is intentionally
+        // omitted in v1; a reviewer can use the breadcrumb.
+        this.container.find(".detail-all-resolved-show-all")
+            .off("click.mdr-showall")
+            .on("click.mdr-showall", () => {
+                if (this.on_show_all_requested) this.on_show_all_requested();
+            });
     }
 
     /**
@@ -1385,7 +1684,130 @@ class DetailPane {
         // review_action manual change and reviewer_notes edits: no
         // auto-flip, but the Save button state still needs to update.
         // All three field changes funnel into this terminal step.
-        this._update_save_button_state();
+        // A stale validation message (from a prior failed Approve) is
+        // cleared on any edit — the error is now potentially resolved,
+        // and a lingering red line is confusing.
+        this._clearValidationMessage();
+        this._update_action_button_states();
+    }
+
+    // ---- Action button handlers -----------------------------------------
+    //
+    // Five distinct save paths land in Phase D with diverging behaviour:
+    //  • Approve & Next — validates first (final_account non-empty,
+    //    review_action != Pending), then saves + advances
+    //  • Defer / Reject — fires save with a forced review_action, then
+    //    advances. No validation (reviewer is moving the row out of the
+    //    way regardless of its prior state)
+    //  • Request Creation — confirm dialog, then save with a tier-derived
+    //    Pending* state (Account Creation vs Supplier Creation per A2)
+    //  • Save Without Advance — verbatim save of current control values,
+    //    no validation, no advance (the "preserve partial state" escape
+    //    hatch reachable via the page Menu and Ctrl+Shift+S in Phase D)
+    //
+    // In Phase C the save call is identical for all paths (plain
+    // saveDecision), with each handler differing only in (1) whether it
+    // sets review_action first, and (2) Request Creation's confirm step.
+    // Phase D adds validation + auto-advance + Undo toast on top.
+
+    /** Vendor vs account derivation for the Request Creation button.
+     *
+     * §1.6 calls for Pending Account Creation OR Pending Supplier Creation
+     * depending on whether the row is a vendor ledger. Per the §A2
+     * default, we derive purely from the mapper's tier classification:
+     * any tier that the supplier-resolution path produced means vendor.
+     *
+     * This avoids a parent-chain heuristic that would false-positive on
+     * Asset ledgers under a "Sundry Creditors" group accidentally
+     * (rare but real).
+     */
+    static SUPPLIER_TIERS = new Set(["pending_supplier_creation", "tier1_supplier_fuzzy"]);
+
+    _isVendorRow() {
+        const tier = (this.current_decision && this.current_decision.tier) || "";
+        return DetailPane.SUPPLIER_TIERS.has(tier);
+    }
+
+    /**
+     * Programmatically set review_action and persist. Used by
+     * Defer / Reject / Request Creation — they each force a specific
+     * Pending or terminal state regardless of what the Select currently
+     * shows. The set_value is wrapped in the _loading_controls guard so
+     * the auto-flip onchange branch doesn't re-enter and overwrite the
+     * forced value (auto-flip only triggers on final_account changes,
+     * not review_action changes — but defensive against future drift).
+     */
+    async _saveWithAction(target_review_action) {
+        if (!this.current_decision_name) return;
+        if (this._saving) return;
+
+        this._loading_controls = true;
+        try {
+            this.section4_controls.review_action.set_value(target_review_action);
+        } finally {
+            this._loading_controls = false;
+        }
+        // saveDecision reads the just-set review_action from the control.
+        // It also requires isDirty() to be true — which it is now, since
+        // review_action just changed from its original. Defer / Reject /
+        // Request Creation all auto-advance per §1.6.
+        await this.saveDecision({ advance: true });
+    }
+
+    async _onApprove() {
+        // Validate first per §1.6 refinement 4. Short-circuit on
+        // either failure — no save, no advance. Reviewer fixes input
+        // and retries (validation message clears on next edit via
+        // _on_section4_change).
+        const validation = this._validateApprove();
+        if (!validation.ok) {
+            this._showValidationMessage(validation.message);
+            return;
+        }
+        this._clearValidationMessage();
+        await this.saveDecision({ advance: true });
+    }
+
+    async _onDefer() {
+        await this._saveWithAction("Deferred");
+    }
+
+    async _onReject() {
+        await this._saveWithAction("Rejected");
+    }
+
+    async _onRequestCreation() {
+        // Per A1 default — minimal confirm-style dialog. Item 4 (Account
+        // Creation Request) and Item 3 (Supplier Creation Request) will
+        // replace this with a real form + DocType insert. For now the
+        // button just flips the row into the Pending state for the right
+        // creation pipeline so the row visually drops out of the
+        // standard Pending filter and into its dedicated waiting bucket.
+        const is_vendor = this._isVendorRow();
+        const target_state = is_vendor
+            ? "Pending Supplier Creation"
+            : "Pending Account Creation";
+        const label = is_vendor
+            ? "supplier creation request"
+            : "account creation request";
+
+        frappe.confirm(
+            __(`Flag this decision as a ${label}? The full creation workflow will be added in a later commit; for now this only marks the state.`),
+            () => this._saveWithAction(target_state),
+        );
+    }
+
+    /**
+     * Verbatim save of the current control values — no auto-flip
+     * override (so whatever review_action the Select shows is what
+     * gets saved). Phase D adds the Ctrl+Shift+S binding + Menu item;
+     * here it's a method ready for those wirings.
+     */
+    async saveWithoutAdvance() {
+        // Functionally equivalent to saveDecision in Phase C — the
+        // distinction emerges in Phase D when Approve & Next gains
+        // validation (which this method intentionally bypasses).
+        await this.saveDecision();
     }
 
     _render_assignment_shell() {
@@ -1505,19 +1927,82 @@ frappe.pages["md-review"].on_page_load = function(wrapper) {
     // the empty-state placeholder, then with rendered sections on row
     // selection.
     //
-    // on_save_success bridges DetailPane → MasterPane.updateRow so the
-    // list row reflects the just-saved state without a full list
-    // refetch. Declared here (rather than in the controller object
-    // below) because master_pane isn't in scope until after
-    // DetailPane is constructed — the closure captures the outer
-    // binding which is filled in a few lines later; by the time
-    // on_save_success actually fires, master_pane is populated.
+    // Four callbacks bridge DetailPane → MasterPane + FilterBar without
+    // the DetailPane holding direct references (keeps it independently
+    // constructible / testable). Declared as forward references (let)
+    // because master_pane + filter_bar aren't in scope until a few
+    // lines later; the closures capture the outer bindings which are
+    // filled in before any callback fires.
     let master_pane;
+    let filter_bar;
     const detail_pane = new DetailPane(
         container.find(".decision-detail-pane"),
         {
+            // After save — update the master-pane row's indicator dot
+            // + proposed-account cell in place (optimistic, no list
+            // refetch). Also used by undoLastSave with the reverted
+            // decision dict.
             on_save_success: (name, saved) => {
                 if (master_pane) master_pane.updateRow(name, saved);
+            },
+
+            // After a save that should advance — call get_next_pending
+            // server-side with the current filter + position, select
+            // the next row (triggers loadDecision via
+            // on_selection_change). If no next exists AND the filter
+            // is now empty → render the all-resolved empty state;
+            // otherwise reload the current row.
+            on_advance_requested: async (name) => {
+                if (!master_pane) return;
+                const position = master_pane.selected_index;
+                const filters = filter_bar ? filter_bar.getFilters() : {};
+                try {
+                    const r = await frappe.call({
+                        method: "rgi_migration.rgi_migration.page.md_review.md_review.get_next_pending",
+                        args: {
+                            session_name: session_name,
+                            after_decision_name: name,
+                            after_position: position,
+                            filters: filters,
+                        },
+                    });
+                    const { next_decision_name, filtered_count } = r.message || {};
+                    if (next_decision_name) {
+                        // Advance. selectByName fires on_selection_change
+                        // → detail_pane.loadDecision(next_decision_name).
+                        master_pane.selectByName(next_decision_name);
+                    } else if ((filtered_count || 0) === 0) {
+                        // All resolved under the current filter.
+                        detail_pane.showAllResolvedEmpty();
+                    } else {
+                        // End-of-list but rows remain (e.g. reviewer
+                        // was already on the last Pending row and
+                        // moved it out of filter). Stay on the current
+                        // row — reload to show the just-saved state.
+                        detail_pane.current_decision_name = null;
+                        await detail_pane.loadDecision(name);
+                    }
+                } catch (err) {
+                    console.error("md-review: get_next_pending failed", err);
+                    // Fallback: reload current row so the reviewer at
+                    // least sees the save landed. Better than a silent
+                    // freeze after a network blip.
+                    detail_pane.current_decision_name = null;
+                    await detail_pane.loadDecision(name);
+                }
+            },
+
+            // Undo re-selects the row the reviewer was on before auto-
+            // advance (so the revert is visible on the same row they
+            // just came from). selectByName → loadDecision reload.
+            on_undo_success: (name) => {
+                if (master_pane) master_pane.selectByName(name);
+            },
+
+            // "Show All Decisions" link on the all-resolved empty
+            // state. Flips the filter preset to "all" and reloads.
+            on_show_all_requested: () => {
+                if (filter_bar) filter_bar.setPreset("all");
             },
         }
     );
@@ -1535,7 +2020,7 @@ frappe.pages["md-review"].on_page_load = function(wrapper) {
         },
     };
 
-    const filter_bar = new FilterBar(container.find(".filter-bar-container"));
+    filter_bar = new FilterBar(container.find(".filter-bar-container"));
     master_pane = new MasterPane(
         container.find(".master-pane-container"),
         session_name,
@@ -1557,31 +2042,113 @@ frappe.pages["md-review"].on_page_load = function(wrapper) {
         });
     });
 
-    // Ctrl+S keyboard shortcut — saves the current decision when
-    // Section 4 is dirty. First shortcut in the page; the fuller
-    // suite (a/r/c/d/Ctrl+Shift+S/Ctrl+Z) lands in Commit 5 alongside
-    // the opinionated Approve & Next / Reject / Defer flow and their
-    // validation semantics. Ctrl+S is the one shortcut whose meaning
-    // ("save current form") is unambiguous enough to ship standalone.
+    // Action-bar keyboard shortcuts per §1.6. Split into two groups
+    // by ignore_inputs behaviour:
     //
-    // ignore_inputs: true is load-bearing — reviewers spend most of
-    // their time with focus in the reviewer_notes textarea, and the
-    // shortcut MUST fire from there without requiring a blur-first.
-    // The _saving guard inside saveDecision() handles the double-
-    // fire case (click + Ctrl+S in quick succession).
+    //   - Ctrl-combos (ctrl+s, ctrl+shift+s, ctrl+z) use
+    //     ignore_inputs: true — reviewers spend most of their time
+    //     with focus in the reviewer_notes textarea, and these must
+    //     fire from there without requiring a blur.
+    //   - Single letters (a, r, c, d) use ignore_inputs: false so
+    //     typing letters in the textarea doesn't trigger them.
+    //
+    // Ctrl+S now routes through the validating Approve & Next handler
+    // per §1.6 ("Ctrl+S in v1 calls the SAME handler as the `a`
+    // button — meaning Ctrl+S also validates"). Commit 4b's plain
+    // save binding is replaced here.
+
     frappe.ui.keys.add_shortcut({
         shortcut: "ctrl+s",
         action: () => {
-            if (detail_pane.isDirty() && !detail_pane._saving) {
-                detail_pane.saveDecision();
-            }
-            // If clean, swallow the Ctrl+S silently — no toast, no
-            // error. Reviewers will habitually Ctrl+S to confirm
-            // "yes, this row is good as-is"; we don't want to nag.
+            if (!detail_pane._saving) detail_pane._onApprove();
         },
-        description: __("Save current decision"),
+        description: __("Approve & Next"),
         page: page,
         ignore_inputs: true,
+    });
+
+    frappe.ui.keys.add_shortcut({
+        shortcut: "ctrl+shift+s",
+        action: () => {
+            if (!detail_pane.isDirty() || detail_pane._saving) return;
+            detail_pane.saveWithoutAdvance();
+        },
+        description: __("Save Without Advance"),
+        page: page,
+        ignore_inputs: true,
+    });
+
+    frappe.ui.keys.add_shortcut({
+        shortcut: "ctrl+z",
+        action: () => detail_pane.undoLastSave(),
+        description: __("Undo last save"),
+        page: page,
+        ignore_inputs: true,
+    });
+
+    frappe.ui.keys.add_shortcut({
+        shortcut: "a",
+        action: () => {
+            if (!detail_pane._saving) detail_pane._onApprove();
+        },
+        description: __("Approve & Next"),
+        page: page,
+        ignore_inputs: false,
+    });
+
+    frappe.ui.keys.add_shortcut({
+        shortcut: "r",
+        action: () => {
+            if (!detail_pane._saving) detail_pane._onReject();
+        },
+        description: __("Reject"),
+        page: page,
+        ignore_inputs: false,
+    });
+
+    frappe.ui.keys.add_shortcut({
+        shortcut: "c",
+        action: () => {
+            if (!detail_pane._saving) detail_pane._onRequestCreation();
+        },
+        description: __("Request Creation"),
+        page: page,
+        ignore_inputs: false,
+    });
+
+    frappe.ui.keys.add_shortcut({
+        shortcut: "d",
+        action: () => {
+            if (!detail_pane._saving) detail_pane._onDefer();
+        },
+        description: __("Defer"),
+        page: page,
+        ignore_inputs: false,
+    });
+
+    // Esc — discard unsaved field changes per §1.6. Only fires when
+    // focus is inside the detail pane (not elsewhere on the page) so
+    // it doesn't hijack Esc from, say, a Frappe dialog.
+    frappe.ui.keys.add_shortcut({
+        shortcut: "escape",
+        action: () => {
+            const detail_el = container.find(".decision-detail-pane")[0];
+            if (detail_el && detail_el.contains(document.activeElement)) {
+                detail_pane.discardChanges();
+            }
+        },
+        description: __("Discard unsaved changes"),
+        page: page,
+        ignore_inputs: true,
+    });
+
+    // Save Without Advance — also exposed via the page's ⋮ Menu
+    // dropdown per §1.6 ("exposed via a Save Without Advance menu
+    // item"). Clicking is the mouse-equivalent of the Ctrl+Shift+S
+    // binding above; same isDirty() + _saving guards.
+    page.add_menu_item(__("Save Without Advance"), () => {
+        if (!detail_pane.isDirty() || detail_pane._saving) return;
+        detail_pane.saveWithoutAdvance();
     });
 
     // Initial load
@@ -1664,9 +2231,19 @@ frappe.pages["md-review"].on_page_load = function(wrapper) {
     frappe.ui.keys.add_shortcut({
         shortcut: "enter",
         action: () => {
-            // TODO Commit 4: focus detail.final_account control
+            // Only useful when focus is in the master pane list — a
+            // reviewer pressing Enter there wants to jump into the
+            // detail pane's primary input (the Final Account picker)
+            // so they can start typing an account name. If focus is
+            // already in the detail pane (e.g. in reviewer_notes),
+            // Enter is the natural newline character; let the input
+            // keep it.
+            if (container.find(".decision-detail-pane")[0].contains(document.activeElement)) {
+                return;
+            }
+            detail_pane.focusFinalAccount();
         },
-        description: __("Focus detail pane (Commit 4+)"),
+        description: __("Focus Final Account"),
         page: page,
     });
 };

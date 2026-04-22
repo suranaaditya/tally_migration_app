@@ -460,3 +460,136 @@ def compute_auto_flip(
     # "existing rule is wrong for this ledger" versus Approved-on-
     # unmapped's "new rule needed").
     return "Manual Override"
+
+
+# ---------------------------------------------------------------------------
+# Commit 5 — undo_decision core
+# ---------------------------------------------------------------------------
+
+
+# Fields that Undo restores. Must match :data:`SAVE_DECISION_FIELDS` —
+# the snapshot written by ``save_decision`` uses that same tuple, so
+# what gets saved is what gets restored. Duplicated here (rather than
+# aliased) so the Undo contract is legible on its own.
+UNDO_RESTORE_FIELDS: tuple[str, ...] = SAVE_DECISION_FIELDS
+
+
+def apply_decision_undo(
+    *,
+    current: dict,
+    snapshot: dict,
+) -> dict:
+    """Pure implementation of the undo-save mutation logic.
+
+    Given the current Mapping Decision doc-dict and the pre-save
+    snapshot that ``save_decision`` stashed in ``frappe.cache()``,
+    return a dict of the fields to restore onto the doc before save.
+    The Frappe wrapper applies these and calls ``doc.save()`` —
+    **without** running the chronology-header logic
+    (``apply_decision_save`` is NOT re-invoked on undo; undo means
+    "never happened," so no new header line is added).
+
+    The reviewer_notes field is restored verbatim from the snapshot,
+    so whatever was stored *before* the last save reappears — any
+    chronology header that ``apply_decision_save`` prepended during
+    the save being undone is discarded along with the rest of that
+    save's changes.
+
+    Args:
+        current: The current Mapping Decision as a dict. Only used
+            as a shape reference — all fields in the return dict
+            come from ``snapshot``.
+        snapshot: The pre-save snapshot from
+            ``frappe.cache()["mdr_undo:<user>:<decision>"]``. Must
+            contain every key in :data:`UNDO_RESTORE_FIELDS`.
+
+    Returns:
+        A dict with exactly the keys in :data:`UNDO_RESTORE_FIELDS`.
+        Caller assigns these onto the Frappe doc and calls ``save()``.
+
+    Raises:
+        KeyError: if ``snapshot`` is missing any of the required keys
+            (defensive guard — a malformed cache entry would otherwise
+            silently restore partial state and leave the doc in a
+            corrupt shape).
+    """
+    _ = current  # reserved for future diff-based restoration; unused in v1
+    restored: dict = {}
+    for field in UNDO_RESTORE_FIELDS:
+        if field not in snapshot:
+            raise KeyError(
+                f"undo snapshot missing required field {field!r} — "
+                "snapshot is malformed; refusing partial restore"
+            )
+        restored[field] = snapshot[field]
+    return restored
+
+
+# ---------------------------------------------------------------------------
+# Commit 5 — get_next_pending core
+# ---------------------------------------------------------------------------
+
+
+def compute_next_pending(
+    *,
+    decisions: list[dict],
+    after_name: str,
+    after_position: int | None = None,
+) -> str | None:
+    """Pure implementation of the auto-advance "what's next" lookup.
+
+    Given a *refreshed* list of decisions matching the reviewer's
+    current filter (already ordered per the default sort) and the
+    name of the just-saved decision, return the name of the next
+    decision to select, or ``None`` if the list is exhausted.
+
+    §1.7 describes two branches based on whether ``after_name`` is
+    still in the filtered list:
+
+    1. **Still in filter** (e.g. saved as ``Pending Account
+       Creation`` while the Pending preset is active — still
+       Pending-like). Find its position, return the row one below.
+       Last row → ``None``.
+
+    2. **Dropped out of filter** (e.g. saved as ``Approved`` while
+       Pending filter is active). The spec says "stay at the same
+       index, which now points to what was the next row before."
+       Requires the caller to supply the old ``after_position`` so
+       we can still locate "what was next." If
+       ``after_position`` isn't given, we return ``None`` —
+       safer than returning an arbitrary row.
+
+    Args:
+        decisions: Refreshed filtered list of decision dicts. Each
+            must have a ``name`` key. Order is the default
+            (review_action ASC, net_amount DESC) — this function
+            trusts the caller; it does not re-sort.
+        after_name: The just-saved decision's name. May or may not
+            be in ``decisions`` depending on whether the save
+            dropped it out of the filter.
+        after_position: The 0-based index that ``after_name`` had
+            in the *pre-save* filtered list. Used only when
+            ``after_name`` is no longer present. ``None`` means
+            "I don't know" — function returns ``None`` for the
+            dropped-out case rather than guessing.
+
+    Returns:
+        The next decision's ``name``, or ``None`` if no next
+        decision exists (end-of-list, empty filter, or dropped-out
+        without a position hint).
+    """
+    names = [d.get("name") for d in decisions]
+
+    if after_name in names:
+        i = names.index(after_name)
+        if i + 1 < len(names):
+            return names[i + 1]
+        return None  # after_name was the last row
+
+    # after_name not in refreshed list — dropped out of filter.
+    if after_position is not None and 0 <= after_position < len(names):
+        # The row that used to be at after_position + 1 is now at
+        # after_position (since after_name was removed from the list).
+        return names[after_position]
+
+    return None

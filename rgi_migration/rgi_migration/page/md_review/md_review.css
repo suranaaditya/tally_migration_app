@@ -771,14 +771,105 @@
  * via the .frappe-control wrapper; nothing extra needed for Select/Link/
  * Small Text in this section. */
 
-/* Save button footer — right-aligned below the grid. Disabled state
- * uses the default Frappe .btn disabled styling; no override needed. */
+/* Section 4 footer — hosts the inline validation slot ABOVE the
+ * action-button row, so a validation message renders close to the
+ * controls it relates to but above the button the reviewer just
+ * clicked. Disabled state on buttons uses Frappe's default .btn
+ * styling; no override needed. */
 .mapping-decision-review-app .reviewer-action-footer {
     margin-top: 12px;
     display: flex;
-    justify-content: flex-end;
+    flex-direction: column;
+    gap: 8px;
 }
 
-.mapping-decision-review-app .save-decision-btn {
-    min-width: 80px;
+/* Validation slot — empty by default (Phase D fills on validation
+ * failure). Reserved height 0 when empty so the layout doesn't jump
+ * when a message appears. */
+.mapping-decision-review-app .action-validation-message {
+    color: var(--text-on-red, #c0392b);
+    font-size: 12px;
+    line-height: 18px;
+    min-height: 0;
+}
+
+.mapping-decision-review-app .action-validation-message:empty {
+    display: none;
+}
+
+/* Action button row — Defer / Reject / Request Creation on the
+ * left, Approve & Next (primary) on the right per Frappe convention
+ * and §1.6. Right-justified; primary visually dominant via
+ * btn-primary's accent color.
+ *
+ * flex-wrap: wrap is graceful degradation — at narrower viewports
+ * (~1280px laptop, detail pane ~500px) the four buttons may not fit
+ * on one line. Wrapping is preferable to truncated labels or
+ * horizontal scroll; reviewers still see the primary action
+ * unambiguously because it's the only btn-primary. */
+/* Flat flex row with margin-left: auto pushing primary to the right.
+ * This is the classic "secondaries on left, primary on right, never
+ * wrap" pattern. flex-wrap: nowrap keeps everything on one line at
+ * any viewport wide enough to fit the content (current detail pane
+ * is ~900px at full-HD, content is ~640px — comfortably fits).
+ *
+ * The auto-margin on the primary consumes whatever horizontal space
+ * is left after the three secondaries are laid out, pinning it to
+ * the right edge regardless of how wide the row is. */
+.mapping-decision-review-app .action-button-row {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 6px;
+}
+
+.mapping-decision-review-app .action-button-row .btn {
+    min-width: 0;
+    white-space: nowrap;
+}
+
+/* Primary action's auto-margin on its left side is what does all
+ * the layout work — it absorbs the gap between the trailing
+ * secondary ("Request Creation") and itself, pushing it against the
+ * right edge of the row. Because margin-left: auto lives on the
+ * flex item itself (not the container), it survives any further
+ * flex-level changes. */
+.mapping-decision-review-app .action-approve-btn {
+    margin-left: auto;
+}
+
+/* All-resolved empty state (§1.9 case 3) — rendered by DetailPane
+ * when get_next_pending reports filtered_count=0. Centers the
+ * celebratory icon + message + action button vertically in the
+ * detail pane. */
+.mapping-decision-review-app .detail-all-resolved {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 12px;
+    padding: 48px 24px;
+    text-align: center;
+    color: var(--text-color, #1f272e);
+    min-height: 300px;
+}
+
+.mapping-decision-review-app .detail-all-resolved-icon {
+    font-size: 48px;
+    line-height: 1;
+}
+
+.mapping-decision-review-app .detail-all-resolved-title {
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.mapping-decision-review-app .detail-all-resolved-subtitle {
+    font-size: 13px;
+    color: var(--text-muted, #687178);
+    max-width: 360px;
+}
+
+.mapping-decision-review-app .detail-all-resolved-actions {
+    margin-top: 8px;
 }

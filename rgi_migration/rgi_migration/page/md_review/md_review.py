@@ -16,9 +16,12 @@ import frappe
 import frappe.utils
 
 from rgi_migration.rgi_migration.page.md_review.query import (
+    DEFAULT_ORDER_BY,
     SAVE_DECISION_FIELDS,
     apply_decision_save,
+    apply_decision_undo,
     build_account_autocomplete_results,
+    compute_next_pending,
     fetch_decision_detail,
     fetch_session_decisions,
 )
@@ -263,18 +266,143 @@ def account_query_with_parent(
 
 @frappe.whitelist()
 def undo_decision(decision_name):
-    """Revert a recently-saved decision using the cached pre-save snapshot.
+    """Revert a Mapping Decision to its pre-save snapshot.
 
-    5-second TTL per §1.7. Implementation lands in Commit 5.
+    Companion to :func:`save_decision`. The save side stashes a
+    snapshot into ``frappe.cache()`` under
+    ``mdr_undo:<user>:<decision_name>`` with a 10-second TTL; this
+    method reads that snapshot, applies the pre-save values onto
+    the doc, saves, and invalidates the cache entry so a second
+    undo call is a no-op (single-use — matches Gmail-style Undo).
+
+    The chronology header that ``save_decision`` prepended to
+    ``reviewer_notes`` is discarded along with the rest of the
+    undone save — undo means "never happened," not "also add a
+    new header line."
+
+    Args:
+        decision_name: The Mapping Decision name to revert.
+
+    Returns:
+        Dict form of the reverted Mapping Decision (post-save).
+
+    Raises:
+        frappe.ValidationError: if no snapshot exists in the cache
+            (either never saved, or the 10-second TTL expired). The
+            frontend surfaces this as "Too late to undo" per §1.7.
+        frappe.DoesNotExistError: if the decision or its session is
+            missing.
+        frappe.PermissionError: if the caller lacks read permission
+            on the session.
     """
-    raise NotImplementedError("undo_decision lands in Commit 5")
+    cache_key = f"mdr_undo:{frappe.session.user}:{decision_name}"
+    raw_snapshot = frappe.cache().get_value(cache_key)
+    if not raw_snapshot:
+        frappe.throw(
+            "Undo window expired — the 10-second cache entry is gone.",
+            title="Too late to undo",
+        )
+
+    # Snapshot was stored as JSON string (default=str handled any
+    # datetime/Currency edge cases on write). Decode back to dict.
+    snapshot = json.loads(raw_snapshot) if isinstance(raw_snapshot, str) else raw_snapshot
+
+    decision_doc = frappe.get_doc("Mapping Decision", decision_name)
+    session_doc = frappe.get_doc("Tally Migration Session", decision_doc.session)
+    session_doc.check_permission("read")
+
+    current = decision_doc.as_dict()
+    restored = apply_decision_undo(current=current, snapshot=snapshot)
+
+    for field, value in restored.items():
+        decision_doc.set(field, value)
+    decision_doc.save()
+
+    # Single-use — invalidate immediately so a second undo raises.
+    # Also blocks a stale snapshot from a parallel reviewer's save
+    # (snapshot is keyed by user, so cross-reviewer contention isn't
+    # possible, but defensive).
+    frappe.cache().delete_value(cache_key)
+
+    return decision_doc.as_dict()
 
 
 @frappe.whitelist()
-def get_next_pending(session_name, after_decision_name, filters=None):
-    """Find the next Pending decision after the current one.
+def get_next_pending(
+    session_name,
+    after_decision_name,
+    after_position=None,
+    filters=None,
+):
+    """Return the name of the decision to auto-advance to after a save.
 
-    Server-computed to avoid client-state desync between reviewers.
-    Implementation lands in Commit 5.
+    Implements §1.7 auto-advance step 4: given the session, the
+    just-saved decision, and the reviewer's current filter state,
+    find "what's next." The response also carries the refreshed
+    filtered count so the frontend can distinguish
+    "end-of-list but still rows to resolve" from "all done — show
+    empty state."
+
+    Note on ``after_position``: this is a spec extension over the
+    §1.12 three-arg signature. §1.7 requires "stay at the same
+    index" when the just-saved decision dropped out of the filter
+    (e.g. saved as Approved while Pending filter is active). The
+    server can only honour that request if the client tells it
+    where the row USED to be — the refreshed list doesn't contain
+    that information. Optional; falls through to ``None`` if
+    absent.
+
+    Args:
+        session_name: The session being reviewed.
+        after_decision_name: The just-saved decision's name.
+        after_position: 0-based index the decision had in the
+            pre-save filtered list. Used only when
+            ``after_decision_name`` dropped out of the refreshed
+            list. May be ``None`` — then the dropped-out case
+            returns ``None``.
+        filters: Additional filter dict matching the client's
+            current filter preset (e.g.
+            ``{"review_action": ["in", [...pending variants...]]}``).
+
+    Returns:
+        ``{"next_decision_name": <name> or None, "filtered_count": int}``
+
+    Raises:
+        frappe.DoesNotExistError: if the session is missing.
+        frappe.PermissionError: if the caller lacks read permission
+            on the session.
     """
-    raise NotImplementedError("get_next_pending lands in Commit 5")
+    if isinstance(filters, str):
+        filters = json.loads(filters) if filters else None
+
+    if isinstance(after_position, str):
+        # Frappe serialises ints as strings over the wire; coerce
+        # back. Empty string → None (no position hint).
+        after_position = int(after_position) if after_position.strip() else None
+
+    session_doc = frappe.get_doc("Tally Migration Session", session_name)
+    session_doc.check_permission("read")
+
+    # Session-scope guard — identical pattern to
+    # fetch_session_decisions. Caller can't override session via
+    # filters; the argument wins.
+    query_filters: dict = dict(filters) if filters else {}
+    query_filters["session"] = session_name
+
+    decisions = frappe.get_all(
+        "Mapping Decision",
+        filters=query_filters,
+        fields=["name"],
+        order_by=DEFAULT_ORDER_BY,
+    )
+
+    next_name = compute_next_pending(
+        decisions=decisions,
+        after_name=after_decision_name,
+        after_position=after_position,
+    )
+
+    return {
+        "next_decision_name": next_name,
+        "filtered_count": len(decisions),
+    }

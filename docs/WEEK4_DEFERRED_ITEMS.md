@@ -83,3 +83,73 @@ once reproduced.
 
 **Not blocking Commit 4b** — cosmetic; full form is reachable via
 the URL directly.
+
+---
+
+## Supplier and Customer mapping UI — Items 3-4 scope
+
+**Raised:** Commit 5 Phase D verification (2026-04-22).
+
+**Observation:** The review page currently exposes only a `final_account`
+Link (Chart of Accounts) in Section 4. But Mapping Decisions target
+three distinct ERPNext entities based on category:
+
+1. **Account ledgers** → map to ERPNext Account from COA. Current UI
+   handles this correctly.
+2. **Supplier ledgers** (tier `pending_supplier_creation`,
+   `tier1_supplier_fuzzy`, Sundry-Creditors descendants) → map to
+   ERPNext Supplier records. Account head is auto-derived from the
+   Supplier's default payable (Sundry Creditors) at transaction time.
+3. **Customer ledgers** (student deposits, Sundry-Debtors descendants)
+   → map to ERPNext Customer records. Account head is auto-derived
+   from the Customer's default receivable (Sundry Debtors).
+
+**Current v1 behavior:** supplier / customer rows can only be handled
+via **Request Creation** (flags as `Pending Supplier Creation` /
+`Pending Account Creation`). No path to resolve to an *existing*
+Supplier or Customer record.
+
+**Design intent confirmed by Aditya:**
+
+- Vendors are mapped via Supplier record; head auto-derives from
+  Sundry Creditors on the vendor's default-payable setting.
+- Customers are mapped via Customer record; head auto-derives from
+  Sundry Debtors on the customer's default-receivable setting.
+- Reviewers do NOT need to pick account heads for supplier/customer
+  decisions — that's computed at generator time.
+
+**For Items 3-4 scope:**
+
+- **Item 3 (Supplier Creation Request workflow)** extends the review
+  page to support supplier-target decisions:
+  - Detect target category from `tier` (supplier-tier set already
+    lives in `DetailPane.SUPPLIER_TIERS`).
+  - Render a **Final Supplier** Link picker (scoped to session's
+    Company) in place of Final Account for supplier rows.
+  - Approve & Next on a supplier row saves `final_supplier` instead
+    of `final_account`.
+  - Backend `save_decision` accepts either field, validates per
+    category.
+- **Item 4 (Account Creation Request workflow)** handles the Chart of
+  Accounts side — full Account Creation Request DocType + stub dialog
+  replacement for the current `frappe.confirm`.
+- **Customer workflow** isn't currently scoped to an Item. Either (a)
+  fold into Item 4 as Item 4b, or (b) new Item. Raise when CACSPU
+  reviews surface a customer row that needs live resolution.
+
+**Schema implications:**
+
+- `Mapping Decision` needs a `target_doctype` discriminator field
+  (Select: `Account` / `Supplier` / `Customer`) derived from `tier`.
+- New Link fields alongside existing `final_account`:
+  `final_supplier` Link → Supplier, `final_customer` Link → Customer.
+- Generator code reads the correct `final_*` field based on
+  `target_doctype`.
+- Schema migration for existing Mapping Decisions: backfill
+  `target_doctype` from `tier`.
+
+**Not blocking Commit 5** — supplier rows can still be Deferred or
+Request-Creation'd through the current UI. Items 3-4 build the full
+resolution workflow; Commit 5's action suite applies to all three
+categories uniformly (Defer / Reject / Request Creation / Save
+Without Advance all work regardless of target type).
