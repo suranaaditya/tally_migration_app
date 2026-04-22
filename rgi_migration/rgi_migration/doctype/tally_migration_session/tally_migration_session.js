@@ -154,6 +154,122 @@ function renderSCRDialog(frm, rows) {
     dialog.show();
 }
 
+// Inlined styles for the SCR processing dialog. Scoped to
+// ``.scr-panel`` so they only apply inside the dialog body and can't
+// leak onto the underlying Session form. Inlined (rather than loaded
+// via md_review.css) because md_review.css is scoped to the md-review
+// Page controller — it doesn't load on the Desk Session form, so the
+// dialog would render unstyled otherwise.
+const SCR_PANEL_STYLES = `
+<style>
+.scr-panel { font-size: 13px; color: var(--text-color, #1f272e); }
+.scr-panel * { box-sizing: border-box; }
+
+.scr-panel .scr-bulk-bar {
+    position: sticky; top: 0; z-index: 2;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; margin-bottom: 12px;
+    background: var(--fg-color, #fafbfc);
+    border: 1px solid var(--border-color, #e2e6ea);
+    border-radius: 6px;
+}
+.scr-panel .scr-select-all-label {
+    display: inline-flex; align-items: center; gap: 8px; margin: 0;
+    font-size: 13px; font-weight: 500; cursor: pointer; user-select: none;
+}
+.scr-panel .scr-select-all { width: 16px; height: 16px; cursor: pointer; margin: 0; }
+.scr-panel .scr-bulk-actions { display: flex; gap: 8px; }
+.scr-panel .scr-bulk-count { font-variant-numeric: tabular-nums; font-weight: 600; }
+
+.scr-panel .scr-row-list {
+    display: flex; flex-direction: column; gap: 10px;
+}
+
+.scr-panel .scr-row {
+    display: grid;
+    grid-template-columns: 24px 1fr auto;
+    grid-template-areas:
+        "check head   actions"
+        "check body   actions";
+    gap: 4px 14px;
+    padding: 14px 16px;
+    background: #fff;
+    border: 1px solid var(--border-color, #e2e6ea);
+    border-radius: 6px;
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.scr-panel .scr-row:hover {
+    border-color: var(--blue-400, #7aa5d2);
+    box-shadow: 0 1px 3px rgba(0,0,0,.04);
+}
+.scr-panel .scr-row.is-selected {
+    border-color: var(--blue-500, #2490ef);
+    background: var(--blue-50, #eff6ff);
+}
+
+.scr-panel .scr-row-select {
+    grid-area: check;
+    width: 16px; height: 16px; cursor: pointer; margin: 2px 0 0 0;
+}
+
+.scr-panel .scr-row-head {
+    grid-area: head;
+    display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+}
+.scr-panel .scr-status-badge {
+    display: inline-block;
+    padding: 2px 8px; font-size: 10px; font-weight: 700;
+    border-radius: 10px; letter-spacing: 0.4px; text-transform: uppercase;
+    line-height: 1.6;
+}
+.scr-panel .scr-status-badge.scr-pending {
+    background: var(--orange-100, #fff1d4); color: var(--orange-700, #8a5a00);
+}
+.scr-panel .scr-status-badge.scr-failed {
+    background: var(--red-100, #fde2e2); color: var(--red-700, #a51c1c);
+}
+.scr-panel .scr-row-name {
+    font-size: 14px; font-weight: 600; color: var(--text-color, #1f272e);
+    line-height: 1.3; flex: 1 1 auto; word-break: break-word;
+}
+.scr-panel .scr-row-balance {
+    font-family: var(--font-stack-monospace, ui-monospace, monospace);
+    font-weight: 600; font-variant-numeric: tabular-nums;
+    color: var(--text-color, #1f272e);
+    white-space: nowrap;
+}
+
+.scr-panel .scr-row-body {
+    grid-area: body;
+    display: flex; flex-wrap: wrap; gap: 4px 20px;
+    font-size: 12px; color: var(--text-muted, #687178);
+    margin-top: 2px;
+}
+.scr-panel .scr-meta { display: inline-flex; gap: 4px; align-items: baseline; }
+.scr-panel .scr-meta-k { text-transform: uppercase; font-size: 10px; letter-spacing: 0.3px; color: var(--text-muted, #8d99a6); }
+.scr-panel .scr-meta-v { color: var(--text-color, #495057); font-weight: 500; }
+.scr-panel .scr-meta-v.scr-notes { font-style: italic; font-weight: normal; color: var(--text-muted, #687178); }
+
+.scr-panel .scr-error-preview {
+    grid-column: head / actions;
+    margin-top: 6px; padding: 6px 10px;
+    background: var(--red-50, #fdf2f2);
+    border-left: 3px solid var(--red-500, #dc3545);
+    color: var(--red-900, #4c1010); font-size: 11px;
+    font-family: var(--font-stack-monospace, monospace);
+    white-space: pre-wrap; border-radius: 2px;
+    max-height: 90px; overflow-y: auto;
+}
+
+.scr-panel .scr-row-actions {
+    grid-area: actions;
+    display: flex; gap: 6px; align-self: start;
+}
+.scr-panel .scr-row-actions .btn { white-space: nowrap; }
+</style>
+`;
+
+
 function renderSCRGridHTML(rows) {
     const rowHTML = (r) => {
         const balance = frappe.format(
@@ -165,7 +281,7 @@ function renderSCRGridHTML(rows) {
             : `<span class="scr-status-badge scr-pending">${__("Pending")}</span>`;
         const notes = (r.reviewer_notes || "").slice(0, 140);
         const error_preview = r.error_log
-            ? `<div class="scr-error-preview"><strong>${__("Error")}:</strong> ${frappe.utils.escape_html(
+            ? `<div class="scr-error-preview">${frappe.utils.escape_html(
                 (r.error_log || "").split("\n").slice(-4).join("\n")
               )}</div>`
             : "";
@@ -173,35 +289,48 @@ function renderSCRGridHTML(rows) {
         // Header: proposed_supplier_name is the primary label (what the
         // Supplier will be called post-approval). tally_vendor_name is
         // the secondary subtitle (where the SCR came from). Updated
-        // 2026-04-22 per reviewer feedback — reviewer thinks in terms
-        // of the target Supplier, not the Tally source ledger.
+        // 2026-04-22 per reviewer feedback.
         const headline = r.proposed_supplier_name || r.tally_vendor_name || "";
         const tally_sub = r.tally_vendor_id
             ? `${r.tally_vendor_name || ""} [tally_id=${frappe.utils.escape_html(r.tally_vendor_id)}]`
             : (r.tally_vendor_name || "");
 
+        // Inline metadata row — Tally source, Group, Notes. Flexbox so
+        // fields flow left-to-right and wrap at narrow widths.
+        const meta_parts = [];
+        if (tally_sub) {
+            meta_parts.push(`
+                <span class="scr-meta">
+                    <span class="scr-meta-k">${__("from Tally")}</span>
+                    <span class="scr-meta-v">${frappe.utils.escape_html(tally_sub)}</span>
+                </span>
+            `);
+        }
+        meta_parts.push(`
+            <span class="scr-meta">
+                <span class="scr-meta-k">${__("Group")}</span>
+                <span class="scr-meta-v">${frappe.utils.escape_html(r.proposed_supplier_group || "(none)")}</span>
+            </span>
+        `);
+        if (notes) {
+            meta_parts.push(`
+                <span class="scr-meta">
+                    <span class="scr-meta-k">${__("Notes")}</span>
+                    <span class="scr-meta-v scr-notes">${frappe.utils.escape_html(notes)}</span>
+                </span>
+            `);
+        }
+
         return `
             <div class="scr-row" data-row-name="${frappe.utils.escape_html(r.row_name)}">
+                <input type="checkbox" class="scr-row-select" aria-label="${__("Select for bulk action")}" />
                 <div class="scr-row-head">
-                    <input type="checkbox" class="scr-row-select" aria-label="${__("Select for bulk action")}" />
                     ${status_badge}
-                    <div class="scr-row-vendor">
-                        <div class="scr-row-vendor-name">${frappe.utils.escape_html(headline)}</div>
-                        <div class="scr-row-tally-id">${__("from Tally")}: ${frappe.utils.escape_html(tally_sub)}</div>
-                    </div>
-                    <div class="scr-row-balance">${balance}</div>
+                    <span class="scr-row-name">${frappe.utils.escape_html(headline)}</span>
+                    <span class="scr-row-balance">${balance}</span>
                 </div>
                 <div class="scr-row-body">
-                    <div class="scr-kv">
-                        <span class="scr-k">${__("Group")}:</span>
-                        <span class="scr-v">${frappe.utils.escape_html(r.proposed_supplier_group || "(none)")}</span>
-                    </div>
-                    ${notes ? `
-                        <div class="scr-kv">
-                            <span class="scr-k">${__("Notes")}:</span>
-                            <span class="scr-v scr-notes">${frappe.utils.escape_html(notes)}</span>
-                        </div>
-                    ` : ""}
+                    ${meta_parts.join("")}
                     ${error_preview}
                 </div>
                 <div class="scr-row-actions">
@@ -214,9 +343,6 @@ function renderSCRGridHTML(rows) {
         `;
     };
 
-    // Top bar — select-all + bulk actions. Updated 2026-04-22 for bulk
-    // reviewer workflow (per CACSPU's ~18 SCR scale, per-row approval
-    // becomes tedious).
     const bulk_bar = `
         <div class="scr-bulk-bar">
             <label class="scr-select-all-label">
@@ -235,7 +361,8 @@ function renderSCRGridHTML(rows) {
     `;
 
     return `
-        <div class="scr-processing-panel">
+        ${SCR_PANEL_STYLES}
+        <div class="scr-panel">
             ${bulk_bar}
             <div class="scr-row-list">${rows.map(rowHTML).join("")}</div>
         </div>
@@ -276,6 +403,12 @@ function attachSCRActions($body, frm, dialog) {
         $body.find(".scr-bulk-count").text(selected_count);
         $bulk_approve.prop("disabled", selected_count === 0);
         $bulk_reject.prop("disabled", selected_count === 0);
+        // Highlight selected rows — visual cue that they're queued for
+        // the next bulk action. Class toggled per-row based on its
+        // checkbox state.
+        $body.find(".scr-row-select").each((_, cb) => {
+            $(cb).closest(".scr-row").toggleClass("is-selected", cb.checked);
+        });
         // Sync "select all" indeterminate state
         const total = $row_checks.length;
         if (selected_count === 0) {
