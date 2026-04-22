@@ -253,10 +253,15 @@ class MasterPane {
     };
 
     // Tier chip color class lookup per §1.11.
+    // Supplier tiers extended 2026-04-22 per Item 3 Commit 1a — Item 2's
+    // enum extension added tier1_supplier_exact / _alias; without entries
+    // here they'd fall back to "muted" (grey) which reads as excluded.
     static TIER_CHIP_STATE = {
         "tier1_exact": "resolved",
         "tier1_rule": "resolved",
         "tier1_pattern": "resolved",
+        "tier1_supplier_exact": "resolved",
+        "tier1_supplier_alias": "resolved",
         "tier1_supplier_fuzzy": "resolved",
         "tier2_fuzzy": "fuzzy",
         "tier3_claude": "fuzzy",
@@ -1197,19 +1202,20 @@ class DetailPane {
     _render_mapper_resolution(d) {
         const tier = d.tier || "";
         const tier_state = MasterPane.TIER_CHIP_STATE[tier] || "muted";
-        const proposed = d.proposed_account || "";
         const matched = d.matched_rule || "";
-        const confidence = typeof d.confidence === "number"
-            ? d.confidence.toFixed(2)
-            : "";
-
-        const proposed_html = proposed
-            ? `<a href="/app/account/${encodeURIComponent(proposed)}" target="_blank" rel="noopener">${frappe.utils.escape_html(proposed)} <span class="nav-icon">↗</span></a>`
-            : `<span class="muted">(none)</span>`;
 
         const matched_html = matched
             ? `<a href="/app/mapping-rule/${encodeURIComponent(matched)}" target="_blank" rel="noopener">${frappe.utils.escape_html(matched)} <span class="nav-icon">↗</span></a>`
             : `<span class="muted">(none)</span>`;
+
+        // Supplier vs account polymorphism per Item 3 Commit 1a.
+        // Supplier-tier rows (tier ∈ SUPPLIER_TIERS) show the proposed
+        // Supplier + match score; account-tier rows show proposed Account
+        // + confidence (original behaviour).
+        const is_supplier = DetailPane.SUPPLIER_TIERS.has(tier);
+        const proposed_rows_html = is_supplier
+            ? DetailPane._render_supplier_proposal_rows(d, tier)
+            : DetailPane._render_account_proposal_rows(d);
 
         // Anti-pattern block (conditional, red-bordered)
         let anti_pattern_html = "";
@@ -1228,8 +1234,11 @@ class DetailPane {
             ? `<div class="excluded-reason-block">${frappe.utils.escape_html(d.excluded_reason)}</div>`
             : "";
 
-        // Proposed Dr/Cr row only shown when at least one is non-zero (mapper diagnostic)
-        const proposed_amounts_html = (d.proposed_dr || d.proposed_cr) ? `
+        // Proposed Dr/Cr row only shown when at least one is non-zero (mapper diagnostic).
+        // Skipped on supplier-tier rows — amounts are aggregated per-supplier
+        // at generator time (OIT / Advance JE), not emitted as proposed_dr/cr
+        // on individual decisions.
+        const proposed_amounts_html = !is_supplier && (d.proposed_dr || d.proposed_cr) ? `
             <div class="kv-label">Proposed Dr / Cr</div>
             <div class="kv-value">${MasterPane._format_amount(d.proposed_dr)} / ${MasterPane._format_amount(d.proposed_cr)}</div>
         ` : "";
@@ -1242,18 +1251,87 @@ class DetailPane {
                     <div class="kv-value">
                         <span class="tier-chip ${tier_state}">${frappe.utils.escape_html(tier)}</span>
                     </div>
-                    <div class="kv-label">Proposed Account</div>
-                    <div class="kv-value">${proposed_html}</div>
+                    ${proposed_rows_html}
                     <div class="kv-label">Matched Rule</div>
                     <div class="kv-value">${matched_html}</div>
-                    <div class="kv-label">Confidence</div>
-                    <div class="kv-value">${confidence}</div>
                     ${proposed_amounts_html}
                 </div>
                 ${anti_pattern_html}
                 ${excluded_html}
             </section>
         `;
+    }
+
+    /** Account-tier rows: Proposed Account + Confidence (pre-Item-3 behaviour). */
+    static _render_account_proposal_rows(d) {
+        const proposed = d.proposed_account || "";
+        const confidence = typeof d.confidence === "number" ? d.confidence.toFixed(2) : "";
+        const proposed_html = proposed
+            ? `<a href="/app/account/${encodeURIComponent(proposed)}" target="_blank" rel="noopener">${frappe.utils.escape_html(proposed)} <span class="nav-icon">↗</span></a>`
+            : `<span class="muted">(none)</span>`;
+        return `
+            <div class="kv-label">Proposed Account</div>
+            <div class="kv-value">${proposed_html}</div>
+            <div class="kv-label">Confidence</div>
+            <div class="kv-value">${confidence}</div>
+        `;
+    }
+
+    /** Supplier-tier rows: Proposed Supplier + match score chip, plus
+     *  `new_supplier_name` hint for pending_supplier_creation rows.
+     *
+     *  Match-score chip colour thresholds (per Item 3 AMB-6):
+     *    ≥ 0.95  green   "good"
+     *    0.85 – 0.94  amber   "warn"
+     *    <  0.85  grey    "muted"   (defensive — mapper threshold is 0.85)
+     *
+     *  For pending_supplier_creation (confidence == 0.0 by design) the
+     *  match-score row is suppressed — "0%" on an unmatched row is
+     *  misleading.
+     */
+    static _render_supplier_proposal_rows(d, tier) {
+        const proposed = d.proposed_supplier || "";
+        const score = typeof d.supplier_match_score === "number"
+            ? d.supplier_match_score
+            : 0.0;
+        const new_name = d.new_supplier_name || "";
+
+        const proposed_html = proposed
+            ? `<a href="/app/supplier/${encodeURIComponent(proposed)}" target="_blank" rel="noopener">${frappe.utils.escape_html(proposed)} <span class="nav-icon">↗</span></a>`
+            : `<span class="muted">(none)</span>`;
+
+        const match_score_html = tier === "pending_supplier_creation"
+            ? ""  // suppressed — confidence is 0.0 by design, not meaningful
+            : `
+                <div class="kv-label">Match Score</div>
+                <div class="kv-value">
+                    <span class="match-score ${DetailPane._match_score_class(score)}">${Math.round(score * 100)}%</span>
+                </div>
+            `;
+
+        // For pending_supplier_creation rows, show the mapper's cleaned-name
+        // suggestion so the reviewer has a starting point before opening the
+        // Create-new dialog (Commit 1b / Commit 2).
+        const new_name_html = (tier === "pending_supplier_creation" && new_name)
+            ? `
+                <div class="kv-label">Suggested Name</div>
+                <div class="kv-value"><em>${frappe.utils.escape_html(new_name)}</em></div>
+            `
+            : "";
+
+        return `
+            <div class="kv-label">Proposed Supplier</div>
+            <div class="kv-value">${proposed_html}</div>
+            ${match_score_html}
+            ${new_name_html}
+        `;
+    }
+
+    /** Threshold bucket for supplier_match_score display. */
+    static _match_score_class(score) {
+        if (score >= 0.95) return "good";
+        if (score >= 0.85) return "warn";
+        return "muted";
     }
 
     _render_tier2_placeholder() {
@@ -1929,7 +2007,17 @@ class DetailPane {
      * Asset ledgers under a "Sundry Creditors" group accidentally
      * (rare but real).
      */
-    static SUPPLIER_TIERS = new Set(["pending_supplier_creation", "tier1_supplier_fuzzy"]);
+    // Extended 2026-04-22 per Item 3 Commit 1a — tier1_supplier_exact and
+    // tier1_supplier_alias were missing since Item 2's tier enum extension.
+    // Without them, _isVendorRow() returned false for these rows and the
+    // `c` / Request Creation path incorrectly routed them through the
+    // account workflow.
+    static SUPPLIER_TIERS = new Set([
+        "pending_supplier_creation",
+        "tier1_supplier_fuzzy",
+        "tier1_supplier_exact",
+        "tier1_supplier_alias",
+    ]);
 
     _isVendorRow() {
         const tier = (this.current_decision && this.current_decision.tier) || "";

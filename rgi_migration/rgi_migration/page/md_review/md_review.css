@@ -598,6 +598,37 @@
     text-decoration: underline;
 }
 
+/*
+ * Supplier match-score chip (Item 3 Commit 1a).
+ * Thresholds — ≥95% "good" green, 85-94% "warn" amber, <85% "muted" grey.
+ * <85% is defensive (mapper fuzzy threshold is 0.85 so shouldn't persist).
+ */
+.mapping-decision-review-app .match-score {
+    display: inline-block;
+    padding: 2px 8px;
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: 10px;
+    line-height: 1.4;
+    background: var(--gray-100, #e9ecef);
+    color: var(--gray-700, #495057);
+}
+
+.mapping-decision-review-app .match-score.good {
+    background: var(--green-100, #d1f2e1);
+    color: var(--green-700, #0d6b3e);
+}
+
+.mapping-decision-review-app .match-score.warn {
+    background: var(--orange-100, #ffe5b4);
+    color: var(--orange-700, #8a5a00);
+}
+
+.mapping-decision-review-app .match-score.muted {
+    background: var(--gray-100, #e9ecef);
+    color: var(--gray-700, #495057);
+}
+
 .mapping-decision-review-app .nav-icon {
     font-size: 11px;
     color: var(--text-muted, #6c7680);
