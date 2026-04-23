@@ -312,3 +312,48 @@ Request-Creation'd through the current UI. Items 3-4 build the full
 resolution workflow; Commit 5's action suite applies to all three
 categories uniformly (Defer / Reject / Request Creation / Save
 Without Advance all work regardless of target type).
+
+---
+
+## Backlog beyond Item 9
+
+Captured 2026-04-23 during Item 6 kickoff ordering discussion. One-line
+entries only; proper Phase A for each when its turn comes. Ordering and
+final scope TBD per-item when each opens.
+
+### Item 10 — Tier-3 Claude API (AI matching)
+
+Originally Week 5+ scope per CLAUDE.md three-tier architecture +
+`docs/WEEK3_COMPLETE_2026_04_20.md` §10. DocType schema already reserves
+the `tier3_claude` enum value on Mapping Decision `tier` field and the
+`tier3_claude_count` counter on Tally Migration Session
+(`rgi_migration/rgi_migration/setup/create_doctypes.py:270`, `:435`).
+Triggers when Tier-2 fuzzy can't resolve — judgment-call residuals.
+
+### Item 11 — Customer workflow (Sundry Debtors)
+
+Supplier workflow (Item 3) + Account workflow (Item 4) exist; Customer
+equivalent is unscoped to any current Item (see "Supplier and Customer
+mapping UI" section above). Student-deposit / debtor rows today can
+only be Deferred or Request-Creation-able. Parallel architecture to
+Item 3 expected — `final_customer` Link field, Sundry-Debtors default-
+receivable auto-derivation at generator time.
+
+### Item 12 — Slim TDL / bookkeeper-facing Tally export template
+
+Originally Week 3 Work Item 8 per
+`docs/SESSION_HANDOFF_2026_04_19.md:71`. Design in
+`docs/slim_tally_export.md`. Deferred end-of-Week-3, never built.
+**Numbering collision**: this is the Week-3 "Item 8," NOT the current
+Item 8 (FrappeRuleSource / FrappeSupplierSource). Disambiguate as
+"Item 12 (née Week-3 Item 8)" in future references.
+
+### Item 13 — Pre-rollout hygiene
+
+Bundle required before 59-entity production rollout:
+- `create_doctypes.py` scaffolder reconcile (stale vs. live DocType JSON
+  — see "`create_doctypes.py` scaffolder drift" section above)
+- Bench COA hygiene audit (scratch / test accounts cleanup — see
+  "Pre-rollout bench COA hygiene audit" section above)
+- HUP-gunicorn deployment playbook formalization (fold into standard
+  recipe — see "Phase C deployment playbook" section above)
