@@ -612,6 +612,25 @@ class MasterPane {
         let tier_chip_html = "";
         if (MasterPane.PENDING_REVIEW_STATES.has(review_action)) {
             tier_chip_html = `<span class="tier-chip ${tier_state}">${frappe.utils.escape_html(tier_label)}</span>`;
+            // Fuzzy score label + "review" marker — shown ONLY when
+            // the tier-2 composite orchestrator fired the classical-
+            // fuzzy sub-matcher (matched_rule == "tier2:fuzzy_classical").
+            // Sub-matchers 1 and 2 are equality-based (confidence=1.0)
+            // with final_account auto-populated on insert and don't
+            // need either marker. Phase A Q12 + Item 6 Phase B ext.
+            if (decision.tier === "tier2_fuzzy"
+                && decision.matched_rule === "tier2:fuzzy_classical"
+                && typeof decision.confidence === "number"
+                && decision.confidence > 0) {
+                const pct = Math.floor(decision.confidence * 100);
+                tier_chip_html += `<span class="fuzzy-score-label" title="partial_ratio score">${pct}%</span>`;
+                // "review" marker only on Pending rows — once reviewer
+                // has decided (Approved / Rejected), the marker is
+                // noise.
+                if (review_action === "Pending") {
+                    tier_chip_html += `<span class="fuzzy-needs-approval" title="Dialog triggers on selection">review</span>`;
+                }
+            }
         } else if (review_action === "Excluded (P&L)") {
             tier_chip_html = `<span class="tier-chip muted">excluded</span>`;
         }
@@ -1087,6 +1106,12 @@ class DetailPane {
             this.session_company_abbr = msg.session_company_abbr || "";
             this.session_erpnext_company = msg.session_erpnext_company || "";
             this._render();
+            // Item 6: fuzzy_classical Pending rows trigger an explicit
+            // approval dialog on top of the rendered form. Accept/Reject
+            // paths call save_decision + advance; Pick-different
+            // dismisses the dialog and leaves the form visible for
+            // normal Section-4 flow.
+            this._maybeShowFuzzyApprovalDialog();
         } catch (err) {
             console.error("md-review: get_decision_detail failed", err);
             frappe.show_alert({
@@ -1094,6 +1119,75 @@ class DetailPane {
                 indicator: "red",
             }, 7);
         }
+    }
+
+    _maybeShowFuzzyApprovalDialog() {
+        const d = this.current_decision || {};
+        if (d.matched_rule !== "tier2:fuzzy_classical") return;
+        if ((d.review_action || "") !== "Pending") return;
+        if (!d.proposed_account) return;   // defensive — shouldn't happen
+
+        const self = this;
+        const dialog = new FuzzyMatchApprovalDialog({
+            decision: d,
+            onAccept: async () => {
+                try {
+                    await frappe.call({
+                        method: "rgi_migration.rgi_migration.page.md_review.md_review.save_decision",
+                        args: {
+                            decision_name: d.name,
+                            review_action: "Approved",
+                            final_account: d.proposed_account,
+                            reviewer_notes: "",
+                        },
+                    });
+                    frappe.show_alert({
+                        message: __("Accepted fuzzy match"), indicator: "green",
+                    }, 3);
+                    // Force re-fetch so indicator + Section 4 reflect the
+                    // Approved state; advance left to reviewer's normal
+                    // Approve-and-Next chord (not auto-jumped — keeps this
+                    // dialog focused).
+                    self.current_decision_name = null;
+                    await self.loadDecision(d.name);
+                } catch (err) {
+                    console.error("save_decision (fuzzy accept) failed", err);
+                    frappe.show_alert({
+                        message: __("Accept failed — see console."),
+                        indicator: "red",
+                    }, 7);
+                }
+            },
+            onReject: async () => {
+                try {
+                    await frappe.call({
+                        method: "rgi_migration.rgi_migration.page.md_review.md_review.save_decision",
+                        args: {
+                            decision_name: d.name,
+                            review_action: "Rejected",
+                            final_account: null,
+                            reviewer_notes: "",
+                        },
+                    });
+                    frappe.show_alert({
+                        message: __("Rejected fuzzy match"), indicator: "orange",
+                    }, 3);
+                    self.current_decision_name = null;
+                    await self.loadDecision(d.name);
+                } catch (err) {
+                    console.error("save_decision (fuzzy reject) failed", err);
+                    frappe.show_alert({
+                        message: __("Reject failed — see console."),
+                        indicator: "red",
+                    }, 7);
+                }
+            },
+            onPickDifferent: () => {
+                // Normal Section-4 form is already rendered underneath.
+                // Nothing to do — reviewer uses the Final Account picker.
+            },
+        });
+        dialog.show();
     }
 
     async refreshAssignments() {
@@ -3916,6 +4010,186 @@ class AccountResolutionDialog {
             // eslint-disable-next-line no-console
             console.error("create_account_creation_request failed", err);
         }
+    }
+}
+
+
+// ============================================================================
+// FuzzyMatchApprovalDialog — Item 6 Phase B (Sub-matcher 3 only)
+// ============================================================================
+//
+// Pre-review gate for Tier-2 classical-fuzzy matches. Forces an explicit
+// reviewer decision on probability-based matches (partial_ratio score)
+// before they enter the normal approval flow. Sub-matchers 1 (norm_strong)
+// and 2 (acct_num) are equality-based and don't need this dialog.
+//
+// Trigger: DetailPane.loadDecision() calls _maybeShowFuzzyApprovalDialog()
+// after _render() when:
+//     decision.matched_rule === "tier2:fuzzy_classical"
+//     AND decision.review_action === "Pending"
+//
+// Three outcomes:
+//     Accept ('y' / Enter) → save_decision with review_action=Approved,
+//                            final_account=proposed_account; advance
+//     Reject ('n')         → save_decision with review_action=Rejected,
+//                            final_account=null; advance
+//     Pick different ('o' / Esc) → dismiss dialog; underlying detail pane
+//                                   is already rendered for reviewer to
+//                                   use the normal Section 4 picker flow.
+//
+// Note: 'p' is reserved for Item 5 Approve & Promote (post-approval).
+// This dialog does NOT rebind 'p' — after Accept, the reviewer lands on
+// the Approved row and can press 'p' as usual to promote.
+class FuzzyMatchApprovalDialog {
+    constructor({ decision, onAccept, onReject, onPickDifferent }) {
+        this.decision = decision || {};
+        this.onAccept = onAccept || (() => {});
+        this.onReject = onReject || (() => {});
+        this.onPickDifferent = onPickDifferent || (() => {});
+        this._dialog = null;
+        this._key_handler = null;
+    }
+
+    show() {
+        const d = this.decision || {};
+        const score_pct = typeof d.confidence === "number"
+            ? Math.floor(d.confidence * 100) : 0;
+        const parent_chain = d.tally_parent_chain || "";
+        const opening = d.opening_cr || d.opening_dr || 0;
+        const opening_text = format_currency(opening) +
+            (d.net_side ? ` ${d.net_side}` : "");
+
+        const body_html = `
+            <div class="fuzzy-approval-dialog">
+                <div class="fad-row">
+                    <div class="fad-label">Tally ledger</div>
+                    <div class="fad-value">${frappe.utils.escape_html(d.tally_name || "")}</div>
+                </div>
+                ${parent_chain ? `
+                    <div class="fad-row">
+                        <div class="fad-label">Parent chain</div>
+                        <div class="fad-value">${frappe.utils.escape_html(parent_chain)}</div>
+                    </div>
+                ` : ""}
+                <div class="fad-row">
+                    <div class="fad-label">Opening</div>
+                    <div class="fad-value">${frappe.utils.escape_html(opening_text)}</div>
+                </div>
+                <div class="fad-row fad-proposed">
+                    <div class="fad-label">Proposed ERPNext account</div>
+                    <div class="fad-value fad-target">${frappe.utils.escape_html(d.proposed_account || "")}</div>
+                </div>
+                <div class="fad-row">
+                    <div class="fad-label">Confidence</div>
+                    <div class="fad-value"><span class="fuzzy-score-label">${score_pct}%</span> via partial_ratio</div>
+                </div>
+                <div class="fad-hint">
+                    <b>y</b> = accept &nbsp;|&nbsp; <b>n</b> = reject &nbsp;|&nbsp; <b>o</b> or Esc = pick different
+                </div>
+            </div>
+        `;
+
+        this._dialog = new frappe.ui.Dialog({
+            title: __("Fuzzy match — review"),
+            size: "small",
+            fields: [
+                { fieldtype: "HTML", fieldname: "body", options: body_html },
+            ],
+            primary_action_label: __("Accept"),
+            primary_action: () => this._accept(),
+            secondary_action_label: __("Reject"),
+            secondary_action: () => this._reject(),
+            on_hide: () => this._teardown(),
+        });
+
+        // Add "Pick different" as a third action button alongside
+        // primary/secondary. Frappe Dialogs only expose two natively;
+        // append a custom button inside the modal-footer after render.
+        this._dialog.$wrapper.on("shown.bs.modal", () => {
+            const footer = this._dialog.$wrapper.find(".modal-footer");
+            if (footer.find(".fad-pick-different").length === 0) {
+                const btn = $(
+                    `<button type="button" class="btn btn-default btn-sm fad-pick-different">${__("Pick different")}</button>`
+                );
+                btn.on("click", () => this._pickDifferent());
+                footer.prepend(btn);
+            }
+        });
+
+        this._dialog.show();
+        this._bind_shortcuts();
+    }
+
+    _bind_shortcuts() {
+        // Bind to the dialog's own wrapper instead of document.
+        // Document-level capture-phase listener was being swallowed in
+        // practice (likely by Frappe's focus-trap inside Bootstrap
+        // modal). Dialog-local binding guarantees the listener is on
+        // the bubble path of key events that originate inside the
+        // modal body.
+        const self = this;
+        this._key_handler = function(e) {
+            // Ignore when focus is in an input/textarea — reviewer may
+            // be typing; don't hijack characters. Dialog body is
+            // read-only so in practice no input exists inside, but
+            // guard anyway (and accept the guard is tested when Item
+            // 5 dialogs also bubble up here on cross-dialog overlap).
+            const tag = (e.target && e.target.tagName) || "";
+            if (["INPUT", "TEXTAREA", "SELECT"].includes(tag)) return;
+
+            const k = e.key;
+            if (k === "y" || k === "Y" || k === "Enter") {
+                e.preventDefault();
+                e.stopPropagation();
+                self._accept();
+            } else if (k === "n" || k === "N") {
+                e.preventDefault();
+                e.stopPropagation();
+                self._reject();
+            } else if (k === "o" || k === "O") {
+                e.preventDefault();
+                e.stopPropagation();
+                self._pickDifferent();
+            }
+            // Note: Escape deliberately NOT handled here — Frappe's
+            // Dialog binds Esc natively to close the modal, which
+            // fires our on_hide → _teardown. After Esc dismissal the
+            // underlying detail pane remains rendered, which is the
+            // equivalent of Pick Different (reviewer uses normal
+            // Section 4 flow). Invoking onPickDifferent explicitly on
+            // Esc is unnecessary — onPickDifferent is a no-op callback
+            // in the current consumer.
+        };
+        // Attach to the dialog's wrapper as well as its .modal-body so
+        // key events from button focus bubble into our handler even
+        // when the dialog traps focus inside itself.
+        const $wrapper = this._dialog.$wrapper;
+        $wrapper.on("keydown.fuzzy-dialog", this._key_handler);
+    }
+
+    _teardown() {
+        if (this._dialog && this._dialog.$wrapper) {
+            this._dialog.$wrapper.off("keydown.fuzzy-dialog");
+        }
+        this._key_handler = null;
+    }
+
+    _accept() {
+        this._teardown();
+        if (this._dialog) this._dialog.hide();
+        this.onAccept();
+    }
+
+    _reject() {
+        this._teardown();
+        if (this._dialog) this._dialog.hide();
+        this.onReject();
+    }
+
+    _pickDifferent() {
+        this._teardown();
+        if (this._dialog) this._dialog.hide();
+        this.onPickDifferent();
     }
 }
 

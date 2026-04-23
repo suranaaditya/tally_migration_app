@@ -273,7 +273,7 @@ MAPPING_DECISION = _dt(
            in_list_view=1),
         _f("proposed_account", "Proposed Account", "Link", options="Account",
            in_list_view=1),
-        _f("matched_rule", "Matched Rule", "Link", options="Mapping Rule"),
+        _f("matched_rule", "Matched Rule", "Data"),
         _f("confidence", "Confidence", "Float"),
         _f("proposed_dr", "Proposed Dr", "Currency"),
         _f("proposed_cr", "Proposed Cr", "Currency"),

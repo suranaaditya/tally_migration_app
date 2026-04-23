@@ -172,9 +172,8 @@
   },
   {
    "fieldname": "matched_rule",
-   "fieldtype": "Link",
-   "label": "Matched Rule",
-   "options": "Mapping Rule"
+   "fieldtype": "Data",
+   "label": "Matched Rule"
   },
   {
    "fieldname": "confidence",

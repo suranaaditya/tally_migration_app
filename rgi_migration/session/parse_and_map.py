@@ -36,6 +36,33 @@ from rgi_migration.mapper.mapper import (
     Mapper,
     summarize,
 )
+from rgi_migration.mapper.tier2_fuzzy import SUBTIER_ACCT_NUM, SUBTIER_NORM
+
+
+def translate_matched_rule(
+    value: str | None, rule_name_by_section: dict[str, str],
+) -> str | None:
+    """Translate a ``MappedDecision.matched_rule`` for the DocType row.
+
+    Rules:
+      * ``None`` / empty → ``None``
+      * ``tier2:<subtier>`` (Item 6 composite matcher subtier labels) →
+        pass through verbatim. These are NOT Mapping Rule references;
+        they identify which Tier-2 sub-matcher fired. Possible only
+        because Item 6 relaxed the DocType field from Link → Data.
+      * source_section string (e.g. ``"§4.6"``) → translate via the
+        map. On miss, return the raw value (prior behavior silent-
+        nulled via ``.get()``; Item 6 preserves the raw value so audit
+        trail isn't lost even if the Mapping Rule row was deleted).
+
+    Pure function — kept in the Frappe-free module so unit tests can
+    exercise it without a bench.
+    """
+    if not value:
+        return None
+    if value.startswith("tier2:"):
+        return value
+    return rule_name_by_section.get(value, value)
 from rgi_migration.mapper.rule_source import RuleSource
 from rgi_migration.mapper.supplier_source import InMemorySupplierSource, Supplier
 from rgi_migration.parsers.normalized_schema import Ledger, ParsedTallyTB
@@ -91,8 +118,9 @@ def run_mapper_pipeline(
     suppliers: list[Supplier],
     rule_source: RuleSource,
     supplier_fuzzy_threshold: float = 85.0,
+    account_fuzzy_threshold: float = 80.0,
 ) -> ParseAndMapResult:
-    """Run the Tier-1 mapper over an already-parsed TB.
+    """Run the Tier-1 + Tier-2 mapper over an already-parsed TB.
 
     Pure — takes every Frappe-sourced dependency (COA, suppliers, rules) as
     an argument so the caller can swap in fakes for testing. The mapper
@@ -105,6 +133,7 @@ def run_mapper_pipeline(
         entity_type=entity_type,
         supplier_source=InMemorySupplierSource(suppliers),
         supplier_fuzzy_threshold=supplier_fuzzy_threshold,
+        account_fuzzy_threshold=account_fuzzy_threshold,
     )
     decisions = mapper.map_all(tb.ledgers)
     return ParseAndMapResult(
@@ -124,6 +153,7 @@ def run_parse_and_map(
     suppliers: list[Supplier],
     rule_source: RuleSource,
     supplier_fuzzy_threshold: float = 85.0,
+    account_fuzzy_threshold: float = 80.0,
 ) -> ParseAndMapResult:
     """Composed pipeline — parse the source, then run the mapper."""
     tb = parse_source(source_path, source_format)
@@ -135,6 +165,7 @@ def run_parse_and_map(
         suppliers=suppliers,
         rule_source=rule_source,
         supplier_fuzzy_threshold=supplier_fuzzy_threshold,
+        account_fuzzy_threshold=account_fuzzy_threshold,
     )
 
 
@@ -290,7 +321,20 @@ def decision_to_row_dict(
         "anti_pattern_message": decision.anti_pattern_message,
         # -- Reviewer decision (initial state from mapper)
         "review_action": decision.review_action,
-        "final_account": None,
+        # Tier-2 Sub-matchers 1 and 2 auto-populate final_account on
+        # insert — both are equality-based (confidence=1.0) so the
+        # reviewer's role is confirmation not selection. Sub-matcher 3
+        # (classical fuzzy, matched_rule == "tier2:fuzzy_classical")
+        # leaves final_account NULL so the reviewer dialog forces an
+        # explicit Accept / Reject / Pick-different decision. Other
+        # tiers continue to leave final_account NULL — reviewer-driven
+        # via save_decision / bulk_approve_tier1.
+        "final_account": (
+            decision.proposed_account
+            if decision.tier == "tier2_fuzzy"
+               and decision.matched_rule in (SUBTIER_NORM, SUBTIER_ACCT_NUM)
+            else None
+        ),
         "final_supplier": None,
         "reviewer_notes": None,
         "excluded_reason": decision.excluded_reason,

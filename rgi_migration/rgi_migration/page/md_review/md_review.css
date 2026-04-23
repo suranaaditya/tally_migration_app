@@ -374,6 +374,82 @@
     color: var(--purple-700, #432874);
 }
 
+/* FuzzyMatchApprovalDialog (Item 6) — pre-review gate for Tier-2
+ * Sub-matcher 3 (classical fuzzy). Label/value pairs stacked; the
+ * proposed target gets a highlighted row so the reviewer's eye lands
+ * on it before reaching for y / n / o. */
+.fuzzy-approval-dialog .fad-row {
+    display: grid;
+    grid-template-columns: 160px 1fr;
+    gap: 8px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--border-color, #ededed);
+}
+.fuzzy-approval-dialog .fad-row:last-of-type {
+    border-bottom: 0;
+}
+.fuzzy-approval-dialog .fad-label {
+    color: var(--text-muted, #6c7680);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+.fuzzy-approval-dialog .fad-value {
+    font-size: 13px;
+    color: var(--text-color, #1f272e);
+    word-break: break-word;
+}
+.fuzzy-approval-dialog .fad-proposed {
+    background: var(--purple-100, #e0cffc);
+    border-radius: 4px;
+    padding: 8px;
+    margin: 4px 0;
+}
+.fuzzy-approval-dialog .fad-target {
+    font-weight: 600;
+}
+.fuzzy-approval-dialog .fad-hint {
+    margin-top: 12px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border-color, #ededed);
+    font-size: 11px;
+    color: var(--text-muted, #6c7680);
+}
+
+/* Visual marker for Pending fuzzy-classical rows in master pane.
+ * Phase A Q12 — small "review" suffix adjacent to the tier chip so
+ * reviewer sees at-a-glance which rows trigger the approval dialog
+ * on selection. Minimal; Phase D verifies legibility. */
+.mapping-decision-review-app .fuzzy-needs-approval {
+    display: inline-block;
+    margin-left: 4px;
+    padding: 0 4px;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    color: var(--purple-700, #432874);
+}
+
+/* Tier-2 classical-fuzzy score label (Sub-matcher 3 only).
+ * Shown right of the tier chip ONLY when matched_rule ==
+ * "tier2:fuzzy_classical". Sub-matcher 1 (norm_strong) and Sub-
+ * matcher 2 (acct_num) are equality matches — their confidence=1.0
+ * is structurally meaningless to display. Reviewer-facing text
+ * label communicating subtier is a Phase-D nice-to-have, not
+ * required here. */
+.mapping-decision-review-app .fuzzy-score-label {
+    display: inline-block;
+    margin-left: 4px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 11px;
+    font-weight: 500;
+    background: var(--purple-100, #e0cffc);
+    color: var(--purple-700, #432874);
+    vertical-align: middle;
+}
+
 .mapping-decision-review-app .tier-chip.pending {
     background: var(--orange-100, #ffe5b4);
     color: var(--orange-700, #8a5a00);

@@ -113,6 +113,7 @@ def run_mapper(session_name: str) -> dict[str, Any]:
 		decision_to_row_dict,
 		index_ledgers_by_identity,
 		run_parse_and_map,
+		translate_matched_rule,
 	)
 
 	session = frappe.get_doc("Tally Migration Session", session_name)
@@ -224,11 +225,13 @@ def run_mapper(session_name: str) -> dict[str, Any]:
 					f"mapper output diverged from parser output."
 				)
 			row = decision_to_row_dict(d, ledger, session.name)
-			# Translate source_section → MR-xxxxx; similarly for anti-pattern
-			if row.get("matched_rule"):
-				row["matched_rule"] = rule_name_by_section.get(
-					row["matched_rule"]
-				)
+			# Translate source_section → MR-xxxxx for Tier-1 entries;
+			# pass tier2:* subtier labels through verbatim (Item 6).
+			# anti_pattern_rule is always a Mapping Rule Link, so still
+			# goes through the direct lookup (no tier2 semantics there).
+			row["matched_rule"] = translate_matched_rule(
+				row.get("matched_rule"), rule_name_by_section,
+			)
 			if row.get("anti_pattern_rule"):
 				row["anti_pattern_rule"] = rule_name_by_section.get(
 					row["anti_pattern_rule"]
@@ -408,12 +411,14 @@ def _load_rule_source():
 
 def _load_rule_name_by_section() -> dict[str, str]:
 	"""Build ``{source_section: Mapping Rule name}`` for the matched_rule /
-	anti_pattern_rule Link translation.
+	anti_pattern_rule translation.
 
-	The mapper stores ``source_section`` (e.g. "§4.6") in
-	``MappedDecision.matched_rule``; the DocType Link expects the
-	autoname (e.g. "MR-00458"). Called once per run_mapper invocation,
-	cached in-memory for the duration.
+	Historical: the DocType field was a Link → Mapping Rule requiring
+	an autoname lookup. Item 6 relaxed the field to Data so Tier-2
+	subtier labels (``tier2:norm_strong`` / ``tier2:acct_num`` /
+	``tier2:fuzzy_classical``) can persist directly. Tier-1 entries
+	still go through the source_section translation below for UI
+	consistency with existing rows.
 
 	Collisions on source_section (two Mapping Rule docs with the same
 	section string) are resolved last-wins; if this ever triggers in
@@ -425,6 +430,12 @@ def _load_rule_name_by_section() -> dict[str, str]:
 		limit_page_length=0,
 	)
 	return {r["source_section"]: r["name"] for r in rows if r["source_section"]}
+
+
+# translate_matched_rule lives in rgi_migration.session.parse_and_map
+# (Frappe-free) so pure-core unit tests can import it. Re-exported
+# via ``from rgi_migration.session.parse_and_map import
+# translate_matched_rule`` at the import site above.
 
 
 # ---------------------------------------------------------------------------

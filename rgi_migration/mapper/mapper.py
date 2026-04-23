@@ -14,9 +14,14 @@ Resolution order inside `Mapper.resolve`:
     2. Zero-balance exclusion — Dr=0 AND Cr=0 ledgers (validators.py)
     3. Anti-pattern match lookup (informational; applied to candidates below)
     4. Positive rule match — exact_ci rules, then pattern-mode rules (tier1_rules.py)
-    5. Exact-name fallback against the ERP COA
-    6. Anti-pattern-only fallback (rule matched, no positive target resolved)
-    7. Unmapped
+    5. Party-ledger routing (supplier resolution via tier1_supplier)
+    6. Exact-name fallback against the ERP COA (tier1_exact)
+    7. Anti-pattern-only fallback (rule matched, no positive target resolved)
+    7.5 Tier-2 composite matcher pipeline (tier2_fuzzy.find_tier2_match):
+        norm_strong equality → acct_num intersection → partial_ratio
+        fuzzy with length-guard. First sub-matcher to match or refuse
+        wins; refusals surface as tier=unmapped + excluded_reason.
+    8. Unmapped
 
 Post-resolution filters applied to any candidate target:
     - Anti-pattern override: if the candidate equals the anti-pattern's
@@ -62,6 +67,7 @@ from rgi_migration.mapper.tier1_supplier import (
     is_vendor_party_ledger,
     resolve_supplier,
 )
+from rgi_migration.mapper.tier2_fuzzy import find_tier2_match
 from rgi_migration.mapper.validators import (
     ValidatorOutcome,
     group_account_refusal,
@@ -159,6 +165,7 @@ class Mapper:
         *,
         supplier_source: SupplierSource | None = None,
         supplier_fuzzy_threshold: float = 85.0,
+        account_fuzzy_threshold: float = 80.0,
     ):
         self.rule_source = rule_source
         self.coa = coa
@@ -166,6 +173,7 @@ class Mapper:
         self.entity_type = entity_type
         self.supplier_source = supplier_source
         self.supplier_fuzzy_threshold = supplier_fuzzy_threshold
+        self.account_fuzzy_threshold = account_fuzzy_threshold
         self._positive: list[Rule] = rule_source.positive_rules(entity_type)
         self._anti: list[Rule] = rule_source.anti_pattern_rules(entity_type)
 
@@ -218,6 +226,34 @@ class Mapper:
         # 7. Anti-pattern matched but no positive target emerged
         if anti:
             return self._anti_pattern_only(ledger, anti)
+
+        # 7.5 Tier-2 composite matcher pipeline (tier2_fuzzy.py):
+        #     norm_strong → acct_num → partial_ratio classical fuzzy.
+        #     First sub-matcher that matches OR refuses wins; only
+        #     pure no-signal results fall through to step 8.
+        t2 = find_tier2_match(
+            ledger, self.coa, fuzzy_threshold=self.account_fuzzy_threshold,
+        )
+        if t2.is_match:
+            return self._resolve_with_candidate(
+                ledger, t2.account_name,
+                matched_rule=t2.subtier,
+                tier="tier2_fuzzy", anti=None, confidence=t2.score,
+            )
+        if t2.is_refusal:
+            return MappedDecision(
+                tally_name=ledger.name,
+                tally_id=ledger.tally_id,
+                tally_root_type=ledger.root_type,
+                opening_dr=ledger.opening_dr,
+                opening_cr=ledger.opening_cr,
+                tier="unmapped",
+                proposed_account=None,
+                review_action="Pending",
+                matched_rule=t2.subtier,
+                excluded_reason=t2.tie_reason,
+                confidence=t2.score,
+            )
 
         # 8. Unmapped
         return MappedDecision(
@@ -715,6 +751,9 @@ def _cli(argv: list[str] | None = None) -> int:
     p.add_argument("--supplier-fuzzy-threshold", type=float, default=85.0,
                    help="Fuzzy-match threshold for the Layer-3 general supplier "
                         "fallback (default 85.0).")
+    p.add_argument("--account-fuzzy-threshold", type=float, default=80.0,
+                   help="Threshold for Tier-2 classical fuzzy sub-matcher "
+                        "(partial_ratio; default 80.0).")
     src = p.add_mutually_exclusive_group(required=True)
     src.add_argument("--xml", metavar="PATH", help="Tally All Masters XML to parse.")
     src.add_argument("--excel", metavar="PATH", help="Tally opening-TB Excel to parse.")
@@ -763,6 +802,7 @@ def _cli(argv: list[str] | None = None) -> int:
         rules, coa, abbr=args.abbr, entity_type=args.entity_type,
         supplier_source=supplier_source,
         supplier_fuzzy_threshold=args.supplier_fuzzy_threshold,
+        account_fuzzy_threshold=args.account_fuzzy_threshold,
     )
     decisions = mapper.map_all(tb.ledgers)
     summary = summarize(decisions)

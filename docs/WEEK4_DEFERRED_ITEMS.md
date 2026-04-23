@@ -10,51 +10,51 @@ here and reference the landing commit in the change log.
 
 ## Future design discussions
 
-### Item 5 Commit 1 + Commit 2 Phase D browser verification — PENDING (stacked)
+### Fuzzy Review Workbench — DEFERRED (trigger: post-Item-9)
 
-Status: Backends for BOTH commits validated via Phase C programmatic
-smoke (Commit 1: 13/13 probes; Commit 2: 10/10 probes). Both browser-
-verification gaps stacked together.
+**Raised:** Item 6 Phase D browser verification (2026-04-24).
 
-**Commit 1 unverified (account-side):**
-- `p` keyboard shortcut firing from reviewer's keyboard in live page
-- `_showPromoteConfirmationDialog` rendering + reviewer-facing copy
-- "Don't ask again this session" toggle — persists across rows within
-  session, resets on page reload (session-scoped flag contract)
-- Conflict dialog cross-entity context rendering (existing_rule,
-  existing_session, existing_entity_abbr, existing_created_at) to a
-  human reviewer
-- Literal-template override dialog ("Rule will be literal, not
-  parameterized — intended?") — only exercisable in browser since
-  no CACSPU-company Account is CACSPU-free
+**Status:** Per-row `FuzzyMatchApprovalDialog` shipped in Item 6 as v1.
+Reviewer sees one dialog per `tier2:fuzzy_classical` match on row
+select — y/n/o Accept/Reject/Pick-different. Works; not optimized
+for batch decisions.
 
-**Commit 2 unverified (supplier-side):**
-- Row-type polymorphic dispatch on `p` shortcut — account row press
-  routes to account whitelist; supplier row press routes to supplier
-  whitelist
-- Supplier-row "Approve & Promote" button visibility rule: hidden
-  when review_action != Approved (pre-dialog); shown when
-  post-SupplierResolutionDialog Approved + not already promoted
-- `_showAliasConfirmationDialog` rendering (simpler than account-
-  side: 4 fields, no literal warning, no multi-occurrence notice)
-- `_showAliasConflictDialog` 5-field surface: existing_rule,
-  existing_erpnext_supplier (with deep-link to Supplier doc — the
-  supplier-specific addition), existing_session, existing_entity_abbr,
-  existing_created_at
-- Don't-ask-again toggle sharing semantics between account and
-  supplier dispatches (single flag per session, both flavors commit
-  silently once set)
-- Fail-loud toast on `p` over a supplier row whose review_action
-  isn't Approved
+**What's deferred:**
+- Single "Review All Fuzzy Matches" view showing a table of all
+  pending fuzzy matches in one session
+- Per-row inline account picker (editable without closing the view)
+- Checkbox-based bulk selection + bulk Accept / Reject actions
+- Per-row state change (e.g., bulk-pivot selected rows to
+  Request Creation workflow)
+- Possibly: bulk Approve & Promote in one action
 
-**Trigger point to close**: BEFORE Item 8 ships. Item 8 unlocks the
-live-read paths (FrappeRuleSource + find_alias_rule_supplier DocType
-read), at which point every reviewer approval on entities 2-59 may
-touch both promotion UIs. Phase D gap becomes reviewer-impacting at
-that threshold, not before.
+**Why deferred:**
+- Genuinely new UX surface requiring its own Phase A design
+  (inline picker architecture, bulk state-change semantics,
+  Approve & Promote integration, navigation from md-review,
+  keyboard flow across rows, scale handling at 15+ rows × ~700
+  accounts per Company COA)
+- Per-row dialog is usable v1 (~45 seconds reviewer time per
+  entity for 15 matches at CACSPU scale); not blocking production
+  readiness
+- Scope discipline — pulling it into Item 6 mid-Phase-D would
+  have unbound that item
 
-**Estimated effort**: ~40-60 min (doubled since both dialogs need
-separate walkthrough; shared `p` dispatcher is a 2-minute add-on).
+**Trigger to open:**
+- After Item 9 (CACSPU end-to-end) surfaces real reviewer
+  experience at production scale.
+- If Item 9 reviewer feedback says per-row dialog is meaningfully
+  painful, open as Item 6.5 or later item with proper Phase A.
+- If Item 9 reviewer feedback says per-row dialog is tolerable,
+  stays deferred indefinitely — not required for 59-entity
+  rollout.
+
+**Estimated effort if tackled:** 5-8 hours (Phase A design
+substantial; Phase B moderate; Phase C programmatic smoke
+lighter; Phase D browser verification meaningful). Sizing
+comparable to Item 6 total work.
+
+Not a bug. Not blocking. Explicitly deferred by design.
 
 ---
 

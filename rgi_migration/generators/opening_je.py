@@ -17,7 +17,10 @@ Scope (approved in the Work-Item-7 prose-design review):
       * ``not ledger.is_student_ledger``       (→ dux_voucher CSV)
       * ``not ledger.is_system_account``       (Tally internals)
       * ``ledger.root_type in {Asset, Liability, Equity}``  (P&L closes to 0)
-      * decision tier in ``{tier1_rule, tier1_exact, tier1_pattern}``
+      * decision tier in ``{tier1_rule, tier1_exact, tier1_pattern,
+        tier2_fuzzy}``  (tier2_fuzzy flows through identically once
+        reviewer-approved with final_account; the mapper-authoritative
+        tier chip is preserved for audit)
 
     Supplier tiers (``tier1_supplier_*``, ``pending_supplier_creation``)
     are silently skipped — they're handled by generators #2 / #3.
@@ -67,7 +70,9 @@ LOG = logging.getLogger(__name__)
 # RGI_Migration_Rules.md §6.2 — post-balancer tolerance on Dr=Cr.
 _TOLERANCE_RUPEES = 1.00
 
-_ELIGIBLE_TIERS = frozenset({"tier1_rule", "tier1_exact", "tier1_pattern"})
+_ELIGIBLE_TIERS = frozenset({
+    "tier1_rule", "tier1_exact", "tier1_pattern", "tier2_fuzzy",
+})
 _REFUSAL_TIERS = frozenset({
     "unmapped",
     "pending_account_creation",
