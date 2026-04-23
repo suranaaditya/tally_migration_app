@@ -1220,7 +1220,7 @@ class DetailPane {
         const is_supplier = DetailPane.SUPPLIER_TIERS.has(tier);
         const proposed_rows_html = is_supplier
             ? DetailPane._render_supplier_proposal_rows(d, tier)
-            : DetailPane._render_account_proposal_rows(d);
+            : DetailPane._render_account_proposal_rows(d, tier);
 
         // Anti-pattern block (conditional, red-bordered)
         let anti_pattern_html = "";
@@ -1267,13 +1267,79 @@ class DetailPane {
         `;
     }
 
-    /** Account-tier rows: Proposed Account + Confidence (pre-Item-3 behaviour). */
-    static _render_account_proposal_rows(d) {
+    /** Account-tier rows: Proposed Account + Confidence, plus Item 4
+     *  Commit 1 polymorphism for pending_account_creation (mapper's
+     *  creation-suggestion fields) and unmapped (helper text pointing at
+     *  the two resolution paths).
+     *
+     *  Three display modes by tier:
+     *    - pending_account_creation: show the mapper's new_account_*
+     *      suggestion (name / parent / root_type / is_group). The
+     *      "(none)" proposed-account row is suppressed — it would be
+     *      redundant with the suggestion block below.
+     *    - unmapped: show "(none)" + a muted helper line telling the
+     *      reviewer their two options (Section 4 map-to-existing or
+     *      Request Creation create-new).
+     *    - everything else: original behaviour (Proposed Account +
+     *      Confidence rows only).
+     */
+    static _render_account_proposal_rows(d, tier) {
         const proposed = d.proposed_account || "";
         const confidence = typeof d.confidence === "number" ? d.confidence.toFixed(2) : "";
         const proposed_html = proposed
             ? `<a href="/app/account/${encodeURIComponent(proposed)}" target="_blank" rel="noopener">${frappe.utils.escape_html(proposed)} <span class="nav-icon">↗</span></a>`
             : `<span class="muted">(none)</span>`;
+
+        // Unmapped rows: help the reviewer see their two options at a
+        // glance. The message sits under the "(none)" proposed-account
+        // value so it reads as elaboration rather than a separate
+        // section.
+        if (tier === "unmapped") {
+            return `
+                <div class="kv-label">Proposed Account</div>
+                <div class="kv-value">
+                    ${proposed_html}
+                    <div class="account-proposal-helper">${__(
+                        "No mapper proposal. Use Final Account picker " +
+                        "below (map-to-existing) or create new via " +
+                        "Request Creation."
+                    )}</div>
+                </div>
+            `;
+        }
+
+        // pending_account_creation rows: render the mapper's
+        // creation suggestion in place of the empty proposed_account
+        // row. These four fields are populated by Item 4 Commit 1's
+        // persistence-layer extension — the AccountResolutionDialog
+        // uses the same fields for its pre-fill.
+        if (tier === "pending_account_creation") {
+            const new_name = d.new_account_name || "";
+            const new_parent = d.new_account_parent || "";
+            const new_root = d.new_account_root_type || "";
+            const new_is_group = d.new_account_is_group ? "Yes" : "No";
+            return `
+                <div class="kv-label">Suggested Name</div>
+                <div class="kv-value">${
+                    new_name
+                        ? `<em>${frappe.utils.escape_html(new_name)}</em>`
+                        : `<span class="muted">(none)</span>`
+                }</div>
+                <div class="kv-label">Suggested Parent</div>
+                <div class="kv-value">${
+                    new_parent
+                        ? frappe.utils.escape_html(new_parent)
+                        : `<span class="muted">(none)</span>`
+                }</div>
+                <div class="kv-label">Suggested Root Type</div>
+                <div class="kv-value">${frappe.utils.escape_html(new_root)}</div>
+                <div class="kv-label">Is Group</div>
+                <div class="kv-value">${new_is_group}</div>
+                <div class="kv-label">Confidence</div>
+                <div class="kv-value">${confidence}</div>
+            `;
+        }
+
         return `
             <div class="kv-label">Proposed Account</div>
             <div class="kv-value">${proposed_html}</div>
@@ -2097,11 +2163,33 @@ class DetailPane {
     }
 
     async _onRequestCreation() {
-        // Supplier-row dispatch (Item 3 Commit 1b, AMB-8): rich dialog
-        // on supplier rows; simple confirm on account rows (Item 4
-        // replaces with a real Account Creation Request workflow).
+        // Three-way dispatch on Request Creation:
+        //
+        // 1. Supplier rows (Item 3 Commit 1b) → SupplierResolutionDialog.
+        //    The supplier dialog owns both map-to-existing AND
+        //    create-new paths for vendor tiers, so `c` routes through
+        //    it regardless of whether the row already has a
+        //    proposed_supplier.
+        //
+        // 2. Account-creation-eligible rows (Item 4 Commit 1):
+        //    tier is pending_account_creation OR unmapped -> the new
+        //    AccountResolutionDialog. pending_account_creation rows
+        //    pre-fill from the mapper's new_account_* suggestion;
+        //    unmapped rows open with empty defaults. Both converge in
+        //    Commit 2's create_account_creation_request wiring.
+        //
+        // 3. Other account-tier rows (tier1_exact / tier1_rule /
+        //    tier1_pattern / etc.) → fall back to the pre-Item-4 simple
+        //    confirm. The "Request Creation" button isn't really
+        //    meaningful on a row that already has a valid proposal;
+        //    keeping the confirm prevents a surprise regression for
+        //    reviewers who trigger `c` out of habit.
         if (this._isVendorRow()) {
             this._openSupplierResolutionDialog();
+            return;
+        }
+        if (this._isAccountCreationRow()) {
+            this._openAccountResolutionDialog();
             return;
         }
         const target_state = "Pending Account Creation";
@@ -2110,6 +2198,55 @@ class DetailPane {
             __(`Flag this decision as a ${label}? The full creation workflow will be added in a later commit; for now this only marks the state.`),
             () => this._saveWithAction(target_state),
         );
+    }
+
+    /** Account-creation-eligible row predicate (Item 4 Commit 1).
+     *
+     * Two tier types open the AccountResolutionDialog:
+     *   - pending_account_creation: mapper said "create a new account
+     *     named X under Y". Dialog pre-fills from new_account_*.
+     *   - unmapped: no mapper proposal at all. Dialog opens empty.
+     *
+     * Supplier-tier rows are NOT eligible — they route to
+     * SupplierResolutionDialog via _isVendorRow() earlier in the
+     * dispatch chain.
+     */
+    _isAccountCreationRow() {
+        const tier = (this.current_decision && this.current_decision.tier) || "";
+        return tier === "pending_account_creation" || tier === "unmapped";
+    }
+
+    /**
+     * Open the AccountResolutionDialog on the current
+     * account-creation-eligible row (Item 4 Commit 1).
+     *
+     * Commit 1 ships the UI shell only — the onSaved callback is a
+     * placeholder that closes the dialog and shows a "Pending Commit
+     * 2" toast. The real create_account_creation_request RPC wiring
+     * lands in Commit 2.
+     */
+    _openAccountResolutionDialog() {
+        if (this._saving) return;
+        const d = this.current_decision;
+        if (!d) return;
+
+        const dialog = new AccountResolutionDialog({
+            decision: d,
+            company_abbr: this.session_company_abbr || "",
+            erpnext_company: this.session_erpnext_company || "",
+            onSaved: () => {
+                // Commit 1 placeholder — Commit 2 replaces this with
+                // the real create_account_creation_request call path.
+                frappe.show_alert({
+                    message: __(
+                        "Save wiring ships in Commit 2 — dialog UI only " +
+                        "for Commit 1."
+                    ),
+                    indicator: "orange",
+                }, 5);
+            },
+        });
+        dialog.show();
     }
 
     /**
@@ -2779,6 +2916,858 @@ class SupplierResolutionDialog {
             // eslint-disable-next-line no-console
             console.error("create_supplier_creation_request failed", err);
         }
+    }
+}
+
+
+// ============================================================================
+// AccountResolutionDialog — Item 4 Commit 1 rich dialog
+// ============================================================================
+//
+// Modal dialog for account-creation-eligible decisions (tier ∈
+// {pending_account_creation, unmapped}). Parallel to
+// SupplierResolutionDialog but simpler — there's no "Map to existing"
+// radio because Section 4's Final Account picker already handles that
+// path. This dialog is create-new only.
+//
+// Commit 1 ships the UI shell: fields, pre-fill logic, parent picker
+// backed by account_parent_query (root_type filtered, depth-sorted via
+// the pure-core formatter), live preview hint. Submit does NOT wire
+// the backend — that lands in Commit 2 with create_account_creation_request.
+//
+// Pre-fill logic per tier (AMB-9 re-scope):
+//   - pending_account_creation: name/parent/root_type/is_group from
+//     decision.new_account_*; reviewer can edit before submit.
+//   - unmapped: empty defaults; root_type pre-set from
+//     decision.tally_root_type (always populated by the parser).
+
+class AccountResolutionDialog {
+    constructor({ decision, company_abbr, erpnext_company, onSaved }) {
+        this.decision = decision || {};
+        this.company_abbr = company_abbr || "";
+        this.erpnext_company = erpnext_company || "";
+        this.onSaved = onSaved || (() => {});
+        this._dialog = null;
+    }
+
+    /** Compute the initial account name pre-fill.
+     *
+     * Three-branch fallback (Item 4 Commit 1 Phase D fix):
+     *
+     *   1. pending_account_creation: use the mapper's new_account_name
+     *      stripped of its ABBR suffix so the bare-name field is
+     *      consistent and the preview can re-append " - {abbr}"
+     *      without double-suffixing.
+     *   2. unmapped: mapper had no proposal, so fall back to
+     *      ``tally_name``. This saves the reviewer from retyping a name
+     *      they already see in Section 1 / the master pane. Parser
+     *      already strips the ``-{tally_id}`` suffix from tally names
+     *      (see CLAUDE.md Tally quirks), so the fallback is already
+     *      bare.
+     *   3. Nothing at all: empty field.
+     */
+    _initial_name() {
+        const d = this.decision || {};
+        const raw = d.new_account_name || "";
+        if (raw) {
+            const abbr = this.company_abbr || "";
+            const suffix = abbr ? ` - ${abbr}` : "";
+            if (suffix && raw.endsWith(suffix)) {
+                return raw.slice(0, raw.length - suffix.length);
+            }
+            return raw;
+        }
+        // Unmapped fallback — reviewer's starting point is the Tally
+        // ledger name as-is, since the parser already stripped any
+        // ``-{tally_id}`` suffix during normalisation.
+        return d.tally_name || "";
+    }
+
+    /** Root type pre-fill. Always derivable per the AMB-9 scope:
+     *
+     *   - pending_account_creation: new_account_root_type (from rule).
+     *   - unmapped: tally_root_type (from parser — always populated
+     *     for real Tally ledgers; defensive fallback to "" for edge
+     *     cases like system accounts that shouldn't reach this dialog).
+     */
+    _initial_root_type() {
+        const d = this.decision || {};
+        return d.new_account_root_type || d.tally_root_type || "";
+    }
+
+    show() {
+        const d = this.decision || {};
+        const abbr = this.company_abbr;
+
+        // Context line — matches SupplierResolutionDialog's orientation
+        // block. Gives the reviewer the Tally identity + parent chain
+        // + opening balance without making them close the dialog to
+        // double-check the detail pane.
+        //
+        // Opening rendering: use format_currency (plain string) rather
+        // than frappe.format(x, {fieldtype: "Currency"}) — the latter
+        // wraps the amount in a right-aligned block element, which
+        // knocks the trailing " Dr"/" Cr" suffix onto the next line
+        // inside the grid cell.
+        const parent_chain = d.tally_parent_chain || "";
+        const opening = d.opening_cr || d.opening_dr || 0;
+        const opening_text = format_currency(opening) +
+            (d.net_side ? ` ${d.net_side}` : "");
+        const context_html = `
+            <div class="account-dialog-context">
+                <div class="adc-label">Tally ledger</div>
+                <div class="adc-value">${frappe.utils.escape_html(d.tally_name || "")}${
+                    d.tally_id ? ` <span class="adc-id">[tally_id=${frappe.utils.escape_html(d.tally_id)}]</span>` : ""
+                }</div>
+                ${parent_chain ? `
+                    <div class="adc-label">Parent chain</div>
+                    <div class="adc-value">${frappe.utils.escape_html(parent_chain)}</div>
+                ` : ""}
+                <div class="adc-label">Opening</div>
+                <div class="adc-value">${frappe.utils.escape_html(opening_text)}</div>
+            </div>
+        `;
+
+        const initial_name = this._initial_name();
+        const initial_parent = d.new_account_parent || "";
+        const initial_root_type = this._initial_root_type();
+        const company = this.erpnext_company;
+
+        this._dialog = new frappe.ui.Dialog({
+            title: __("Request Account Creation"),
+            // Large size gives the tree picker room to breathe at the
+            // typical 18-node Asset-branch scale and larger
+            // Liability / Expense branches. Default (~600px) cramped
+            // the 2-column layout with the tree squeezed to the left
+            // half.
+            size: "large",
+            fields: [
+                {
+                    fieldtype: "HTML",
+                    fieldname: "context_block",
+                    options: context_html,
+                },
+                // Row 1: name + preview on the left, root_type +
+                // account_type on the right. Both are compact fields,
+                // so 2-column packs them efficiently.
+                {
+                    fieldtype: "Section Break",
+                },
+                {
+                    fieldtype: "Data",
+                    fieldname: "proposed_account_name",
+                    label: __("Account Name"),
+                    default: initial_name,
+                    reqd: 1,
+                    description: __(
+                        "Bare name without the company suffix — Frappe " +
+                        "appends ' - {0}' automatically on creation.",
+                        [abbr || "ABBR"]
+                    ),
+                },
+                {
+                    fieldtype: "HTML",
+                    fieldname: "name_preview",
+                    options: `<div class="account-dialog-preview"></div>`,
+                },
+                {
+                    fieldtype: "Column Break",
+                },
+                {
+                    fieldtype: "Data",
+                    fieldname: "proposed_root_type",
+                    label: __("Root Type"),
+                    default: initial_root_type,
+                    read_only: 1,
+                    description: __(
+                        "Derived from the Tally ledger's root type. " +
+                        "Read-only in v1 — pick a different parent if " +
+                        "the root branch is wrong."
+                    ),
+                },
+                {
+                    fieldtype: "Select",
+                    fieldname: "account_type",
+                    label: __("Account Type"),
+                    options: [
+                        "",
+                        "Accumulated Depreciation",
+                        "Asset Received But Not Billed",
+                        "Bank",
+                        "Cash",
+                        "Chargeable",
+                        "Capital Work in Progress",
+                        "Cost of Goods Sold",
+                        "Current Asset",
+                        "Current Liability",
+                        "Depreciation",
+                        "Direct Expense",
+                        "Direct Income",
+                        "Equity",
+                        "Expense Account",
+                        "Expenses Included In Asset Valuation",
+                        "Expenses Included In Valuation",
+                        "Fixed Asset",
+                        "Income Account",
+                        "Indirect Expense",
+                        "Indirect Income",
+                        "Liability",
+                        "Payable",
+                        "Receivable",
+                        "Round Off",
+                        "Round Off for Opening",
+                        "Stock",
+                        "Stock Adjustment",
+                        "Stock Received But Not Billed",
+                        "Service Received But Not Billed",
+                        "Tax",
+                        "Temporary",
+                    ].join("\n"),
+                    default: "",
+                    description: __(
+                        "Optional — leave blank unless the account " +
+                        "needs special treatment (Bank, Receivable, " +
+                        "Payable, Tax, etc.)."
+                    ),
+                },
+                // Row 2: parent_account + tree picker, full width. The
+                // tree widget needs the full dialog width to breathe at
+                // CACSPU scale (18 Asset groups + deeply-nested
+                // children); putting it in a column-half would crush
+                // the indentation and scroll-bar visibility.
+                {
+                    fieldtype: "Section Break",
+                },
+                {
+                    // AMB-10 option C: the Link field is a read-only
+                    // value-holder and submit validator. The actual
+                    // picking happens in the tree widget mounted
+                    // immediately below via the ``parent_tree`` HTML
+                    // field. Reviewer selections there call
+                    // ``set_value("proposed_parent", ...)`` which flows
+                    // through Frappe's Link validation at submit.
+                    fieldtype: "Link",
+                    fieldname: "proposed_parent",
+                    label: __("Parent Account"),
+                    options: "Account",
+                    default: initial_parent,
+                    reqd: 1,
+                    read_only: 1,
+                    description: __(
+                        "Pick from the tree below. Only group accounts " +
+                        "in the {0} branch can be parents.",
+                        [initial_root_type || "matching"]
+                    ),
+                },
+                {
+                    fieldtype: "HTML",
+                    fieldname: "parent_tree",
+                    options: `<div class="account-parent-tree-mount"></div>`,
+                },
+                // Row 3: reason + reviewer notes, full width so the
+                // Small Text boxes get a readable width.
+                {
+                    fieldtype: "Section Break",
+                },
+                {
+                    fieldtype: "Small Text",
+                    fieldname: "reason",
+                    label: __("Reason"),
+                    description: __(
+                        "Why this account needs creating — visible to " +
+                        "the approver on the ACR child row."
+                    ),
+                },
+                {
+                    fieldtype: "Small Text",
+                    fieldname: "reviewer_notes",
+                    label: __("Reviewer notes"),
+                    description: __(
+                        "Appended to the decision's chronology on save."
+                    ),
+                },
+                {
+                    fieldtype: "HTML",
+                    fieldname: "commit1_banner",
+                    options: `
+                        <div class="account-dialog-commit1-banner">
+                            ${__(
+                                "Commit 1 ships this dialog's UI only. " +
+                                "Submit is wired in Commit 2 — for now, " +
+                                "Submit closes with a placeholder toast."
+                            )}
+                        </div>
+                    `,
+                },
+            ],
+            primary_action_label: __("Submit (Commit 2)"),
+            primary_action: () => this._on_submit(),
+            secondary_action_label: __("Cancel"),
+        });
+
+        this._dialog.show();
+
+        // Wire live preview + mount the tree picker. Order matters:
+        // _mount_tree() creates the picker which calls set_value on
+        // the proposed_parent Link field, which fires Frappe's change
+        // event — we want that to refresh the preview, so _wire_preview
+        // binds first. _refresh_preview is called once post-mount to
+        // pick up any initial pre-fill (pending_account_creation's
+        // new_account_name) since Frappe's get_values() can return
+        // stale on first render.
+        this._wire_preview();
+        this._mount_tree(company, initial_root_type, initial_parent);
+        this._refresh_preview();
+    }
+
+    _wire_preview() {
+        if (!this._dialog) return;
+        const name_field = this._dialog.get_field("proposed_account_name");
+
+        if (name_field && name_field.$input) {
+            name_field.$input.off("input.acd-preview").on(
+                "input.acd-preview",
+                () => this._refresh_preview(),
+            );
+        }
+        // The proposed_parent Link is read_only in AMB-10 option C —
+        // the only path that changes its value is the tree picker's
+        // onSelect callback, which calls _refresh_preview directly.
+        // No df.change wiring needed here.
+    }
+
+    _mount_tree(company, root_type, initial_selection) {
+        if (!this._dialog) return;
+        const tree_field = this._dialog.get_field("parent_tree");
+        if (!tree_field || !tree_field.$wrapper) return;
+        const mount = tree_field.$wrapper.find(".account-parent-tree-mount");
+        if (!mount.length) return;
+
+        this._tree_picker = new AccountTreePicker({
+            mount: mount,
+            company: company,
+            root_type: root_type,
+            initial_selection: initial_selection || "",
+            onSelect: (name) => {
+                // Frappe's set_value on a Link field writes both the
+                // control's internal state and the displayed text.
+                // Preview refresh reads the updated value via the
+                // field's $input.val() below so no stale-cache worry.
+                this._dialog.set_value("proposed_parent", name);
+                this._refresh_preview();
+            },
+        });
+        this._tree_picker.load();
+    }
+
+    _refresh_preview() {
+        if (!this._dialog) return;
+
+        // Read directly from DOM inputs — Frappe's internal value
+        // cache can lag the DOM in the first render tick after
+        // Dialog.show(), which left pre-filled rows showing the
+        // placeholder preview (Phase D bug). $input.val() and
+        // get_value() are both in-sync with the DOM at all times.
+        const name_field = this._dialog.get_field("proposed_account_name");
+        const parent_field = this._dialog.get_field("proposed_parent");
+        const bare_name = name_field && name_field.$input
+            ? (name_field.$input.val() || "").trim()
+            : "";
+        const parent = parent_field
+            ? (parent_field.get_value() || "").trim()
+            : "";
+        const abbr = this.company_abbr || "";
+
+        const full_name = bare_name
+            ? (abbr ? `${bare_name} - ${abbr}` : bare_name)
+            : "";
+
+        const preview_wrapper = this._dialog.get_field("name_preview");
+        if (!preview_wrapper || !preview_wrapper.$wrapper) return;
+
+        const $target = preview_wrapper.$wrapper.find(".account-dialog-preview");
+        if (!$target.length) return;
+
+        if (!full_name) {
+            $target.html(`<span class="text-muted">${__(
+                "Type an account name above to see the full-name preview."
+            )}</span>`);
+            return;
+        }
+
+        const under_phrase = parent
+            ? __("under {0}", [`<strong>${frappe.utils.escape_html(parent)}</strong>`])
+            : __("pick a parent below");
+
+        $target.html(
+            __("Will create as {0} {1}", [
+                `<strong>${frappe.utils.escape_html(full_name)}</strong>`,
+                under_phrase,
+            ])
+        );
+    }
+
+    async _on_submit() {
+        // Commit 1 placeholder. Field-level validation runs first via
+        // get_values() — Frappe's own reqd check blocks empty submits.
+        const values = this._dialog.get_values();
+        if (!values) return;  // validation failed; Frappe already surfaced the error
+
+        // Commit 2 replaces this with a real
+        // create_account_creation_request RPC. For now, hand control
+        // back to the DetailPane's onSaved placeholder which shows a
+        // toast explaining the state.
+        this._dialog.hide();
+        await this.onSaved(values);
+    }
+}
+
+
+// ============================================================================
+// AccountTreePicker — Item 4 Commit 1 (AMB-10 option C)
+// ============================================================================
+//
+// Embedded collapsible tree widget for picking a Parent Account inside
+// AccountResolutionDialog. Replaces the "Browse tree ↗" link shortcut
+// (option D rollback) with a proper in-dialog picker — Windows
+// Explorer / Dropbox folder-picker style.
+//
+// Why a custom widget rather than frappe.views.TreeView: TreeView is a
+// full-page controller that expects a ``page`` object with
+// ``add_inner_button`` / ``add_field`` stubs; embedding it inside a
+// Dialog would require synthesising those, which is fragile against
+// Frappe upgrades (see Phase A AMB-10 investigation). A bespoke widget
+// at CACSPU scale (~43 group accounts across 5 roots, biggest branch
+// ~18 groups) is cheaper and sturdier than bending TreeView.
+//
+// Data flow:
+//   1. constructor(): captures mount, company, root_type, initial_selection.
+//   2. load(): fetches all groups in the branch via get_account_tree RPC.
+//   3. _build_tree(): reconstructs the hierarchy from parent_account
+//      links. Roots = nodes whose parent isn't in the fetched set.
+//   4. _render(): draws the tree as nested divs with expand/collapse
+//      chevrons and depth-based indentation.
+//   5. User click on node → _select(name) → fires onSelect callback,
+//      repaints highlight.
+//   6. User click on chevron → toggles that node's expanded flag, re-
+//      renders.
+//
+// Initial expand policy: all ancestors of ``initial_selection`` are
+// expanded so the reviewer sees their current pick in context; all
+// other groups start collapsed. For unmapped rows with no initial
+// selection, only the root-level nodes are visible.
+
+class AccountTreePicker {
+    constructor({ mount, company, root_type, initial_selection, onSelect }) {
+        this.mount = mount;  // jQuery wrapper
+        this.company = company;
+        this.root_type = root_type;
+        this.selected = initial_selection || "";
+        this.onSelect = onSelect || (() => {});
+
+        this.nodes = [];         // flat list from RPC
+        this.children_map = {};  // name -> [child_name, ...]
+        this.by_name = {};       // name -> node row
+        this.roots = [];         // top-level node names
+        this.expanded = new Set();
+        this.filter_text = "";   // live search input value (lowercased)
+        this._loading = true;
+        this._first_render_done = false;  // controls auto-scroll
+    }
+
+    async load() {
+        this._render_loading();
+        try {
+            const r = await frappe.call({
+                method: "rgi_migration.rgi_migration.page.md_review.md_review.get_account_tree",
+                args: { company: this.company, root_type: this.root_type },
+            });
+            this.nodes = (r && r.message) || [];
+        } catch (err) {
+            console.error("AccountTreePicker: get_account_tree failed", err);
+            this._render_error();
+            return;
+        }
+        this._build_tree();
+        this._seed_expansion();
+        this._loading = false;
+        this._render();
+    }
+
+    _build_tree() {
+        this.by_name = {};
+        this.children_map = {};
+        for (const n of this.nodes) {
+            this.by_name[n.name] = n;
+            this.children_map[n.name] = [];
+        }
+        // Roots = nodes whose parent isn't in the set (parent may be
+        // the top-of-COA "Application Of Funds" which IS in the set,
+        // or an out-of-branch node). lft order guarantees roots come
+        // before descendants so a single pass suffices.
+        this.roots = [];
+        for (const n of this.nodes) {
+            const p = n.parent_account;
+            if (p && this.by_name[p]) {
+                this.children_map[p].push(n.name);
+            } else {
+                this.roots.push(n.name);
+            }
+        }
+    }
+
+    _seed_expansion() {
+        // Expand root level always — reviewer should see at least the
+        // top-of-branch groups on open.
+        for (const r of this.roots) {
+            this.expanded.add(r);
+        }
+        // If we have an initial selection, walk its parent chain up
+        // and expand each ancestor so the selection is visible.
+        let cursor = this.selected;
+        const walked = new Set();
+        while (cursor && !walked.has(cursor)) {
+            walked.add(cursor);
+            const node = this.by_name[cursor];
+            if (!node) break;
+            const parent = node.parent_account;
+            if (parent && this.by_name[parent]) {
+                this.expanded.add(parent);
+                cursor = parent;
+            } else {
+                break;
+            }
+        }
+    }
+
+    _render_loading() {
+        this.mount.html(`
+            <div class="account-tree-loading">
+                ${__("Loading accounts…")}
+            </div>
+        `);
+    }
+
+    _render_error() {
+        this.mount.html(`
+            <div class="account-tree-error">
+                ${__("Could not load the account tree. See console for details.")}
+            </div>
+        `);
+    }
+
+    _render() {
+        if (this._loading) return;
+
+        // Preserve search-input focus across re-renders — reviewers
+        // type in the search box, which triggers a re-render, which
+        // would otherwise steal focus. Capture the cursor position
+        // too so the reviewer's typing experience is seamless.
+        const $existing_search = this.mount.find(".atp-search");
+        const had_search_focus = $existing_search.is(":focus");
+        const search_cursor = had_search_focus && $existing_search[0]
+            ? $existing_search[0].selectionStart
+            : null;
+
+        if (!this.nodes.length) {
+            this.mount.html(`
+                <div class="account-tree-empty">
+                    ${__(
+                        "No group accounts found in this branch. Create the " +
+                        "first group via the Accounts master before continuing."
+                    )}
+                </div>
+            `);
+            return;
+        }
+
+        // Compute visible set once per render so the tree body and the
+        // "no matches" branch below can both use it without rewalking.
+        const visible = this._compute_visible();
+
+        const parts = [];
+        parts.push(this._render_toolbar(visible));
+        if (this.filter_text && visible.size === 0) {
+            parts.push(`
+                <div class="account-tree-empty">
+                    ${__("No groups match {0}.", [`<code>${frappe.utils.escape_html(this.filter_text)}</code>`])}
+                </div>
+            `);
+        } else {
+            parts.push('<div class="account-tree">');
+            for (const root of this.roots) {
+                if (visible.has(root)) {
+                    parts.push(this._render_node(root, 0, visible));
+                }
+            }
+            parts.push("</div>");
+        }
+        this.mount.html(parts.join(""));
+        this._wire_events();
+
+        if (had_search_focus) {
+            const $s = this.mount.find(".atp-search");
+            $s.focus();
+            if (search_cursor !== null && $s[0]) {
+                try {
+                    $s[0].setSelectionRange(search_cursor, search_cursor);
+                } catch (_e) {
+                    // Some browsers / input states reject setSelectionRange;
+                    // focus alone is enough in that case.
+                }
+            }
+        }
+
+        if (!this._first_render_done && this.selected) {
+            this._scroll_to_selected();
+        }
+        this._first_render_done = true;
+    }
+
+    _render_toolbar(visible) {
+        const filter = frappe.utils.escape_html(this.filter_text);
+        const result_count = this.filter_text
+            ? `<span class="atp-match-count">${__("{0} match(es)", [visible.size])}</span>`
+            : "";
+        return `
+            <div class="atp-toolbar">
+                <div class="atp-search-wrap">
+                    <input type="text"
+                           class="atp-search form-control input-xs"
+                           placeholder="${__("Search parents…")}"
+                           value="${filter}"
+                           aria-label="${__("Filter tree")}" />
+                    ${this.filter_text
+                        ? `<button type="button" class="atp-clear-search" aria-label="${__("Clear search")}">&times;</button>`
+                        : ""}
+                </div>
+                ${result_count}
+                <div class="atp-toolbar-spacer"></div>
+                <button type="button" class="btn btn-xs btn-default atp-expand-all">${__("Expand all")}</button>
+                <button type="button" class="btn btn-xs btn-default atp-collapse-all">${__("Collapse all")}</button>
+            </div>
+        `;
+    }
+
+    _matches_filter(name) {
+        if (!this.filter_text) return true;
+        const node = this.by_name[name];
+        if (!node) return false;
+        const needle = this.filter_text.toLowerCase();
+        const label = (node.account_name || "").toLowerCase();
+        const full = name.toLowerCase();
+        return label.includes(needle) || full.includes(needle);
+    }
+
+    _compute_visible() {
+        // A node is visible when it matches the filter directly OR has
+        // at least one descendant that does (so ancestors of matches
+        // render to keep context). Walks the tree once from roots in
+        // post-order — O(n), no recomputation per node.
+        const visible = new Set();
+        const self = this;
+        function walk(name) {
+            const children = self.children_map[name] || [];
+            let any_child_visible = false;
+            for (const c of children) {
+                if (walk(c)) any_child_visible = true;
+            }
+            const self_match = self._matches_filter(name);
+            if (self_match || any_child_visible) {
+                visible.add(name);
+                return true;
+            }
+            return false;
+        }
+        for (const r of this.roots) {
+            walk(r);
+        }
+        return visible;
+    }
+
+    _render_node(name, depth, visible) {
+        const node = this.by_name[name];
+        if (!node) return "";
+        const children = this.children_map[name] || [];
+        const visible_children = children.filter((c) => visible.has(c));
+        const has_children = children.length > 0;
+        const has_visible_children = visible_children.length > 0;
+        // Auto-expand any node with filter-matched descendants — the
+        // reviewer's search intent implies "show me these results in
+        // context." Without this, the expanded set would need manual
+        // upkeep every keystroke, which is brittle.
+        const is_expanded = this.filter_text
+            ? has_visible_children
+            : this.expanded.has(name);
+        const is_selected = name === this.selected;
+        const direct_match = this._matches_filter(name);
+
+        const chevron = has_children
+            ? (is_expanded ? "\u25BC" : "\u25B6")  // ▼ / ▶
+            : "";
+        const chevron_html = has_children
+            ? `<span class="atp-chevron" data-action="toggle">${chevron}</span>`
+            : `<span class="atp-chevron atp-chevron-placeholder"></span>`;
+
+        const indent = depth * 18;
+        const label = node.account_name || name;
+
+        const row_classes = [
+            "atp-row",
+            is_selected ? "atp-selected" : "",
+            this.filter_text && direct_match ? "atp-match" : "",
+        ].filter(Boolean).join(" ");
+
+        const row = `
+            <div class="${row_classes}"
+                 data-name="${frappe.utils.escape_html(name)}"
+                 style="padding-left: ${indent}px">
+                ${chevron_html}
+                <span class="atp-label" data-action="select">
+                    ${this._highlight(label)}
+                </span>
+                <span class="atp-full muted">${this._highlight(name)}</span>
+            </div>
+        `;
+
+        let children_html = "";
+        if (has_children && is_expanded) {
+            children_html = visible_children
+                .map((c) => this._render_node(c, depth + 1, visible))
+                .join("");
+        }
+
+        return row + children_html;
+    }
+
+    /** Escape label and wrap filter-match substring in <mark>. */
+    _highlight(text) {
+        if (!this.filter_text) return frappe.utils.escape_html(text);
+        const needle = this.filter_text.toLowerCase();
+        const lower = text.toLowerCase();
+        const idx = lower.indexOf(needle);
+        if (idx < 0) return frappe.utils.escape_html(text);
+        const before = text.slice(0, idx);
+        const match = text.slice(idx, idx + this.filter_text.length);
+        const after = text.slice(idx + this.filter_text.length);
+        return (
+            frappe.utils.escape_html(before) +
+            `<mark class="atp-hl">${frappe.utils.escape_html(match)}</mark>` +
+            frappe.utils.escape_html(after)
+        );
+    }
+
+    _scroll_to_selected() {
+        const $sel = this.mount.find(".atp-row.atp-selected");
+        if ($sel.length && $sel[0].scrollIntoView) {
+            // block: "nearest" avoids forcing a scroll when the row is
+            // already visible, which would cause flicker on each open.
+            $sel[0].scrollIntoView({ block: "nearest" });
+        }
+    }
+
+    _wire_events() {
+        const self = this;
+
+        // Chevron click → expand/collapse. stopPropagation so the row-
+        // level click doesn't also fire and select the node. No-op when
+        // filter is active — filter mode auto-manages expansion based
+        // on match descendants, and overriding manually during a
+        // search leads to "my expand click got undone next keystroke"
+        // confusion.
+        this.mount.find(".atp-chevron[data-action=toggle]")
+            .off("click.atp")
+            .on("click.atp", function (e) {
+                e.stopPropagation();
+                if (self.filter_text) return;
+                const $row = $(this).closest(".atp-row");
+                const name = $row.data("name");
+                if (self.expanded.has(name)) {
+                    self.expanded.delete(name);
+                } else {
+                    self.expanded.add(name);
+                }
+                self._render();
+            });
+
+        // Row click (anywhere except the chevron) → select. Clicking
+        // a group both selects it AND expands it — Dropbox-style
+        // convenience.
+        this.mount.find(".atp-row")
+            .off("click.atp-select")
+            .on("click.atp-select", function (e) {
+                // Skip if the click target was the chevron (handled
+                // above). Checked via closest so clicks on the chevron
+                // span's children also no-op.
+                if ($(e.target).closest(".atp-chevron[data-action=toggle]").length) {
+                    return;
+                }
+                const name = $(this).data("name");
+                self._select(name);
+            });
+
+        // Search input — debounced so every keystroke doesn't force a
+        // full re-render. 120ms is the sweet spot between feels-instant
+        // and not-thrashing at 343-node scale.
+        this.mount.find(".atp-search")
+            .off("input.atp-search")
+            .on("input.atp-search", function () {
+                const val = $(this).val() || "";
+                clearTimeout(self._search_timer);
+                self._search_timer = setTimeout(() => {
+                    self.filter_text = val.trim();
+                    self._render();
+                }, 120);
+            });
+
+        // Clear-search "×" button — one-click reset.
+        this.mount.find(".atp-clear-search")
+            .off("click.atp-clear")
+            .on("click.atp-clear", function (e) {
+                e.stopPropagation();
+                self.filter_text = "";
+                self._render();
+                // Refocus the search input post-clear so the reviewer
+                // can keep typing a new query without an extra click.
+                self.mount.find(".atp-search").focus();
+            });
+
+        // Expand all — adds every group with children to the expanded
+        // set. Idempotent.
+        this.mount.find(".atp-expand-all")
+            .off("click.atp-expand")
+            .on("click.atp-expand", function (e) {
+                e.stopPropagation();
+                for (const n of self.nodes) {
+                    if ((self.children_map[n.name] || []).length) {
+                        self.expanded.add(n.name);
+                    }
+                }
+                self._render();
+            });
+
+        // Collapse all — reduces expansion to root-level groups only
+        // (keeping roots open so the tree isn't totally empty of
+        // entry points).
+        this.mount.find(".atp-collapse-all")
+            .off("click.atp-collapse")
+            .on("click.atp-collapse", function (e) {
+                e.stopPropagation();
+                self.expanded = new Set(self.roots);
+                self._render();
+            });
+    }
+
+    _select(name) {
+        this.selected = name;
+        // Auto-expand on select — reviewer's current pick is visible
+        // and its children (if any) are browsable without a second
+        // click. Matches Explorer/Dropbox folder-picker UX.
+        if (this.children_map[name] && this.children_map[name].length) {
+            this.expanded.add(name);
+        }
+        this._render();
+        this.onSelect(name);
     }
 }
 

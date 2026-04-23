@@ -70,6 +70,59 @@ def test_new_supplier_name_field_present(fields_by_name: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Item 4 Commit 1 additions — new_account_* quartet
+# ---------------------------------------------------------------------------
+
+
+def test_new_account_name_field_present(fields_by_name: dict) -> None:
+    f = fields_by_name.get("new_account_name")
+    assert f is not None, "new_account_name field missing"
+    # Data (short label), parallel to new_supplier_name's choice.
+    assert f["fieldtype"] == "Data"
+
+
+def test_new_account_parent_field_present(fields_by_name: dict) -> None:
+    f = fields_by_name.get("new_account_parent")
+    assert f is not None, "new_account_parent field missing"
+    # Data, not Link to Account — the suggestion may reference an Account
+    # that doesn't exist yet at the time the mapper runs (the whole point
+    # of pending_account_creation). Link validation would reject it.
+    assert f["fieldtype"] == "Data"
+
+
+def test_new_account_root_type_field_present(fields_by_name: dict) -> None:
+    f = fields_by_name.get("new_account_root_type")
+    assert f is not None, "new_account_root_type field missing"
+    # Data, not Select — mapper-emitted values are always in the
+    # canonical root_type set but using Data avoids a Select-enum mismatch
+    # at insert time if ERPNext ever adds a root_type.
+    assert f["fieldtype"] == "Data"
+
+
+def test_new_account_is_group_field_present(fields_by_name: dict) -> None:
+    f = fields_by_name.get("new_account_is_group")
+    assert f is not None, "new_account_is_group field missing"
+    assert f["fieldtype"] == "Check"
+    # Explicit default="0" — Frappe Check fields without a default
+    # insert as NULL which breaks the 0/1 contract elsewhere.
+    assert f.get("default") == "0"
+
+
+def test_field_order_contains_new_account_fields(doctype: dict) -> None:
+    """Item 4 Commit 1: all four new_account_* keys must appear in
+    field_order. A field defined without an ordering entry is a silent
+    bug — it won't render on the DocType form."""
+    order = doctype["field_order"]
+    for fn in (
+        "new_account_name",
+        "new_account_parent",
+        "new_account_root_type",
+        "new_account_is_group",
+    ):
+        assert fn in order, f"{fn} defined but not in field_order"
+
+
+# ---------------------------------------------------------------------------
 # Tier enum coverage — every mapper-emitted tier must be in the Select
 # ---------------------------------------------------------------------------
 

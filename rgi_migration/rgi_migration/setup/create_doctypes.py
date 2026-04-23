@@ -636,7 +636,19 @@ def audit_phase_3_patches() -> dict:
         frappe.db.commit()
         results["Mapping Rule"] += "; dropped orphan SQL column source_section_ref"
 
-    # ---- Mapping Decision: add requires_combine + combine_with ----
+    # ---- Mapping Decision: add requires_combine + combine_with +
+    # new_account_* (Item 4 Commit 1) ----
+    #
+    # Item 4 adds four `new_account_*` fields parallel to
+    # `new_supplier_name` from Item 2. The mapper already computes these
+    # on `MappedDecision` for `tier=pending_account_creation` rows
+    # (mapper.py:393-396) but the persistence layer was dropping them.
+    # Storing them on the DocType lets the reviewer UI pre-fill the
+    # AccountResolutionDialog with the mapper's suggestion instead of
+    # re-deriving from the Mapping Rule at dialog-open time.
+    #
+    # For tier=unmapped rows, these stay NULL — the dialog opens with
+    # empty defaults and the reviewer fills everything.
     decision = frappe.get_doc("DocType", "Mapping Decision")
     existing_decision = {f.fieldname for f in decision.fields}
     added_decision: list = []
@@ -652,6 +664,54 @@ def audit_phase_3_patches() -> dict:
             "Combine With (sibling decision idxs, CSV)",
             "Small Text",
             {},
+        ),
+        (
+            "new_account_name",
+            "New Account Name (suggestion)",
+            "Data",
+            {
+                "description": (
+                    "Mapper's suggested Account name for "
+                    "pending_account_creation rows (ABBR already "
+                    "applied). NULL for unmapped rows."
+                ),
+            },
+        ),
+        (
+            "new_account_parent",
+            "New Account Parent (suggestion)",
+            "Data",
+            {
+                "description": (
+                    "Mapper's suggested parent Account for "
+                    "pending_account_creation rows (ABBR already "
+                    "applied). NULL for unmapped rows."
+                ),
+            },
+        ),
+        (
+            "new_account_root_type",
+            "New Account Root Type (suggestion)",
+            "Data",
+            {
+                "description": (
+                    "Mapper's suggested root_type for "
+                    "pending_account_creation rows. NULL for "
+                    "unmapped rows."
+                ),
+            },
+        ),
+        (
+            "new_account_is_group",
+            "New Account Is Group (suggestion)",
+            "Check",
+            {
+                "default": "0",
+                "description": (
+                    "Mapper's suggested is_group flag. Locked to 0 in "
+                    "v1 (reviewer cannot create group accounts via ACR)."
+                ),
+            },
         ),
     ]
     for fn, lab, ft, kwargs in to_add_on_decision:

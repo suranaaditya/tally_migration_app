@@ -358,6 +358,82 @@ def test_decision_to_row_dict_pending_supplier_creation_suggestion() -> None:
     assert row["review_action"] == "Pending Supplier Creation"
 
 
+def test_decision_to_row_dict_pending_account_creation_suggestion() -> None:
+    """Item 4 Commit 1: MappedDecision's new_account_* fields
+    (name, parent, root_type, is_group) now round-trip to the
+    Mapping Decision row dict. Exercised on a pending_account_creation
+    decision — the mapper-populated-suggestion case.
+    """
+    ledger = _ledger(
+        "Hostel Fee Advance",
+        tally_id="H001",
+        parent_chain=["Liability", "Liability For Students"],
+        root_type="Liability",
+        opening_cr=5000.0,
+    )
+    d = _decision(
+        tally_name="Hostel Fee Advance",
+        tally_id="H001",
+        tally_root_type="Liability",
+        opening_dr=0.0,
+        opening_cr=5000.0,
+        tier="pending_account_creation",
+        proposed_account=None,
+        review_action="Pending Account Creation",
+        confidence=0.95,
+        requires_account_creation=True,
+        new_account_name="Hostel Fee Advance Payable - CACSPU",
+        new_account_parent="Liability For Students - CACSPU",
+        new_account_root_type="Liability",
+        new_account_is_group=False,
+    )
+    row = decision_to_row_dict(d, ledger, "TMS-TEST-00001")
+
+    assert row["new_account_name"] == "Hostel Fee Advance Payable - CACSPU"
+    assert row["new_account_parent"] == "Liability For Students - CACSPU"
+    assert row["new_account_root_type"] == "Liability"
+    # Check fields serialise as 0/1 ints, matching the is_student_ledger
+    # / is_system_account pattern for Frappe Check fieldtype storage.
+    assert row["new_account_is_group"] == 0
+    assert row["tier"] == "pending_account_creation"
+    assert row["review_action"] == "Pending Account Creation"
+
+
+def test_decision_to_row_dict_unmapped_leaves_new_account_fields_null() -> None:
+    """Item 4 Commit 1 AMB-9 re-scope: unmapped rows flow through the
+    same AccountResolutionDialog as pending_account_creation rows, but
+    with empty defaults. The persistence layer must not synthesise
+    suggestions for unmapped — those fields stay NULL so the dialog
+    opens empty and the reviewer fills from scratch.
+    """
+    ledger = _ledger(
+        "Bank of Maharashtra",
+        tally_id="B001",
+        parent_chain=["Asset", "Bank Accounts"],
+        root_type="Asset",
+        opening_dr=100000.0,
+    )
+    d = _decision(
+        tally_name="Bank of Maharashtra",
+        tally_id="B001",
+        tally_root_type="Asset",
+        tier="unmapped",
+        proposed_account=None,
+        review_action="Pending",
+        confidence=0.0,
+        # Explicitly no new_account_* — dataclass defaults hold.
+    )
+    row = decision_to_row_dict(d, ledger, "TMS-TEST-00001")
+
+    assert row["new_account_name"] is None
+    assert row["new_account_parent"] is None
+    assert row["new_account_root_type"] is None
+    # is_group is a Check — persists as 0 (default), not NULL.
+    # Matches how Frappe Check fields round-trip.
+    assert row["new_account_is_group"] == 0
+    assert row["tier"] == "unmapped"
+
+
 def test_decision_to_row_dict_carries_parser_flags() -> None:
     """is_pnl_closed_zero, is_student_ledger, is_system_account come from
     the source Ledger, not the dataclass. Verify all three survive the

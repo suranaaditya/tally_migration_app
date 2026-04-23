@@ -267,6 +267,17 @@ def decision_to_row_dict(
         "proposed_account": decision.proposed_account,
         "proposed_supplier": decision.proposed_supplier,
         "new_supplier_name": decision.new_supplier_name,
+        # Item 4 Commit 1: persist the mapper's account-creation
+        # suggestion alongside the supplier one. Populated only for
+        # tier=pending_account_creation rows (mapper.py:393-396); NULL
+        # on every other tier including unmapped, where the dialog will
+        # open with empty defaults and the reviewer fills from scratch.
+        "new_account_name": decision.new_account_name,
+        "new_account_parent": decision.new_account_parent,
+        "new_account_root_type": decision.new_account_root_type,
+        "new_account_is_group": (
+            1 if decision.new_account_is_group else 0
+        ),
         "matched_rule": decision.matched_rule,
         "confidence": decision.confidence,
         "supplier_match_score": decision.supplier_match_score,

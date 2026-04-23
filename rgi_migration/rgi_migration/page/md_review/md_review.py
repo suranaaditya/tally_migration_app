@@ -27,6 +27,7 @@ from rgi_migration.rgi_migration.page.md_review.query import (
     apply_scr_rejection_to_decision,
     apply_supplier_resolution,
     build_account_autocomplete_results,
+    build_account_parent_autocomplete_results,
     build_scr_payload,
     build_supplier_autocomplete_results,
     build_supplier_doc_payload,
@@ -278,6 +279,133 @@ def account_query_with_parent(
     )
 
     return build_account_autocomplete_results(accounts)
+
+
+@frappe.whitelist()
+def account_parent_query(
+    doctype,
+    txt,
+    searchfield,
+    start,
+    page_len,
+    filters,
+):
+    """Custom Link-query for the AccountResolutionDialog parent picker.
+
+    Parallel to :func:`account_query_with_parent` but for group
+    accounts (Item 4 Commit 1, SUB-1). Two server-side filters are
+    enforced regardless of caller input to prevent a stale client
+    filter from bypassing the invariant:
+
+    * ``is_group = 1`` — parent accounts must be groups. A leaf parent
+      would break ERPNext's tree model.
+    * ``root_type = <caller-supplied>`` — restricts candidates to the
+      decision's ``tally_root_type`` branch. Caller passes it via
+      ``filters``; missing / blank caller input raises (the whole
+      point of this endpoint is the branch filter).
+
+    ``disabled = 0`` is also enforced (same reason as the peer query:
+    reviewer-picking a disabled parent would later fail Account insert
+    validation at ACR-approve time).
+
+    The pure-core formatter handles the depth-then-alpha sort — see
+    :func:`query.build_account_parent_autocomplete_results` for the
+    "tree-ordered" intent.
+
+    Args mirror the Frappe Link-query contract. ``filters`` MUST
+    contain ``company`` and ``root_type``.
+
+    Returns:
+        ``list[list[str]]`` — each inner list is
+        ``[account_name, description]``.
+    """
+    filters = dict(filters) if filters else {}
+    company = filters.get("company")
+    if not company:
+        frappe.throw("account_parent_query requires a 'company' filter")
+
+    root_type = filters.get("root_type")
+    if not root_type:
+        frappe.throw(
+            "account_parent_query requires a 'root_type' filter "
+            "(derived from the decision's tally_root_type)",
+        )
+
+    # Re-pin the server-owned invariants after the caller's dict is
+    # consumed — a client attempting to pass is_group=0 (to get leaf
+    # candidates) or disabled=1 (to see disabled rows) is ignored.
+    filters["is_group"] = 1
+    filters["disabled"] = 0
+    filters["root_type"] = root_type
+
+    accounts = frappe.get_all(
+        "Account",
+        filters=filters,
+        or_filters=[
+            ["name", "like", f"%{txt}%"],
+            ["account_name", "like", f"%{txt}%"],
+        ] if txt else None,
+        fields=["name", "account_name", "parent_account", "root_type"],
+        # lft ordering gives a tree pre-order, which the depth-sort pure
+        # core then re-orders to breadth-first. Keep name desc tie-break
+        # so the pure-core sort is deterministic on name ties within a
+        # depth bucket (shouldn't happen on a clean COA but defensive).
+        order_by="lft asc, name asc",
+        start=int(start or 0),
+        # Raise from the peer query's 20 to 50 because the parent-
+        # picker branch has a narrower candidate pool per row-load
+        # (only groups in the right root_type) and reviewers benefit
+        # from seeing the full first-level before scrolling.
+        page_length=int(page_len or 50),
+    )
+
+    return build_account_parent_autocomplete_results(accounts)
+
+
+@frappe.whitelist()
+def get_account_tree(company, root_type):
+    """Return all group accounts in a company's root_type branch as a
+    flat list, ordered by ``lft`` (tree pre-order).
+
+    Backs the AccountResolutionDialog's in-dialog tree picker (Item 4
+    Commit 1, AMB-10 option C re-decision). Parent candidates must be
+    groups, so the tree only needs group nodes — leaf accounts never
+    appear as parents. At CACSPU scale the biggest branch has ~18
+    groups; fetching the whole branch once is faster than lazy-fetching
+    children per-expand and keeps the frontend code simpler.
+
+    ``lft`` order gives us tree pre-order, which the client uses to
+    rebuild the hierarchy via ``parent_account`` links without needing
+    a recursive SQL query.
+
+    Args:
+        company: ERPNext Company name.
+        root_type: One of Asset / Liability / Equity / Income /
+            Expense. Required — the tree is always branch-scoped.
+
+    Returns:
+        ``[{"name", "account_name", "parent_account", "lft", "rgt"}, ...]``
+
+    Raises:
+        frappe.ValidationError: missing company or root_type.
+    """
+    if not company:
+        frappe.throw("get_account_tree requires a 'company' argument")
+    if not root_type:
+        frappe.throw("get_account_tree requires a 'root_type' argument")
+
+    accounts = frappe.get_all(
+        "Account",
+        filters={
+            "company": company,
+            "root_type": root_type,
+            "is_group": 1,
+            "disabled": 0,
+        },
+        fields=["name", "account_name", "parent_account", "lft", "rgt"],
+        order_by="lft asc",
+    )
+    return accounts
 
 
 @frappe.whitelist()

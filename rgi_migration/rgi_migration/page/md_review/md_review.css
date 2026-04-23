@@ -1024,6 +1024,270 @@
 }
 
 
+/* --- AccountResolutionDialog (Item 4 Commit 1) --------------------------- */
+/* Shapes the context block, live-preview line, and the Commit 1 banner
+ * that tells reviewers the Submit button is placeholder-wired. Mirrors
+ * the supplier-dialog-* palette so the two dialogs read as a family. */
+
+.account-dialog-context {
+    display: grid;
+    grid-template-columns: 110px 1fr;
+    gap: 4px 12px;
+    font-size: 13px;
+    margin-bottom: 8px;
+    padding: 8px 12px;
+    background: var(--fg-color, #f5f7fa);
+    border-radius: 4px;
+    border: 1px solid var(--border-color, #e2e6ea);
+}
+
+.account-dialog-context .adc-label {
+    color: var(--text-muted, #687178);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    align-self: center;
+}
+
+.account-dialog-context .adc-value {
+    color: var(--text-color, #1f272e);
+    font-weight: 500;
+}
+
+.account-dialog-context .adc-id {
+    color: var(--text-muted, #687178);
+    font-weight: normal;
+    font-size: 11px;
+}
+
+.account-dialog-preview {
+    margin-top: -4px;
+    margin-bottom: 6px;
+    padding: 6px 10px;
+    background: var(--green-50, #eff8f1);
+    border-left: 3px solid var(--green-500, #2ecc71);
+    color: var(--green-900, #0b5b2e);
+    font-size: 12px;
+    border-radius: 2px;
+    line-height: 1.5;
+}
+
+.account-dialog-commit1-banner {
+    padding: 8px 12px;
+    background: var(--orange-100, #fff4dc);
+    border-left: 3px solid var(--orange-500, #f5a623);
+    color: var(--orange-900, #6a3f00);
+    font-size: 12px;
+    border-radius: 2px;
+    line-height: 1.4;
+    margin-top: 8px;
+}
+
+/* Section 3 polymorphism — muted helper line under "(none)" for
+ * unmapped rows pointing at the two resolution paths. */
+.account-proposal-helper {
+    margin-top: 4px;
+    color: var(--text-muted, #687178);
+    font-size: 11px;
+    font-style: italic;
+    line-height: 1.4;
+}
+
+/* Defensive visibility override for the dialog's editable fields —
+ * Phase D observation: on some Frappe themes the Data / Link input
+ * text renders with a color that matches the input background,
+ * leaving typed values invisible even though the value IS landing in
+ * the control (the live preview updates, and get_values() returns the
+ * typed text). Force explicit text-color on all editable fields in
+ * this dialog. Scoped by data-fieldname so the override doesn't leak
+ * into other forms. */
+[data-fieldname="proposed_account_name"] .form-control,
+[data-fieldname="proposed_parent"] .form-control,
+[data-fieldname="proposed_root_type"] .form-control,
+[data-fieldname="account_type"] .form-control,
+[data-fieldname="reason"] .form-control,
+[data-fieldname="reviewer_notes"] .form-control {
+    color: var(--text-color, #1f272e) !important;
+}
+
+/* In-dialog tree picker (AMB-10 option C). Rolls back the earlier
+ * option D "Browse tree ↗" link in favour of an embedded Windows-
+ * Explorer-style picker inside the AccountResolutionDialog. */
+
+.account-parent-tree-mount {
+    display: flex;
+    flex-direction: column;
+    max-height: 340px;
+    border: 1px solid var(--border-color, #e2e6ea);
+    border-radius: 4px;
+    background: var(--fg-color, #ffffff);
+    margin-top: -4px;
+    overflow: hidden;  /* toolbar sticks, tree area scrolls */
+}
+
+/* Tree toolbar — search + expand/collapse all. Sticky at top of the
+ * mount so it doesn't scroll away when the reviewer walks deep into
+ * the tree. */
+.atp-toolbar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 8px;
+    background: var(--fg-hover, #f2f4f7);
+    border-bottom: 1px solid var(--border-color, #e2e6ea);
+    flex-shrink: 0;
+}
+
+.atp-search-wrap {
+    position: relative;
+    flex: 1 1 auto;
+    max-width: 260px;
+}
+
+.atp-search {
+    width: 100%;
+    padding-right: 24px;
+    font-size: 12px;
+    height: 26px;
+}
+
+.atp-clear-search {
+    position: absolute;
+    right: 4px;
+    top: 50%;
+    transform: translateY(-50%);
+    border: 0;
+    background: transparent;
+    color: var(--text-muted, #687178);
+    font-size: 16px;
+    line-height: 1;
+    padding: 0 4px;
+    cursor: pointer;
+}
+
+.atp-clear-search:hover {
+    color: var(--text-color, #1f272e);
+}
+
+.atp-match-count {
+    font-size: 11px;
+    color: var(--text-muted, #687178);
+    white-space: nowrap;
+}
+
+.atp-toolbar-spacer {
+    flex: 1 1 auto;
+}
+
+.atp-toolbar .btn {
+    font-size: 11px;
+    padding: 2px 8px;
+    height: 24px;
+}
+
+/* Scrollable tree body — toolbar takes its own height; everything
+ * else is scroll area. */
+.account-tree {
+    overflow-y: auto;
+    padding: 4px 0;
+    flex: 1 1 auto;
+}
+
+/* Match highlight — soft yellow so it reads as "search hit" without
+ * clashing with the selected-row blue. */
+.atp-hl {
+    background-color: var(--yellow-100, #fff7cc);
+    color: inherit;
+    padding: 0 1px;
+    border-radius: 2px;
+}
+
+.atp-row.atp-selected .atp-hl {
+    background-color: var(--yellow-200, #ffe88a);
+}
+
+.account-tree-loading,
+.account-tree-empty,
+.account-tree-error {
+    padding: 14px 16px;
+    color: var(--text-muted, #687178);
+    font-size: 12px;
+    font-style: italic;
+}
+
+.account-tree-error {
+    color: var(--red-700, #a51c1c);
+}
+
+.atp-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 10px;
+    font-size: 13px;
+    cursor: pointer;
+    user-select: none;
+    line-height: 1.4;
+    border-radius: 3px;
+    transition: background-color 80ms ease;
+}
+
+.atp-row:hover {
+    background-color: var(--fg-hover, #f2f4f7);
+}
+
+.atp-row.atp-selected {
+    background-color: var(--blue-50, #eff6ff);
+    font-weight: 600;
+    color: var(--blue-900, #0b4d87);
+}
+
+.atp-row.atp-selected:hover {
+    background-color: var(--blue-100, #dbeafe);
+}
+
+.atp-chevron {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 14px;
+    height: 14px;
+    font-size: 9px;
+    color: var(--text-muted, #687178);
+    flex-shrink: 0;
+    cursor: pointer;
+}
+
+.atp-chevron:hover:not(.atp-chevron-placeholder) {
+    color: var(--text-color, #1f272e);
+}
+
+.atp-chevron-placeholder {
+    cursor: default;
+}
+
+.atp-label {
+    flex: 0 0 auto;
+    color: inherit;
+}
+
+.atp-full {
+    flex: 1 1 auto;
+    font-size: 11px;
+    color: var(--text-muted, #8d99a6);
+    font-weight: normal;
+    text-align: right;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 50%;
+}
+
+.atp-row.atp-selected .atp-full {
+    color: var(--blue-700, #1d70c4);
+}
+
+
 /* --- SCR processing dialog (Item 3 Commit 3) ------------------------------
  *
  * Scope note: the panel lives inside a frappe.ui.Dialog opened from the

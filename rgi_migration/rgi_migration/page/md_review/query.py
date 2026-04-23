@@ -998,6 +998,95 @@ def apply_scr_approval_to_decision(
     }
 
 
+def build_account_parent_autocomplete_results(
+    accounts: list[dict],
+) -> list[list[str]]:
+    """Pure formatter for the AccountResolutionDialog parent picker.
+
+    Parallel to :func:`build_account_autocomplete_results` but tailored
+    for parent-account picking (Item 4 Commit 1, SUB-1):
+
+    * Backend filter ensures ``is_group = 1`` and ``root_type = X`` (the
+      decision's ``tally_root_type``), so only group-account candidates
+      in the right branch reach this formatter.
+    * Sort is **depth ASC, account_name ASC** — top-level categories
+      (e.g. "Current Assets - CACSPU") surface before deeply-nested
+      siblings (e.g. "Advance for Expenses - CACSPU" under Current
+      Assets). Reviewers wanted a "tree-ordered" feel without the cost
+      of an actual tree widget (see AMB-10 resolution).
+    * "Depth" is computed **relative to the result set**, not the full
+      COA. A node whose ``parent_account`` is outside the set is treated
+      as depth 0 (effectively the root within this filter). This keeps
+      the first-row pick meaningful when the reviewer has typed a
+      prefix that doesn't cover the literal tree root.
+
+    Description format mirrors ``build_account_autocomplete_results``:
+    ``"<root_type> · under <parent>"``, with fallbacks for rows missing
+    one or both. The frontend renders description as the grey subtitle
+    on the right of the autocomplete row.
+
+    Args:
+        accounts: Rows from ``frappe.get_all("Account", ...)``. Each
+            row needs ``name``, ``parent_account``, ``root_type``.
+            ``account_name`` is optional — falls back to ``name`` for
+            the alpha sort key.
+
+    Returns:
+        List of ``[name, description]`` pairs in (depth, name) order.
+        Empty input → empty list. Rows without a ``name`` are silently
+        dropped (same refusal as the peer formatter).
+    """
+    by_name: dict[str, dict] = {}
+    for a in accounts:
+        n = a.get("name")
+        if n:
+            by_name[n] = a
+
+    def _depth(start: str) -> int:
+        """Walk parent_account chain, counting only steps that stay
+        inside the result set. Cycle-safe via visited set."""
+        d = 0
+        cursor = start
+        visited: set[str] = set()
+        while cursor and cursor not in visited:
+            visited.add(cursor)
+            row = by_name.get(cursor)
+            if row is None:
+                break
+            parent = row.get("parent_account")
+            if not parent or parent not in by_name:
+                break
+            cursor = parent
+            d += 1
+        return d
+
+    annotated: list[tuple[int, str, dict]] = []
+    for a in accounts:
+        name = a.get("name")
+        if not name:
+            continue
+        sort_key = (a.get("account_name") or name or "").lower()
+        annotated.append((_depth(name), sort_key, a))
+
+    annotated.sort(key=lambda t: (t[0], t[1]))
+
+    results: list[list[str]] = []
+    for _depth_val, _sort_key, acc in annotated:
+        name = acc.get("name")
+        parent = (acc.get("parent_account") or "").strip()
+        root = (acc.get("root_type") or "").strip()
+        if parent and root:
+            description = f"{root} \u00b7 under {parent}"
+        elif parent:
+            description = f"under {parent}"
+        elif root:
+            description = root
+        else:
+            description = "(root)"
+        results.append([name, description])
+    return results
+
+
 def apply_scr_rejection_to_decision() -> dict:
     """Decision field updates when an SCR is rejected.
 

@@ -23,6 +23,10 @@
   "proposed_account",
   "proposed_supplier",
   "new_supplier_name",
+  "new_account_name",
+  "new_account_parent",
+  "new_account_root_type",
+  "new_account_is_group",
   "matched_rule",
   "confidence",
   "supplier_match_score",
@@ -140,6 +144,31 @@
    "fieldname": "new_supplier_name",
    "fieldtype": "Data",
    "label": "New Supplier Name (suggestion)"
+  },
+  {
+   "description": "Mapper's suggested Account name for pending_account_creation rows (ABBR already applied). Reviewer's starting point when opening the Create Account dialog. NULL for unmapped rows.",
+   "fieldname": "new_account_name",
+   "fieldtype": "Data",
+   "label": "New Account Name (suggestion)"
+  },
+  {
+   "description": "Mapper's suggested parent Account for pending_account_creation rows (ABBR already applied). NULL for unmapped rows.",
+   "fieldname": "new_account_parent",
+   "fieldtype": "Data",
+   "label": "New Account Parent (suggestion)"
+  },
+  {
+   "description": "Mapper's suggested root_type for pending_account_creation rows. NULL for unmapped rows.",
+   "fieldname": "new_account_root_type",
+   "fieldtype": "Data",
+   "label": "New Account Root Type (suggestion)"
+  },
+  {
+   "default": "0",
+   "description": "Mapper's suggested is_group flag for pending_account_creation rows. Locked to 0 in v1 (reviewer cannot create group accounts via ACR).",
+   "fieldname": "new_account_is_group",
+   "fieldtype": "Check",
+   "label": "New Account Is Group (suggestion)"
   },
   {
    "fieldname": "matched_rule",
