@@ -1083,6 +1083,21 @@
     margin-top: 8px;
 }
 
+/* Item 4 Commit 2 — non-undoable-submit note. Parallel to the
+ * SCR Create-new info banner (.supplier-dialog-note): blue, left-
+ * border accent, informational (not warning). Reminds the reviewer
+ * that submitting the ACR is non-reversible through the Undo toast. */
+.account-dialog-note {
+    padding: 8px 12px;
+    background: var(--blue-50, #eff6ff);
+    border-left: 3px solid var(--blue-500, #2490ef);
+    color: var(--blue-900, #0b4d87);
+    font-size: 12px;
+    border-radius: 2px;
+    line-height: 1.4;
+    margin-top: 8px;
+}
+
 /* Section 3 polymorphism — muted helper line under "(none)" for
  * unmapped rows pointing at the two resolution paths. */
 .account-proposal-helper {

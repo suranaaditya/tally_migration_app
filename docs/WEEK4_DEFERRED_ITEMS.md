@@ -40,38 +40,82 @@ may be moot.
 
 ---
 
-## `reset_parse` does not sweep the SCR child table
+## `reset_parse` does not sweep the SCR / ACR child tables
 
 **Raised:** Item 3 Commit 4 closing smoke (2026-04-22).
-**Target:** Item 7 (session lifecycle hooks) or earlier if a reviewer
-runs into orphan symptoms in the meantime.
+**Scope extended:** Item 4 Commit 1 Phase C (2026-04-23) — confirmed
+ACR child table has the identical gap.
+**Target:** Item 4 Commit 3 (combined fix, both child tables in one
+patch).
 
 **Problem:** `rgi_migration.rgi_migration.doctype.tally_migration_session.tally_migration_session.reset_parse`
 deletes every `Mapping Decision` row for the session and clears the
 parse/map snapshot fields, but it does NOT clear the
-`supplier_creation_requests` child table on the session doc. Any
-SCR rows from a prior run persist; their `source_decisions` CSV
-tokens now reference deleted MD names (orphaned). On re-run of
-`run_mapper`, the child table remains populated with stale history
-while the underlying decisions are freshly minted under new
-MD-YYYY-##### autonames.
+`supplier_creation_requests` OR `account_creation_requests` child
+tables on the session doc. Any SCR / ACR rows from a prior run
+persist; their `source_decisions` CSV tokens now reference deleted
+MD names (orphaned). On re-run of `run_mapper`, the child tables
+remain populated with stale history while the underlying decisions
+are freshly minted under new MD-YYYY-##### autonames.
 
 **Current smoke workaround:** Item 3 closing smoke
 (`scripts/item3_closing_smoke.py`) calls a helper
 `_clear_scr_child_table(session_name)` that writes
 `session.supplier_creation_requests = []` and saves. Reviewers doing
-Reset Parse from the UI do not get this sweep today.
+Reset Parse from the UI do not get this sweep today. No equivalent
+helper exists yet for ACR rows — Item 4 Commit 4 smoke should either
+add a parallel helper or (preferably) rely on the in-product fix
+landing in Commit 3.
 
-**Observed symptoms:** none yet in reviewer flow — orphan SCRs are
-inert (no references point to them from live decisions, and the
-Process-SCR dialog filters to `status=Pending/Failed` which may still
+**Observed symptoms:** none yet in reviewer flow — orphan SCRs/ACRs
+are inert (no references point to them from live decisions, and the
+Process-* dialogs filter to `status=Pending/Failed` which may still
 display stale rows). Worth clearing to avoid confusing the reviewer.
 
-**Fix shape:** add an SCR-table clear inside `reset_parse` between
-the Mapping Decision delete and the `session.save()` — single line
-(`session.set("supplier_creation_requests", [])`). Write a unit
-test that seeds decisions + one SCR, calls `reset_parse`, and asserts
-`len(session.supplier_creation_requests) == 0`.
+**Fix shape (Item 4 Commit 3):** add both child-table clears inside
+`reset_parse` between the Mapping Decision delete and the
+`session.save()`:
+
+```python
+session.set("supplier_creation_requests", [])
+session.set("account_creation_requests", [])
+```
+
+Write a unit test that seeds decisions + one SCR + one ACR, calls
+`reset_parse`, and asserts both child-table lengths are 0.
+
+
+## Phase C deployment playbook — HUP gunicorn workers after `bench build`
+
+**Raised:** Item 4 Commit 1 Phase D (2026-04-23).
+
+**Problem:** `bench build --app X` + `bench --site Y clear-cache` does
+NOT refresh Python module imports held by preloaded gunicorn workers.
+Any commit that adds a new whitelist method or modifies `.py` imports
+will appear to deploy cleanly (pytest green on server, bench console
+resolves names) but fail in the browser with `AttributeError: module
+... has no attribute '<fn_name>'` on 500.
+
+**Already documented** in `docs/mapper_design_notes.md` §5
+"Gunicorn `--preload` + stale Python module cache" — the gotcha and
+`kill -HUP <master-pid>` fix are canonical there. The deferred item
+here is: **fold the HUP step into the standard Phase C deployment
+recipe** so reviewers/operators don't rediscover it each time.
+
+**Proposed recipe (update in session handoff docs + commit-2/3
+Phase C checklists):**
+
+```bash
+scp <modified files> frappe@...:~/frappe-bench/apps/rgi_migration/...
+ssh frappe@... "cd ~/frappe-bench && \
+  bench execute rgi_migration.rgi_migration.setup.create_doctypes.<patch> && \
+  bench build --app rgi_migration && \
+  bench --site erp.jewonline.in clear-cache && \
+  kill -HUP \$(pgrep -f 'gunicorn.*--preload' | head -1)"
+```
+
+The HUP step is a no-op on non-preload gunicorn configs; safe to
+always include. Not a blocker — just QoL for deployment ergonomics.
 
 ---
 

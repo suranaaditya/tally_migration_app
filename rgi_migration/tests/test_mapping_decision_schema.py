@@ -108,6 +108,20 @@ def test_new_account_is_group_field_present(fields_by_name: dict) -> None:
     assert f.get("default") == "0"
 
 
+def test_review_action_enum_includes_account_creation_requested(
+    fields_by_name: dict,
+) -> None:
+    """Item 4 Commit 2: explicit coverage for the new reviewer-initiated
+    workflow state. Narrower than the all-values test so regressions
+    pin the blame to this specific addition."""
+    opts = set(fields_by_name["review_action"]["options"].split("\n"))
+    assert "Account Creation Requested" in opts, (
+        "review_action Select missing 'Account Creation Requested' — "
+        "Item 4 Commit 2's create_account_creation_request writes this "
+        "value and would fail Frappe Select validation without it."
+    )
+
+
 def test_field_order_contains_new_account_fields(doctype: dict) -> None:
     """Item 4 Commit 1: all four new_account_* keys must appear in
     field_order. A field defined without an ordering entry is a silent
@@ -194,8 +208,9 @@ _MAPPER_AND_REVIEWER_REVIEW_ACTIONS = frozenset({
     "Manual Override",
     "Deferred",
     "Skipped",
-    # Reviewer-initiated workflow states (Item 3 Commit 2)
-    "Supplier Creation Requested",
+    # Reviewer-initiated workflow states
+    "Supplier Creation Requested",  # Item 3 Commit 2
+    "Account Creation Requested",   # Item 4 Commit 2
 })
 
 

@@ -249,6 +249,12 @@ class MasterPane {
         // Pending filter excludes these; reviewer's work is done
         // until the SCR approval workflow (Commit 3) runs.
         "Supplier Creation Requested": "done",
+        // Item 4 Commit 2 — parallel state for ACR submits. Same
+        // semantics: reviewer has initiated an Account Creation
+        // Request; approver lifts the decision to Approved via the
+        // Commit 3 workflow. Green indicator so the Pending filter
+        // excludes these.
+        "Account Creation Requested": "done",
         "Approved": "done",
         "Manual Override": "done",
         "Rejected": "muted",
@@ -1549,6 +1555,12 @@ class DetailPane {
                     "Pending Account Creation",
                     "Pending Group Account Resolution",
                     "Pending Supplier Creation",
+                    // Reviewer-initiated acted states — set
+                    // programmatically by the SCR / ACR creation paths,
+                    // not picked manually. Listed here so the Select
+                    // renders cleanly when these values land on a row.
+                    "Supplier Creation Requested",
+                    "Account Creation Requested",
                 ].join("\n"),
                 onchange: () => this._on_section4_change("review_action"),
             },
@@ -2218,32 +2230,42 @@ class DetailPane {
 
     /**
      * Open the AccountResolutionDialog on the current
-     * account-creation-eligible row (Item 4 Commit 1).
+     * account-creation-eligible row.
      *
-     * Commit 1 ships the UI shell only — the onSaved callback is a
-     * placeholder that closes the dialog and shows a "Pending Commit
-     * 2" toast. The real create_account_creation_request RPC wiring
-     * lands in Commit 2.
+     * Item 4 Commit 2: submit wires to
+     * ``create_account_creation_request`` (the dialog itself does
+     * the RPC via its own _submit_create_new helper). The onSaved
+     * callback here runs post-save — shows the plain "Saved" toast
+     * (no Undo; ACR create has side effects that make Undo expensive),
+     * updates the master pane's row state, and fires auto-advance so
+     * the reviewer moves to the next pending row (AMB C2-C).
      */
     _openAccountResolutionDialog() {
         if (this._saving) return;
         const d = this.current_decision;
         if (!d) return;
 
+        const decision_name = this.current_decision_name;
         const dialog = new AccountResolutionDialog({
             decision: d,
             company_abbr: this.session_company_abbr || "",
             erpnext_company: this.session_erpnext_company || "",
-            onSaved: () => {
-                // Commit 1 placeholder — Commit 2 replaces this with
-                // the real create_account_creation_request call path.
-                frappe.show_alert({
-                    message: __(
-                        "Save wiring ships in Commit 2 — dialog UI only " +
-                        "for Commit 1."
-                    ),
-                    indicator: "orange",
-                }, 5);
+            onSaved: async (saved_doc) => {
+                // Mirror _onSupplierResolutionSaved's non-undoable path
+                // (Item 3 Commit 2). ACR Create-new has the same
+                // side-effect profile as SCR Create-new.
+                this._last_saved_decision_name = null;
+                this._last_saved_timestamp = 0;
+
+                if (this.on_save_success) {
+                    this.on_save_success(decision_name, saved_doc || {});
+                }
+
+                this._showSavedToast();
+
+                if (this.on_advance_requested) {
+                    this.on_advance_requested(decision_name);
+                }
             },
         });
         dialog.show();
@@ -3188,19 +3210,21 @@ class AccountResolutionDialog {
                 },
                 {
                     fieldtype: "HTML",
-                    fieldname: "commit1_banner",
+                    fieldname: "non_undoable_banner",
                     options: `
-                        <div class="account-dialog-commit1-banner">
+                        <div class="account-dialog-note">
                             ${__(
-                                "Commit 1 ships this dialog's UI only. " +
-                                "Submit is wired in Commit 2 — for now, " +
-                                "Submit closes with a placeholder toast."
+                                "An Account Creation Request will be added " +
+                                "to this session. The decision stays " +
+                                "Account Creation Requested until an " +
+                                "approver resolves it. This action does " +
+                                "NOT participate in Undo."
                             )}
                         </div>
                     `,
                 },
             ],
-            primary_action_label: __("Submit (Commit 2)"),
+            primary_action_label: __("Submit"),
             primary_action: () => this._on_submit(),
             secondary_action_label: __("Cancel"),
         });
@@ -3308,17 +3332,52 @@ class AccountResolutionDialog {
     }
 
     async _on_submit() {
-        // Commit 1 placeholder. Field-level validation runs first via
-        // get_values() — Frappe's own reqd check blocks empty submits.
+        // Frappe's get_values() returns null if any reqd field is
+        // empty + surfaces its own inline validation. We get past this
+        // line only with name + parent both filled; any deeper
+        // validation (tier, session status, duplicate) lives on the
+        // server per AMB C2-3 / C2-5.
         const values = this._dialog.get_values();
-        if (!values) return;  // validation failed; Frappe already surfaced the error
+        if (!values) return;
 
-        // Commit 2 replaces this with a real
-        // create_account_creation_request RPC. For now, hand control
-        // back to the DetailPane's onSaved placeholder which shows a
-        // toast explaining the state.
-        this._dialog.hide();
-        await this.onSaved(values);
+        const name = (values.proposed_account_name || "").trim();
+        const parent = (values.proposed_parent || "").trim();
+        if (!name || !parent) {
+            // Belt-and-suspenders — should be unreachable given Frappe's
+            // reqd enforcement on both fields.
+            frappe.msgprint({
+                title: __("Missing fields"),
+                message: __("Account name and parent are both required."),
+                indicator: "orange",
+            });
+            return;
+        }
+
+        try {
+            const r = await frappe.call({
+                method: "rgi_migration.rgi_migration.page.md_review.md_review.create_account_creation_request",
+                args: {
+                    decision_name: this.decision.name,
+                    proposed_account_name: name,
+                    proposed_parent: parent,
+                    account_type: values.account_type || "",
+                    reason: values.reason || "",
+                    reviewer_notes: values.reviewer_notes || "",
+                },
+            });
+            const resp = r.message || {};
+            this._dialog.hide();
+            // Hand the saved decision dict to the caller so it can
+            // update the master pane's row indicator + auto-advance.
+            await this.onSaved(resp.decision || {});
+        } catch (err) {
+            // Frappe renders whitelist-method errors in its own dialog
+            // automatically (guard failures land as readable messages —
+            // tier mismatch, duplicate ACR, session frozen, etc.).
+            // Dialog stays open so the reviewer can edit + retry.
+            // eslint-disable-next-line no-console
+            console.error("create_account_creation_request failed", err);
+        }
     }
 }
 

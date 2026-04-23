@@ -548,6 +548,38 @@ design doc because it's infrastructure state, not design.
 If browser verification of any custom Desk page surfaces only
 these Socket.IO errors + no other errors, treat as green.
 
+### Frappe DocType JSON idempotency drift after `audit_phase_*` patches
+
+When `audit_phase_*_patches` adds fields or modifies Select options on
+an existing DocType via `doc.save(ignore_permissions=True)`, Frappe
+side-effects include **re-writing the DocType's JSON file on disk**.
+The re-written JSON may differ from the committed repo version in:
+
+- **`field_order` ordering** — new fields get appended to the end of
+  the array rather than grouped logically. Example from Item 4
+  Commit 1: we committed `new_account_name` next to `new_supplier_name`
+  (logical group); Frappe rewrote it with the four `new_account_*`
+  entries appended after `naming_series` at the very bottom.
+- **`description` wording** — our Python-side kwargs may use slightly
+  different prose than the JSON. Frappe's save normalises to whatever
+  is in the in-memory doc, which was populated from our kwargs.
+- **Unicode escapes** — committed em-dash `—` can come back as
+  `\u2014`. Same glyph, different encoding.
+
+**Do NOT commit this drift back to the repo.** The committed JSON is
+canonical; `audit_phase_*_patches` on a fresh bench will reproduce the
+same drift, and committing it would mask real future changes under
+"Frappe re-wrote cosmetics." Treat the post-patch JSON on disk as
+Frappe-side artefact that's fine to ignore in `git status`.
+
+If a future patch pass genuinely changes canonical schema — new field
+structure, new enum value, etc. — edit the **repo JSON file directly**
+so the committed version reflects the intent, and let the imperative
+patch in `audit_phase_*_patches` do the live bench-state alignment.
+The two should agree on what's added; they won't agree on ordering.
+
+First observed: Item 4 Commit 1 (2026-04-23).
+
 ### Generator refusals gate on `tier`, not `review_action` or `final_*`
 
 Caught twice during Item 2 (Commit 4.2 smoke-scope design). The three

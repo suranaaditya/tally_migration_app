@@ -28,6 +28,7 @@ from rgi_migration.rgi_migration.page.md_review.query import (
     apply_supplier_resolution,
     build_account_autocomplete_results,
     build_account_parent_autocomplete_results,
+    build_acr_payload,
     build_scr_payload,
     build_supplier_autocomplete_results,
     build_supplier_doc_payload,
@@ -558,6 +559,17 @@ def save_supplier_resolution(decision_name, final_supplier, reviewer_notes):
 
 _SCR_CREATE_REFUSED_STATUSES = frozenset({"Submitted", "Cancelled"})
 
+# Item 4 Commit 2 — session status guard for ACR creation. Identical to
+# SCR; hoisted to a separate frozenset for clarity + future divergence
+# (e.g., if ACR creation ever needs to allow Submitted for late edits).
+_ACR_CREATE_REFUSED_STATUSES = frozenset({"Submitted", "Cancelled"})
+
+# Mapping Decision tiers that can feed an Account Creation Request.
+# Enforced server-side per AMB C2-3 — defense against a stale dialog
+# state where the reviewer tier-changed the row between open and
+# submit.
+_ACR_ELIGIBLE_TIERS = frozenset({"pending_account_creation", "unmapped"})
+
 
 def _cleanup_pending_scr_on_transition(decision_doc, previous_review_action):
     """Delete orphan Pending SCR row when a decision transitions out of
@@ -743,6 +755,170 @@ def create_supplier_creation_request(
     return {
         "status": "ok",
         "scr_row_name": new_row.name if new_row else None,
+        "decision": decision_doc.as_dict(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Item 4 Commit 2 — Account Creation Request creation
+# ---------------------------------------------------------------------------
+
+
+@frappe.whitelist()
+def create_account_creation_request(
+    decision_name,
+    proposed_account_name,
+    proposed_parent,
+    account_type=None,
+    reason=None,
+    reviewer_notes=None,
+):
+    """Create-new path submit for account-side decisions (Item 4 Commit 2).
+
+    Parallel to :func:`create_supplier_creation_request`. Inserts an
+    Account Creation Request child row on the decision's parent session,
+    flags the decision as ``Account Creation Requested``, and appends
+    the reviewer's note to the decision's reviewer_notes via the
+    shared chronology-header helper.
+
+    Design decisions (per Phase A):
+
+    * Guard: session status not in {Submitted, Cancelled}.
+    * Guard: decision tier ∈ {pending_account_creation, unmapped}
+      (AMB C2-3). The AccountResolutionDialog client-side gate enforces
+      this too, but a reviewer who left the dialog open while changing
+      the row's tier elsewhere would bypass the UI gate — server
+      enforcement is the trustworthy boundary.
+    * Guard: no existing ACR row on this session references this
+      decision (AMB C2-5). Any-status refusal matches Item 3 — a
+      reviewer who wants to redo must mark the existing ACR Rejected
+      first.
+    * ``proposed_root_type`` and ``proposed_is_group`` are server-owned
+      (AMB C2-B, C2-1); client payload is IGNORED for those two fields
+      even if present in the RPC call.
+    * NO Undo cache write — parallel to Item 3 Commit 2's SCR
+      Create-new path. ACR creation has side effects (child row
+      insert, decision state transition) that make a clean undo
+      expensive; reviewer recovery is manual via desk form or the
+      ACR rejection workflow (Commit 3).
+
+    Args:
+        decision_name: The Mapping Decision being resolved.
+        proposed_account_name: Reviewer-typed bare Account name
+            (without the ABBR suffix — Frappe's autoname appends it).
+        proposed_parent: Reviewer-picked parent Account (ABBR-suffixed,
+            e.g. "Current Assets - CACSPU"). Must be a group account in
+            the right root_type branch; the dialog's tree picker
+            constrains this client-side, but Commit 3's approve_acr
+            will re-validate at Account-insert time.
+        account_type: Optional ERPNext Account.account_type.
+        reason: Reviewer's justification for creating the account.
+        reviewer_notes: Verbatim reviewer note. Written as-is to ACR;
+            chronology-header-prepended to the Mapping Decision.
+
+    Returns:
+        ``{"status": "ok", "acr_row_name": str, "decision": dict}``.
+
+    Raises:
+        frappe.ValidationError: guard failure (status, tier, duplicate,
+            empty name, empty parent).
+        frappe.DoesNotExistError: decision or session missing.
+        frappe.PermissionError: caller lacks session read permission.
+    """
+    if not proposed_account_name or not str(proposed_account_name).strip():
+        frappe.throw("Proposed account name is required.")
+    proposed_account_name = str(proposed_account_name).strip()
+
+    if not proposed_parent or not str(proposed_parent).strip():
+        frappe.throw("Proposed parent account is required.")
+    proposed_parent = str(proposed_parent).strip()
+
+    decision_doc = frappe.get_doc("Mapping Decision", decision_name)
+    session_doc = frappe.get_doc(
+        "Tally Migration Session", decision_doc.session
+    )
+    session_doc.check_permission("read")
+
+    # Guard A: session status.
+    if session_doc.status in _ACR_CREATE_REFUSED_STATUSES:
+        frappe.throw(
+            f"Session {session_doc.name!r} has status {session_doc.status!r}; "
+            f"Account Creation Request creation is no longer allowed "
+            f"(refused statuses: {sorted(_ACR_CREATE_REFUSED_STATUSES)}).",
+        )
+
+    # Guard B: decision tier (AMB C2-3).
+    if decision_doc.tier not in _ACR_ELIGIBLE_TIERS:
+        frappe.throw(
+            f"Decision {decision_name!r} has tier {decision_doc.tier!r}; "
+            f"Account Creation Request can only be created on tiers "
+            f"{sorted(_ACR_ELIGIBLE_TIERS)}.",
+        )
+
+    # Guard C: duplicate refusal on any-status ACR (AMB C2-5). Parses
+    # source_decisions as tokens so MD-2026-00001 doesn't false-positive
+    # a match in MD-2026-00010 etc.
+    for existing in (session_doc.account_creation_requests or []):
+        tokens = parse_source_decisions_csv(existing.source_decisions)
+        if decision_name in tokens:
+            frappe.throw(
+                f"An ACR row already exists for decision "
+                f"{decision_name!r} on this session (ACR status: "
+                f"{existing.status!r}). Edit it on the Session form, "
+                f"or mark the existing row Rejected before creating a "
+                f"new one.",
+            )
+
+    # Build child-row payload via pure-core helper. Pure function reads
+    # root_type from decision (AMB C2-B) and forces is_group=0
+    # (AMB C2-1).
+    payload = build_acr_payload(
+        decision=decision_doc.as_dict(),
+        proposed_account_name=proposed_account_name,
+        proposed_parent=proposed_parent,
+        account_type=account_type,
+        reason=reason,
+        reviewer_notes=reviewer_notes,
+    )
+    session_doc.append("account_creation_requests", payload)
+
+    # Dual-write reviewer_notes (AMB C2-2):
+    #   ACR row: verbatim (payload above; no chronology header).
+    #   Mapping Decision: chronology-header-prepended via the shared
+    #   helper so the decision's reviewer_notes accumulates audit
+    #   trail just like save_decision / create_supplier_creation_request.
+    current = decision_doc.as_dict()
+    decision_doc.reviewer_notes = _apply_chronology_header(
+        stored_notes=current.get("reviewer_notes") or "",
+        new_input=reviewer_notes or "",
+        session_user=frappe.session.user,
+        now_str=frappe.utils.now_datetime().strftime("%Y-%m-%d %H:%M"),
+    )
+    # "Account Creation Requested" is the reviewer-has-acted state per
+    # the new enum value added in Commit 2's schema migration. Paired
+    # with the frontend's REVIEW_ACTION_STATE "done" mapping so the
+    # indicator renders green and the Pending filter excludes the row.
+    # tier intentionally unchanged — still pending_account_creation /
+    # unmapped; Commit 3's approve_acr is what lifts tier to
+    # tier1_exact.
+    decision_doc.review_action = "Account Creation Requested"
+
+    session_doc.save(ignore_permissions=True)
+    decision_doc.save(ignore_permissions=True)
+    frappe.db.commit()
+
+    # Resolve the freshly-inserted ACR row's name for the response.
+    # ACR DocType has no autoname; Frappe generates a hash-like name
+    # on save. Last row in the child list is the new one.
+    new_row = (
+        session_doc.account_creation_requests[-1]
+        if session_doc.account_creation_requests
+        else None
+    )
+
+    return {
+        "status": "ok",
+        "acr_row_name": new_row.name if new_row else None,
         "decision": decision_doc.as_dict(),
     }
 

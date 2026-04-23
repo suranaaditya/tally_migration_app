@@ -914,6 +914,88 @@ def build_scr_payload(
     }
 
 
+def build_acr_payload(
+    *,
+    decision: dict,
+    proposed_account_name: str,
+    proposed_parent: str,
+    account_type: str | None,
+    reason: str | None,
+    reviewer_notes: str | None,
+) -> dict:
+    """Pure implementation of the Account Creation Request child-row payload.
+
+    Called by the ``create_account_creation_request`` Frappe wrapper
+    when the reviewer submits the AccountResolutionDialog (Item 4
+    Commit 2). Returns a dict suitable for
+    ``session.append("account_creation_requests", <dict>)``.
+
+    Server-owned invariants (never accept from client):
+
+    * ``status = "Pending"`` — initial state; approve_acr in Commit 3
+      transitions to Created / Failed / Skipped.
+    * ``proposed_is_group = 0`` — v1 locks ACR to leaf-account creation
+      (AMB C2-1). Reviewers can't create group accounts through the
+      migration workflow; groups belong to COA scaffolding set up
+      before migration.
+    * ``proposed_root_type`` — derived from the source decision
+      (AMB C2-B). Prefers ``new_account_root_type`` (mapper's
+      suggestion for pending_account_creation rows), falls back to
+      ``tally_root_type`` (always populated by the parser). Client's
+      readonly Data field value is ignored.
+    * ``source_decisions`` — the source decision's name. CSV column on
+      the ACR child DocType; future merge workflows (multiple ACRs
+      for decisions that need the same new Account) would concat
+      decision names with a comma separator.
+
+    Args:
+        decision: Source Mapping Decision as dict. Must contain
+            ``name``, ``tally_name``, ``new_account_root_type``,
+            ``tally_root_type``.
+        proposed_account_name: Reviewer-typed bare name (no ABBR
+            suffix). Must be non-empty (caller validates).
+        proposed_parent: Reviewer-picked parent Account (ABBR-suffixed,
+            e.g. "Current Assets - CACSPU"). Must be non-empty
+            (caller validates). Guaranteed by the dialog tree picker
+            to be a group account in the right root_type branch.
+        account_type: Optional ERPNext Account.account_type value
+            (Bank / Receivable / Tax / etc.). Empty string / None =
+            not set. Full validation deferred to Commit 3's
+            approve_acr (AMB C2-4).
+        reason: Reviewer's justification for creating the account.
+            Visible to the approver on the ACR child row.
+        reviewer_notes: Verbatim reviewer note. The SCR pattern stores
+            it as-is on the ACR; the decision's reviewer_notes
+            separately gets a chronology-header-prepended version
+            (AMB C2-2) handled by the Frappe wrapper.
+
+    Returns:
+        Dict with keys matching the ACR DocType fields.
+    """
+    # AMB C2-B: backend is the single source of truth for root_type.
+    # Decision-driven chain: mapper's creation suggestion first,
+    # parser's tally_root_type as fallback. Both are pre-populated by
+    # run_mapper; at least one is always set for real Tally ledgers.
+    root_type = (
+        (decision.get("new_account_root_type") or "").strip()
+        or (decision.get("tally_root_type") or "").strip()
+        or ""
+    )
+
+    return {
+        "status": "Pending",
+        "proposed_account_name": proposed_account_name,
+        "proposed_parent": proposed_parent,
+        "proposed_root_type": root_type,
+        # AMB C2-1: server forces leaf-creation regardless of client.
+        "proposed_is_group": 0,
+        "account_type": (account_type or "").strip() or None,
+        "reason": (reason or "").strip() or None,
+        "reviewer_notes": reviewer_notes or None,
+        "source_decisions": decision.get("name") or "",
+    }
+
+
 def parse_source_decisions_csv(raw: str | None) -> list[str]:
     """Split a ``source_decisions`` CSV string into clean tokens.
 

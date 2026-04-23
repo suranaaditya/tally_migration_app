@@ -11,6 +11,7 @@
   "proposed_parent",
   "proposed_root_type",
   "proposed_is_group",
+  "account_type",
   "reason",
   "source_rules",
   "source_decisions",
@@ -53,6 +54,12 @@
    "fieldname": "proposed_is_group",
    "fieldtype": "Check",
    "label": "Proposed Is Group"
+  },
+  {
+   "description": "Optional ERPNext Account.account_type value (Bank, Receivable, Payable, Tax, etc.). Validated by Frappe at ACR-approval time when the Account is actually created (not here).",
+   "fieldname": "account_type",
+   "fieldtype": "Data",
+   "label": "Account Type"
   },
   {
    "fieldname": "reason",

@@ -728,9 +728,77 @@ def audit_phase_3_patches() -> dict:
     else:
         results["Mapping Decision"] = "no change (already present)"
 
+    # ---- Mapping Decision: add "Account Creation Requested" to
+    # review_action Select enum (Item 4 Commit 2) ----
+    #
+    # Parallel to Item 3 Commit 2's addition of "Supplier Creation
+    # Requested" — gives the reviewer a distinct state between "I've
+    # initiated an account creation request" (reviewer done with this
+    # row) and "Pending Account Creation" (untouched). REVIEW_ACTION_STATE
+    # on the frontend maps this to the green "done" indicator so the
+    # row drops from the Pending filter.
+    decision_reload = frappe.get_doc("DocType", "Mapping Decision")
+    review_action_field = None
+    for f in decision_reload.fields:
+        if f.fieldname == "review_action":
+            review_action_field = f
+            break
+    if review_action_field is not None:
+        existing_options = (review_action_field.options or "").split("\n")
+        if "Account Creation Requested" not in existing_options:
+            # Append at end — new reviewer-initiated states group naturally
+            # after the "Supplier Creation Requested" entry that was
+            # appended by Item 3 Commit 2. Frappe stores Select options as
+            # a newline-delimited string.
+            review_action_field.options = (
+                (review_action_field.options or "")
+                + "\nAccount Creation Requested"
+            )
+            decision_reload.save(ignore_permissions=True)
+            results["Mapping Decision"] += (
+                "; added review_action enum 'Account Creation Requested'"
+            )
+        else:
+            results["Mapping Decision"] += (
+                "; review_action enum already includes 'Account Creation Requested'"
+            )
+
+    # ---- Account Creation Request: add account_type field (Item 4
+    # Commit 2, AMB C2-A) ----
+    #
+    # The AccountResolutionDialog collects an optional account_type
+    # from a 32-value ERPNext enum (Bank / Cash / Receivable / Tax /
+    # etc.). The ACR child DocType didn't have a place to store it —
+    # this block adds a Data field, parallel to how Item 4 Commit 1's
+    # patch block extended Mapping Decision.
+    #
+    # Data (not Select) for the same reason new_account_root_type is
+    # Data: insulates us from future ERPNext enum additions that would
+    # otherwise reject existing ACR rows on Select-option validation.
+    acr = frappe.get_doc("DocType", "Account Creation Request")
+    existing_acr = {f.fieldname for f in acr.fields}
+    if "account_type" not in existing_acr:
+        acr.append(
+            "fields",
+            {
+                "fieldname": "account_type",
+                "label": "Account Type",
+                "fieldtype": "Data",
+                "description": (
+                    "Optional ERPNext Account.account_type value (Bank, "
+                    "Receivable, Payable, Tax, etc.). Validated by Frappe "
+                    "at ACR-approval time when the Account is actually "
+                    "created (not here)."
+                ),
+            },
+        )
+        acr.save(ignore_permissions=True)
+        results["Account Creation Request"] = "added: account_type"
+    else:
+        results["Account Creation Request"] = "no change (already present)"
+
     # ---- Informational: no drift worth patching this pass ----
     results["Company Abbreviation"] = "no drift"
-    results["Account Creation Request"] = "no drift"
     results["Supplier Alias Rule"] = (
         "checklist clean (naming divergence with my spec is Aditya's "
         "Batch-2 design choice, honored)"
