@@ -804,6 +804,69 @@ either by using unique-suffix names per test (e.g., timestamp or
 UUID) or by deleting the Supplier explicitly on cleanup. Do NOT rely
 on Frappe's generic autoname-suffix fallback — it won't fire here.
 
+### Frappe Link-type silent-null on FK miss
+
+Surfaced during Item 6 (commit `709eae2`, Tier-2 composite matcher).
+
+A DocField declared `fieldtype: Link, options: <DocType>` is enforced
+as a foreign key at insert time. If the value does not exist as a
+`name` in the target DocType, Frappe **silently nullifies** the field
+— no exception, no warning, no `parse_warnings` entry. The row is
+inserted with that field set to `NULL`, which then breaks any
+downstream reader that expects a populated value.
+
+Reference case: Item 6's `matched_rule` field on Mapping Decision was
+initially declared `Link → Mapping Rule` on the assumption that every
+match would reference a rule's autoname. When the Tier-2 composite
+matcher started emitting subtier labels (e.g., `tier2:fuzzy:85`) as
+the `matched_rule` provenance string, every such insert silently
+nulled the field. Diagnostics that read `matched_rule` got `None` and
+broke; there was no error to grep for.
+
+Rule: any field that may carry **non-FK values** — subtier labels,
+classification codes, synthetic provenance strings, free-form tags —
+MUST be declared `fieldtype: Data`, never `Link`. The only fields
+that should be `Link` are ones where every emitted value is
+guaranteed to be an existing `name` in the target DocType.
+
+Test protocol when introducing a new provenance-style field: before
+committing the JSON, insert a row with a synthetic value and confirm
+via `frappe.db.sql("SELECT <field> FROM tab<DocType>")` that the
+value persisted, not that `doc.<field>` returned it (ORM may mask the
+nullification depending on the read path).
+
+### Config-default changes don't propagate to persisted state
+
+Surfaced during Item 6 Phase D (commit `709eae2`, fuzzy threshold
+tuning).
+
+When a mapper/parser default changes in code — thresholds (fuzzy 75
+→ 80), scorer selection, filter whitelists, sort order, etc. — any
+live Tally Migration Session whose Mapping Decisions were written
+**before** the deploy still reflects the **pre-deploy** default. The
+only way to materialize the new default in a live session is to run
+Reset Parse + Run Mapper (or Re-map per row) on that session; the
+new default does not retroactively rewrite existing rows.
+
+Reference case: Item 6 Phase C cleanup re-mapped a session while the
+default fuzzy threshold was 75; Phase D shipped 80 as the new
+default. The next QA sweep surfaced a 77% row in the session that
+looked like a threshold violation — it was actually a pre-deploy
+artefact from the Phase C re-map. Reset Parse + Run Mapper cleared
+it.
+
+Implications:
+1. Any config change that affects mapper output must be paired with a
+   migration playbook entry: "all live sessions require Reset Parse
+   + Run Mapper before QA".
+2. QA anomalies on live sessions after a config change should first
+   be checked for pre-deploy staleness (compare session's
+   `modified` timestamp against the deploy commit time) before
+   being treated as code bugs.
+3. CI tests see the new default immediately because they build
+   fresh sessions; they will not catch this class of regression.
+   Surface it via a smoke-test checklist, not a pytest assertion.
+
 ---
 
 ## 6. Supplier matching (Tier-1)
