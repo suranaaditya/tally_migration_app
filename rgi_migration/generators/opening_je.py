@@ -143,6 +143,21 @@ def _select_contributions(
         if ledger is None or not _is_main_je_eligible(ledger):
             continue
         if d.tier in _REFUSAL_TIERS:
+            # Item 4 Commit 3: reviewer-Rejected ACR rows silent-skip the
+            # refusal gate. Parallel to oit_csv._enforce_preflight /
+            # advance_je._enforce_preflight (Item 3 Commit 3) — tier
+            # stays mapper-authoritative; review_action=Rejected means
+            # drop from the main-JE pipeline without refusing OR
+            # contributing. Scoped to the account-side refusal tiers
+            # (unmapped, pending_account_creation) — a Rejected
+            # group_refused or anti_pattern_blocked row is not expected
+            # from the workflow and stays a refusal (defensive: those
+            # are mapper-structural, not reviewer-dismissible).
+            if (
+                d.tier in {"unmapped", "pending_account_creation"}
+                and getattr(d, "review_action", None) == "Rejected"
+            ):
+                continue
             refusals.append(d)
             continue
         if d.tier not in _ELIGIBLE_TIERS:

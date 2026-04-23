@@ -131,14 +131,34 @@ app_license = "mit"
 # Document Events
 # ---------------
 # Hook on document methods and events
+#
+# Item 4 Commit 3: Account + Supplier on_trash hooks nullify our app's
+# Link references (Mapping Decision.final_account / proposed_account /
+# final_supplier / proposed_supplier, ACR.created_account,
+# SCR.created_supplier) BEFORE Frappe's check_if_doc_is_linked runs.
+# Without this, Frappe refuses to delete an Account / Supplier that
+# any migration-era decision or request row ever referenced, blocking
+# legitimate post-migration COA / vendor-master cleanup.
+#
+# Execution order (verified from frappe/model/delete_doc.py):
+#   doc.run_method("on_trash")     # ← our hook nullifies our Links
+#   doc.flags.in_delete = True
+#   doc.run_method("on_change")
+#   check_if_doc_is_linked(doc)    # ← now finds zero references, allows delete
+#
+# If delete fails after our nullification (e.g., links from OTHER apps
+# still block), Frappe rolls back the transaction and our nullification
+# is reverted too — so we never end up with nullified Links on a
+# still-alive Account/Supplier. Safe.
 
-# doc_events = {
-# 	"*": {
-# 		"on_update": "method",
-# 		"on_cancel": "method",
-# 		"on_trash": "method"
-# 	}
-# }
+doc_events = {
+	"Account": {
+		"on_trash": "rgi_migration.hooks_impl.clear_account_links",
+	},
+	"Supplier": {
+		"on_trash": "rgi_migration.hooks_impl.clear_supplier_links",
+	},
+}
 
 # Scheduled Tasks
 # ---------------

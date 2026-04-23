@@ -294,6 +294,22 @@ def reset_parse(session_name: str) -> dict[str, Any]:
 			(session_name,),
 		)
 
+	# Item 4 Commit 3 (AMB-8 combined fix): sweep both child tables.
+	# Orphan SCR / ACR rows from prior runs now reference deleted
+	# Mapping Decision names; keeping them would leave stale entries
+	# in the Process-* panel dialogs. Wipe-all-statuses semantic per
+	# AMB C3-7 — Reset Parse is a "start over" action; Created /
+	# Skipped / Failed rows are all equally stale once their source
+	# MDs are gone.
+	#
+	# session.set("<table>", []) rather than row-by-row delete —
+	# Frappe's save() below persists the child-row deletion in a
+	# single transaction.
+	scr_swept = len(session.supplier_creation_requests or [])
+	acr_swept = len(session.account_creation_requests or [])
+	session.set("supplier_creation_requests", [])
+	session.set("account_creation_requests", [])
+
 	# Clear all parse + map snapshot fields. error_log preserved.
 	session.status = _STATUS_DRAFT
 	session.started_at = None
@@ -318,7 +334,12 @@ def reset_parse(session_name: str) -> dict[str, Any]:
 	session.save(ignore_permissions=True)
 	frappe.db.commit()
 
-	return {"status": "ok", "deleted_count": deleted_count}
+	return {
+		"status": "ok",
+		"deleted_count": deleted_count,
+		"scr_swept": scr_swept,
+		"acr_swept": acr_swept,
+	}
 
 
 # ---------------------------------------------------------------------------

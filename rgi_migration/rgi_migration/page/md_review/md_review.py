@@ -20,6 +20,8 @@ from rgi_migration.rgi_migration.page.md_review.query import (
     SAVE_DECISION_FIELDS,
     SUPPLIER_SAVE_FIELDS,
     _apply_chronology_header,
+    apply_acr_approval_to_decision,
+    apply_acr_rejection_to_decision,
     apply_bulk_approve,
     apply_decision_save,
     apply_decision_undo,
@@ -27,6 +29,7 @@ from rgi_migration.rgi_migration.page.md_review.query import (
     apply_scr_rejection_to_decision,
     apply_supplier_resolution,
     build_account_autocomplete_results,
+    build_account_doc_payload,
     build_account_parent_autocomplete_results,
     build_acr_payload,
     build_scr_payload,
@@ -928,16 +931,36 @@ def create_account_creation_request(
 # ---------------------------------------------------------------------------
 
 
-_SCR_ACTION_ALLOWED_STATUSES = frozenset({"Pending", "Failed"})
-_SCR_ACTION_TERMINAL_STATUSES = frozenset({"Created", "Skipped"})
+# Item 4 Commit 3: hoisted from _SCR_ACTION_* to generic names so the
+# ACR approve/reject path (approve_acr / reject_acr) can share the
+# same status semantics. Both SCR and ACR use the same lifecycle:
+# Pending/Failed -> Created/Skipped. Keeping the _SCR_ACTION_*
+# aliases below for backward compatibility with any extant imports.
+_APPROVAL_ALLOWED_STATUSES = frozenset({"Pending", "Failed"})
+_APPROVAL_TERMINAL_STATUSES = frozenset({"Created", "Skipped"})
+_SCR_ACTION_ALLOWED_STATUSES = _APPROVAL_ALLOWED_STATUSES
+_SCR_ACTION_TERMINAL_STATUSES = _APPROVAL_TERMINAL_STATUSES
 
 
-def _append_scr_error_log(scr_row, block: str) -> None:
-    """Append a timestamped block to an SCR's error_log. Matches the
-    ``session.error_log`` convention from the Week-3 generators."""
-    existing = scr_row.error_log or ""
+def _append_error_log_block(row_doc, block: str) -> None:
+    """Append a timestamped block to an SCR or ACR child row's
+    ``error_log`` field. Matches the ``session.error_log`` convention
+    from the Week-3 generators.
+
+    Generic over row type (Item 4 Commit 3 refactor) — was
+    ``_append_scr_error_log`` originally. Works on any DocType with an
+    ``error_log`` attribute. SCR-specific alias preserved below for
+    readability at SCR call sites and to minimise touch-zone on the
+    Item 3 approval code.
+    """
+    existing = row_doc.error_log or ""
     separator = "\n\n" if existing else ""
-    scr_row.error_log = f"{existing}{separator}{block}"
+    row_doc.error_log = f"{existing}{separator}{block}"
+
+
+# SCR-era name kept as a thin alias. Both SCR and ACR approval paths
+# call the generic form directly in new code.
+_append_scr_error_log = _append_error_log_block
 
 
 def _iso_timestamp() -> str:
@@ -1269,6 +1292,361 @@ def _find_scr_row(session_doc, row_name: str):
         if r.name == row_name:
             return r
     return None
+
+
+# ---------------------------------------------------------------------------
+# Item 4 Commit 3 — ACR approval / rejection workflow
+# ---------------------------------------------------------------------------
+
+
+@frappe.whitelist()
+def approve_acr(session_name, acr_row_name):
+    """Approve an Account Creation Request: create the Account record
+    and write back to the source Mapping Decision(s).
+
+    Parallel to :func:`approve_scr`. Flow:
+
+      1. Load session + locate the ACR child row by name.
+      2. Validate ACR.status in {Pending, Failed}; refuse on
+         Created / Skipped with explicit message.
+      3. Validate required fields on the ACR row (proposed_account_name,
+         proposed_parent, proposed_root_type).
+      4. Build Account payload (account_type conditionally included
+         per AMB C3-13).
+      5. Insert Account via Frappe ORM. Read the RESOLVED
+         Account.name post-insert — ERPNext's ``Account.autoname()``
+         controller appends ``' - <abbr>'`` and may auto-suffix on
+         naming collision. On failure, set ACR.status=Failed, append
+         error_log block, source decisions untouched.
+      6. Update ACR: status=Created, created_account=<resolved>,
+         error_log preserved as audit trail on retry success.
+      7. Loop each decision name in ACR.source_decisions CSV:
+         set final_account + tier=tier1_exact + review_action=Approved
+         via :func:`apply_acr_approval_to_decision`. Mid-loop failures
+         continue + aggregate errors into error_log (reviewer retries
+         via Approve-on-Failed to complete partial state).
+
+    Returns:
+        ``{"status": "ok", "created_account": str,
+           "updated_decisions": [str, ...], "acr_status": "Created"}``
+        on success.
+        ``{"status": "failed", "acr_status": "Failed",
+           "error": str, "error_type": str}`` on Account.insert failure
+        (200 OK — caller inspects ``status`` field; not an exception
+        because the UI needs to refresh the ACR row's error_log).
+    """
+    session_doc = frappe.get_doc("Tally Migration Session", session_name)
+    session_doc.check_permission("read")
+
+    acr_row = _find_acr_row(session_doc, acr_row_name)
+    if acr_row is None:
+        frappe.throw(
+            f"ACR row {acr_row_name!r} not found on session {session_name!r}."
+        )
+
+    if acr_row.status in _APPROVAL_TERMINAL_STATUSES:
+        if acr_row.status == "Created":
+            frappe.throw(
+                f"ACR already created Account {acr_row.created_account!r}. "
+                f"Edit that Account directly, or create a new ACR if you "
+                f"need a different record."
+            )
+        frappe.throw(
+            f"ACR was Rejected ({acr_row.status!r}). Create a new ACR on "
+            f"the decision if you've changed your mind."
+        )
+
+    # Required-field validation — belt-and-suspenders over what the
+    # Commit 2 create path already enforces. An ACR row whose proposed_*
+    # fields were wiped externally would otherwise surface as an
+    # ambiguous Frappe insert error.
+    for field in ("proposed_account_name", "proposed_parent", "proposed_root_type"):
+        if not acr_row.get(field) or not str(acr_row.get(field)).strip():
+            frappe.throw(
+                f"ACR {field} is empty — cannot approve. Edit the ACR row "
+                f"on the Session form to fill required fields."
+            )
+
+    # Company from the session — not on the ACR row because
+    # session-scoped. erpnext_company is required by Frappe Account
+    # insert; fall back to the bench's default company if somehow
+    # missing (shouldn't happen post-Item-2).
+    company = session_doc.erpnext_company
+    if not company:
+        frappe.throw(
+            f"Session {session_name!r} has no erpnext_company set; "
+            f"cannot create Account without a company scope."
+        )
+
+    # --- Build + insert Account ---
+    payload = build_account_doc_payload(
+        acr_row=acr_row.as_dict(),
+        company=company,
+    )
+    try:
+        new_account = frappe.get_doc(payload).insert(ignore_permissions=True)
+        resolved_name = new_account.name
+    except Exception as exc:
+        # Mark ACR Failed with context; source decisions untouched.
+        block = (
+            f"[{_iso_timestamp()}] approve_acr failed creating Account: "
+            f"{type(exc).__name__}: {exc}"
+        )
+        _append_error_log_block(acr_row, block)
+        acr_row.status = "Failed"
+        session_doc.save(ignore_permissions=True)
+        frappe.db.commit()
+        return {
+            "status": "failed",
+            "acr_status": "Failed",
+            "error": str(exc),
+            "error_type": type(exc).__name__,
+        }
+
+    # --- Update ACR on Account.insert success ---
+    acr_row.status = "Created"
+    acr_row.created_account = resolved_name
+    # Leave error_log intact on retry success — prior-attempt history
+    # is useful audit trail.
+
+    # --- Loop source decisions ---
+    decision_names = parse_source_decisions_csv(acr_row.source_decisions)
+    updated: list[str] = []
+    per_decision_errors: list[str] = []
+
+    if not decision_names:
+        _append_error_log_block(
+            acr_row,
+            f"[{_iso_timestamp()}] approve succeeded — Account "
+            f"{resolved_name!r} created — but no source_decisions CSV "
+            f"tokens were found. ACR has no Mapping Decisions to write "
+            f"back to. Check the ACR's source_decisions field manually.",
+        )
+
+    for md_name in decision_names:
+        try:
+            decision_doc = frappe.get_doc("Mapping Decision", md_name)
+            updates = apply_acr_approval_to_decision(
+                resolved_account_name=resolved_name
+            )
+            for field, value in updates.items():
+                decision_doc.set(field, value)
+            decision_doc.save(ignore_permissions=True)
+            updated.append(md_name)
+        except Exception as exc:  # noqa: BLE001 — aggregate, don't mask
+            per_decision_errors.append(
+                f"  - {md_name}: {type(exc).__name__}: {exc}"
+            )
+
+    if per_decision_errors:
+        block = (
+            f"[{_iso_timestamp()}] approve succeeded for Account "
+            f"{resolved_name!r} but {len(per_decision_errors)}/"
+            f"{len(decision_names)} source decision update(s) failed:\n"
+            + "\n".join(per_decision_errors)
+            + "\nRetry via Approve-on-Failed to complete the remaining writes."
+        )
+        _append_error_log_block(acr_row, block)
+
+    session_doc.save(ignore_permissions=True)
+    frappe.db.commit()
+
+    return {
+        "status": "ok",
+        "acr_status": "Created",
+        "created_account": resolved_name,
+        "updated_decisions": updated,
+        "failed_decisions": len(per_decision_errors),
+    }
+
+
+@frappe.whitelist()
+def reject_acr(session_name, acr_row_name):
+    """Reject an Account Creation Request: close the ACR
+    (status=Skipped) and flag source decisions as
+    review_action=Rejected.
+
+    Parallel to :func:`reject_scr`. Per AMB C3-10: decision.tier stays
+    at the mapper-authoritative value (``pending_account_creation``
+    or ``unmapped``). Generator refusal gate in ``opening_je`` was
+    extended in Item 4 Commit 3 to SKIP rows where
+    review_action=Rejected, so rejected rows silently drop out of the
+    main-JE pipeline without contributing or refusing.
+
+    Validates ACR.status in {Pending, Failed} (reject accepted on
+    both — Failed ACR that reviewer gives up retrying goes Skipped).
+
+    Returns ``{"status": "ok", "acr_status": "Skipped",
+               "updated_decisions": [...]}``.
+    """
+    session_doc = frappe.get_doc("Tally Migration Session", session_name)
+    session_doc.check_permission("read")
+
+    acr_row = _find_acr_row(session_doc, acr_row_name)
+    if acr_row is None:
+        frappe.throw(
+            f"ACR row {acr_row_name!r} not found on session {session_name!r}."
+        )
+
+    if acr_row.status in _APPROVAL_TERMINAL_STATUSES:
+        if acr_row.status == "Created":
+            frappe.throw(
+                f"Cannot reject — ACR already created Account "
+                f"{acr_row.created_account!r}. Delete that Account from "
+                f"the chart of accounts if you need to undo."
+            )
+        frappe.throw("ACR was already rejected (status=Skipped).")
+
+    acr_row.status = "Skipped"
+
+    decision_names = parse_source_decisions_csv(acr_row.source_decisions)
+    updated: list[str] = []
+    for md_name in decision_names:
+        try:
+            decision_doc = frappe.get_doc("Mapping Decision", md_name)
+            updates = apply_acr_rejection_to_decision()
+            for field, value in updates.items():
+                decision_doc.set(field, value)
+            decision_doc.save(ignore_permissions=True)
+            updated.append(md_name)
+        except Exception as exc:  # noqa: BLE001
+            _append_error_log_block(
+                acr_row,
+                f"[{_iso_timestamp()}] reject: decision {md_name} update "
+                f"failed: {type(exc).__name__}: {exc}",
+            )
+
+    session_doc.save(ignore_permissions=True)
+    frappe.db.commit()
+
+    return {
+        "status": "ok",
+        "acr_status": "Skipped",
+        "updated_decisions": updated,
+    }
+
+
+@frappe.whitelist()
+def list_pending_acrs(session_name):
+    """Return Pending + Failed ACR rows for the Session form panel
+    dialog. Created / Skipped rows are excluded — they're done.
+
+    Parallel to :func:`list_pending_scrs`. Ordered by creation (oldest
+    first; FIFO) so reviewer processes the queue sequentially — same
+    ergonomic as SCR.
+
+    Returned dicts carry the ACR row fields plus ``row_name`` (Frappe's
+    child-row docname used for approve_acr / reject_acr dispatch).
+    """
+    session_doc = frappe.get_doc("Tally Migration Session", session_name)
+    session_doc.check_permission("read")
+
+    rows = []
+    for r in (session_doc.account_creation_requests or []):
+        if r.status not in _APPROVAL_ALLOWED_STATUSES:
+            continue
+        rows.append({
+            "row_name": r.name,
+            "status": r.status,
+            "proposed_account_name": r.proposed_account_name,
+            "proposed_parent": r.proposed_parent,
+            "proposed_root_type": r.proposed_root_type,
+            "proposed_is_group": r.proposed_is_group,
+            "account_type": r.account_type,
+            "reason": r.reason,
+            "reviewer_notes": r.reviewer_notes,
+            "source_decisions": r.source_decisions,
+            "error_log": r.error_log,
+            "creation": str(r.creation) if r.creation else None,
+        })
+    rows.sort(key=lambda x: x.get("creation") or "")
+    return rows
+
+
+def _find_acr_row(session_doc, row_name: str):
+    """Look up an ACR child row by its Frappe-generated name."""
+    for r in (session_doc.account_creation_requests or []):
+        if r.name == row_name:
+            return r
+    return None
+
+
+@frappe.whitelist()
+def bulk_approve_acrs(session_name, acr_row_names):
+    """Approve a batch of ACR rows in one RPC.
+
+    Parallel to :func:`bulk_approve_scrs`. Wraps ``approve_acr`` per
+    row, isolating failures — a single-row DuplicateEntryError or
+    LinkValidationError doesn't block the remaining ACRs. Each row's
+    final state (Created / Failed) reflects its own outcome.
+
+    Reviewer workflow: Select-All in the ACR processing panel → click
+    "Approve Selected" → one RPC kicks off the batch. Response carries
+    per-row outcomes so the UI can display which succeeded and which
+    need follow-up (parallel to the SCR bulk flow introduced in
+    Item 3).
+
+    Args:
+        session_name: The session.
+        acr_row_names: JSON-serialised list of ACR row names over HTTP;
+            accept either the JSON string or a raw list for testability
+            (same normalisation as the SCR bulk path).
+
+    Returns:
+        ``{"ok": [<row_name>, ...],
+           "failed": [{"acr": <row_name>, "error": <str>}, ...]}``
+    """
+    row_names = _parse_whitelist_list_arg(acr_row_names)
+    ok: list[str] = []
+    failed: list[dict] = []
+    for row_name in row_names:
+        try:
+            result = approve_acr(
+                session_name=session_name, acr_row_name=row_name,
+            )
+            if result.get("status") == "ok":
+                ok.append(row_name)
+            else:
+                # Account.insert failure inside approve_acr returns
+                # {"status": "failed", ...} rather than raising (so the
+                # UI can refresh the Failed-row's error_log display).
+                # Surface as a bulk-row failure without breaking the
+                # loop.
+                failed.append({
+                    "acr": row_name,
+                    "error": (
+                        f"{result.get('error_type', 'Error')}: "
+                        f"{result.get('error', 'Account insert failed')}"
+                    ),
+                })
+        except Exception as exc:  # noqa: BLE001 — aggregate, don't mask
+            failed.append({
+                "acr": row_name,
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+    return {"ok": ok, "failed": failed}
+
+
+@frappe.whitelist()
+def bulk_reject_acrs(session_name, acr_row_names):
+    """Reject a batch of ACR rows in one RPC. Parallel to
+    :func:`bulk_reject_scrs`.
+
+    Returns ``{"ok": [...], "failed": [...]}``.
+    """
+    row_names = _parse_whitelist_list_arg(acr_row_names)
+    ok: list[str] = []
+    failed: list[dict] = []
+    for row_name in row_names:
+        try:
+            reject_acr(session_name=session_name, acr_row_name=row_name)
+            ok.append(row_name)
+        except Exception as exc:  # noqa: BLE001
+            failed.append({
+                "acr": row_name,
+                "error": f"{type(exc).__name__}: {exc}",
+            })
+    return {"ok": ok, "failed": failed}
 
 
 @frappe.whitelist()

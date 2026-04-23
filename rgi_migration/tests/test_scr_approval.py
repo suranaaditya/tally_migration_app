@@ -255,15 +255,27 @@ def test_approve_scr_reads_resolved_name_post_insert(md_review_py: str) -> None:
 
 def test_approve_scr_has_failed_status_retry_allowed(md_review_py: str) -> None:
     """AMB Q2 / Q5: Approve on Failed = retry. The allowed-statuses
-    frozenset must include both Pending AND Failed."""
+    frozenset must include both Pending AND Failed.
+
+    Item 4 Commit 3 refactor: the canonical set was renamed from
+    ``_SCR_ACTION_ALLOWED_STATUSES`` to the generic
+    ``_APPROVAL_ALLOWED_STATUSES`` so SCR and ACR share lifecycle
+    semantics. The SCR-era alias still exports for any extant
+    importers.
+    """
     m = re.search(
-        r"_SCR_ACTION_ALLOWED_STATUSES\s*=\s*frozenset\(\{([^}]+)\}\)",
+        r"_APPROVAL_ALLOWED_STATUSES\s*=\s*frozenset\(\{([^}]+)\}\)",
         md_review_py,
     )
     assert m is not None
     body = m.group(1)
     assert "Pending" in body
     assert "Failed" in body
+    # Alias preserved
+    assert (
+        "_SCR_ACTION_ALLOWED_STATUSES = _APPROVAL_ALLOWED_STATUSES"
+        in md_review_py
+    )
 
 
 def test_approve_scr_aggregates_mid_loop_errors(md_review_py: str) -> None:

@@ -1169,6 +1169,113 @@ def build_account_parent_autocomplete_results(
     return results
 
 
+def build_account_doc_payload(
+    *,
+    acr_row: dict,
+    company: str,
+) -> dict:
+    """Build the ERPNext Account insert payload from an ACR row.
+
+    Called by ``approve_acr`` when transitioning a Pending / Failed
+    ACR to Created — the payload goes straight into
+    ``frappe.get_doc({...}).insert()``.
+
+    Field mapping:
+
+    * ``account_name`` = ACR.proposed_account_name (bare; ERPNext's
+      ``Account.autoname()`` controller appends ``' - <abbr>'``).
+    * ``parent_account`` = ACR.proposed_parent.
+    * ``root_type`` = ACR.proposed_root_type (explicit even though
+      ERPNext infers from parent — matches what the reviewer
+      confirmed in the dialog; protects against parent re-parenting
+      drift between ACR create and approve).
+    * ``is_group`` = ACR.proposed_is_group (always 0 in v1 per
+      AMB C2-1, but we honor whatever the row stores).
+    * ``company`` = session's erpnext_company (caller passes in;
+      not on ACR row because session-scoped).
+    * ``account_type`` — conditional key per AMB C3-13. Included only
+      when ACR.account_type is non-empty so the payload doesn't
+      carry noise into Frappe's defaults.
+
+    Args:
+        acr_row: The ACR child row as a dict. Must contain
+            ``proposed_account_name``, ``proposed_parent``,
+            ``proposed_root_type``, ``proposed_is_group``.
+            ``account_type`` is optional.
+        company: ERPNext Company name (session.erpnext_company).
+
+    Returns:
+        Dict suitable for ``frappe.get_doc({...}).insert()``.
+    """
+    payload: dict = {
+        "doctype": "Account",
+        "account_name": (acr_row.get("proposed_account_name") or "").strip(),
+        "parent_account": (acr_row.get("proposed_parent") or "").strip(),
+        "root_type": (acr_row.get("proposed_root_type") or "").strip(),
+        "is_group": int(acr_row.get("proposed_is_group") or 0),
+        "company": company,
+    }
+    # AMB C3-13: conditional inclusion — empty account_type means
+    # "reviewer left it blank", not "reviewer wants the empty string".
+    # Including an empty account_type confuses some Frappe validators
+    # that distinguish NULL from ''.
+    account_type = (acr_row.get("account_type") or "").strip()
+    if account_type:
+        payload["account_type"] = account_type
+    return payload
+
+
+def apply_acr_approval_to_decision(
+    *,
+    resolved_account_name: str,
+) -> dict:
+    """Decision field updates when an ACR is approved.
+
+    Lifts the source decision(s) out of their refusal-tier state:
+    generators will now see ``tier="tier1_exact"`` (pointing at the
+    freshly-created Account) and ``review_action="Approved"``.
+    Reviewer's master-pane indicator flips green; the row drops from
+    the Pending filter.
+
+    ``resolved_account_name`` is the Account's DocType name AS
+    CREATED by Frappe — may differ from the ACR's
+    ``proposed_account_name + ' - <abbr>'`` if a naming collision
+    triggered a suffix. Always read post-insert; never trust the
+    proposed name.
+
+    Per AMB C3-10: ``tier1_exact`` is correct for both source tiers
+    (``pending_account_creation`` where the mapper had a suggestion
+    AND ``unmapped`` where it didn't). Post-approval, the decision
+    points at a real Account — the tier honestly describes "exact
+    name match in the COA" regardless of how we got there.
+    """
+    return {
+        "final_account": resolved_account_name,
+        "tier": "tier1_exact",
+        "review_action": "Approved",
+    }
+
+
+def apply_acr_rejection_to_decision() -> dict:
+    """Decision field updates when an ACR is rejected.
+
+    ``review_action`` flips to ``Rejected``; ``tier`` stays at the
+    mapper-authoritative value (``pending_account_creation`` or
+    ``unmapped``) — the mapper can't "unmap" a decision just because
+    the reviewer said no. Generator refusal gates in ``opening_je``
+    were extended in Item 4 Commit 3 to SKIP rejected rows rather
+    than refuse, so Rejected-with-refusal-tier is generator-friendly.
+
+    ``final_account`` is explicitly cleared — if a prior pass had
+    speculatively set one, the reviewer's latest intent (Rejected)
+    takes precedence.
+    """
+    return {
+        "review_action": "Rejected",
+        "final_account": None,
+    }
+
+
 def apply_scr_rejection_to_decision() -> dict:
     """Decision field updates when an SCR is rejected.
 

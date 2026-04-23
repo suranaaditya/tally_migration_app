@@ -66,6 +66,7 @@ def _decision(
     opening_dr: float = 0.0,
     opening_cr: float = 0.0,
     tally_root_type: str = "Asset",
+    review_action: str = "Pending",
 ) -> MappedDecision:
     return MappedDecision(
         tally_name=tally_name,
@@ -75,7 +76,7 @@ def _decision(
         opening_cr=opening_cr,
         tier=tier,
         proposed_account=proposed_account,
-        review_action="Pending",
+        review_action=review_action,
         matched_rule=matched_rule,
         confidence=1.0,
     )
@@ -481,3 +482,109 @@ def test_header_fields_are_opening_entry_draft() -> None:
     assert h["title"] == "Opening Entry - CACSPU - FY2026-2027"
     # No docstatus in header → defaults to Draft (0). Never auto-submit.
     assert "docstatus" not in h
+
+
+# ---------------------------------------------------------------------------
+# Item 4 Commit 3 — Rejected ACR rows silent-skip the refusal gate
+# (AMB C3-8). Parallel to oit_csv / advance_je's Item 3 Commit 3 behavior
+# for Rejected supplier rows.
+# ---------------------------------------------------------------------------
+
+
+def test_rejected_unmapped_row_silent_skips_not_refuses() -> None:
+    """A reviewer who Rejects an unmapped ACR means "give up on this
+    ledger; don't block the generator." The main JE builds successfully
+    even with an otherwise-refusing unmapped row, because the Rejected
+    review_action triggers silent-skip."""
+    ledgers = [
+        _ledger("Cash", opening_dr=100.0, tally_id="1"),
+        _ledger("RejectedGhost", opening_dr=999.0, tally_id="2"),
+    ]
+    decisions = [
+        _decision("Cash", tier="tier1_exact",
+                  proposed_account="Cash - CACSPU",
+                  tally_id="1", opening_dr=100.0),
+        # Rejected unmapped row — would normally refuse, but silent-skip
+        # kicks in. Balances: main JE has Cash (Dr 100) + Temp Opening
+        # absorbs the residual, no refusal raised.
+        _decision("RejectedGhost", tier="unmapped",
+                  proposed_account=None,
+                  tally_id="2", opening_dr=999.0,
+                  review_action="Rejected"),
+    ]
+    # Should NOT raise.
+    payload = build_je_payload(tb=_tb(ledgers), decisions=decisions, **_BUILD_KW)
+    # Only Cash contributes; RejectedGhost silent-skipped.
+    assert payload.contributions_count == 1
+    accounts_in_je = {r["account"] for r in payload.rows}
+    assert "Cash - CACSPU" in accounts_in_je
+
+
+def test_rejected_pending_account_creation_silent_skips() -> None:
+    """Parallel case for pending_account_creation rows (mapper-tagged
+    as needing a new Account). Reviewer Rejects via the ACR workflow →
+    silent-skip in main JE."""
+    ledgers = [
+        _ledger("Cash", opening_dr=100.0, tally_id="1"),
+        _ledger("RejectedPAC", opening_dr=500.0, tally_id="2"),
+    ]
+    decisions = [
+        _decision("Cash", tier="tier1_exact",
+                  proposed_account="Cash - CACSPU",
+                  tally_id="1", opening_dr=100.0),
+        _decision("RejectedPAC", tier="pending_account_creation",
+                  proposed_account=None,
+                  tally_id="2", opening_dr=500.0,
+                  review_action="Rejected"),
+    ]
+    payload = build_je_payload(tb=_tb(ledgers), decisions=decisions, **_BUILD_KW)
+    assert payload.contributions_count == 1
+
+
+def test_pending_unmapped_row_still_refuses_when_not_rejected() -> None:
+    """Guardrail: only review_action=Rejected triggers silent-skip.
+    A plain unmapped+Pending row (reviewer hasn't acted) still refuses
+    — we must NOT accidentally silent-skip every unmapped row."""
+    ledgers = [_ledger("Mystery", opening_dr=50.0, tally_id="1")]
+    decisions = [
+        _decision("Mystery", tier="unmapped",
+                  proposed_account=None,
+                  tally_id="1", opening_dr=50.0,
+                  review_action="Pending"),
+    ]
+    with pytest.raises(MainJEGenerationError) as exc:
+        build_je_payload(tb=_tb(ledgers), decisions=decisions, **_BUILD_KW)
+    assert "unmapped" in str(exc.value)
+
+
+def test_pending_account_creation_still_refuses_when_not_rejected() -> None:
+    """Parallel guardrail for the pending_account_creation tier."""
+    ledgers = [_ledger("Mystery", opening_dr=50.0, tally_id="1")]
+    decisions = [
+        _decision("Mystery", tier="pending_account_creation",
+                  proposed_account=None,
+                  tally_id="1", opening_dr=50.0,
+                  review_action="Pending"),
+    ]
+    with pytest.raises(MainJEGenerationError) as exc:
+        build_je_payload(tb=_tb(ledgers), decisions=decisions, **_BUILD_KW)
+    assert "pending account creation" in str(exc.value)
+
+
+def test_rejected_group_refused_still_refuses_not_silent_skipped() -> None:
+    """The silent-skip is scoped to the reviewer-actionable refusal
+    tiers: unmapped + pending_account_creation. A group_refused or
+    anti_pattern_blocked row is a mapper-structural decision; the
+    reviewer shouldn't be able to bypass it via Reject. Guard against
+    future drift where the scope accidentally widens."""
+    ledgers = [_ledger("GroupRefused", opening_dr=50.0, tally_id="1")]
+    decisions = [
+        _decision("GroupRefused", tier="group_refused",
+                  proposed_account=None,
+                  tally_id="1", opening_dr=50.0,
+                  review_action="Rejected"),
+    ]
+    with pytest.raises(MainJEGenerationError) as exc:
+        build_je_payload(tb=_tb(ledgers), decisions=decisions, **_BUILD_KW)
+    # Rejected status didn't bypass the refusal — still a refusal.
+    assert "refused by group validator" in str(exc.value)

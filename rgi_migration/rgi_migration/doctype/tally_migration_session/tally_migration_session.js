@@ -62,9 +62,26 @@ frappe.ui.form.on("Tally Migration Session", {
             );
         }
 
+        // Process Account Creation Requests — parallel panel dialog for
+        // Item 4 Commit 3 ACR approvals. Same mental model as SCR:
+        // lists Pending + Failed rows, per-row Approve / Reject, Retry
+        // on Failed. Approve creates the ERPNext Account and writes
+        // back to source decisions; Reject marks decisions Rejected
+        // (opening_je silent-skips them per AMB C3-8).
+        const acr_count = (frm.doc.account_creation_requests || []).filter(
+            (r) => r.status === "Pending" || r.status === "Failed"
+        ).length;
+        if (acr_count > 0) {
+            frm.add_custom_button(
+                __("Process Account Creation Requests ({0})", [acr_count]),
+                () => openACRProcessingDialog(frm),
+            );
+        }
+
         // Reset Parse — visible when the session has moved past Draft (and
         // is not Submitted). Drops all Mapping Decisions for the session
         // and resets snapshot fields. error_log is preserved for audit.
+        // Item 4 Commit 3 (AMB-8) also sweeps SCR + ACR child tables.
         const reset_allowed_from = new Set([
             "Parsing", "Parsed", "Mapping", "Reviewing",
             "Generating", "Generated", "Failed", "Cancelled",
@@ -74,8 +91,9 @@ frappe.ui.form.on("Tally Migration Session", {
                 frappe.confirm(
                     __(
                         "This will delete every Mapping Decision for this session " +
-                        "and reset status to Draft. Reviewer work on these " +
-                        "decisions will be lost. Continue?"
+                        "and clear both the Supplier and Account Creation Request " +
+                        "child tables. Status resets to Draft. Reviewer work on " +
+                        "these decisions will be lost. Continue?"
                     ),
                     () => {
                         frappe.call({
@@ -87,11 +105,16 @@ frappe.ui.form.on("Tally Migration Session", {
                             freeze_message: __("Clearing decisions..."),
                             callback: (r) => {
                                 if (r.message && r.message.status === "ok") {
+                                    const msg = __(
+                                        "Deleted {0} decisions; swept {1} SCR(s) and {2} ACR(s). Status now Draft.",
+                                        [
+                                            r.message.deleted_count,
+                                            r.message.scr_swept || 0,
+                                            r.message.acr_swept || 0,
+                                        ],
+                                    );
                                     frappe.show_alert({
-                                        message: __(
-                                            "Deleted {0} decisions — status now Draft.",
-                                            [r.message.deleted_count]
-                                        ),
+                                        message: msg,
                                         indicator: "orange",
                                     }, 7);
                                     frm.reload_doc();
@@ -540,6 +563,459 @@ function doSCRAction(frm, row_name, method, label, dialog) {
                 ).length;
                 if (remaining > 0) {
                     openSCRProcessingDialog(frm);
+                }
+            });
+        },
+    });
+}
+
+
+// ===========================================================================
+// ACR processing dialog (Item 4 Commit 3)
+// ===========================================================================
+//
+// Parallel to the SCR panel: lists Pending + Failed Account Creation
+// Requests for a session with per-row Approve / Reject. Approve calls
+// approve_acr (creates Account via Frappe ORM, captures resolved name,
+// writes back to source decisions); Reject calls reject_acr (marks
+// decisions Rejected; opening_je silent-skips them per AMB C3-8).
+//
+// Styles live inlined below (scoped `.acr-panel`) because md_review.css
+// is gated on the md-review Page controller — Session form doesn't
+// load it. Design intentionally mirrors .scr-panel so reviewers feel
+// at home between the two dialogs.
+
+function openACRProcessingDialog(frm) {
+    frappe.call({
+        method:
+            "rgi_migration.rgi_migration.page.md_review.md_review.list_pending_acrs",
+        args: { session_name: frm.doc.name },
+        callback: (r) => {
+            const rows = (r && r.message) || [];
+            if (!rows.length) {
+                frappe.show_alert({
+                    message: __("No pending or failed ACRs on this session."),
+                    indicator: "blue",
+                }, 3);
+                return;
+            }
+            renderACRDialog(frm, rows);
+        },
+    });
+}
+
+function renderACRDialog(frm, rows) {
+    const dialog = new frappe.ui.Dialog({
+        title: __("Account Creation Requests — {0}", [rows.length]),
+        size: "large",
+        fields: [
+            {
+                fieldtype: "HTML",
+                fieldname: "acr_grid",
+            },
+        ],
+    });
+
+    const $body = dialog.get_field("acr_grid").$wrapper;
+    $body.html(renderACRGridHTML(rows));
+    attachACRActions($body, frm, dialog);
+
+    dialog.show();
+}
+
+// Scoped styles for the ACR panel. Identical palette / spacing to the
+// SCR panel so the two feel like one design family. Prefix `acr-` to
+// avoid class-name collisions with the SCR panel (both dialogs can
+// legitimately be open simultaneously if the reviewer opens one then
+// navigates without closing).
+const ACR_PANEL_STYLES = `
+<style>
+.acr-panel { font-size: 13px; color: var(--text-color, #1f272e); }
+.acr-panel * { box-sizing: border-box; }
+
+/* Bulk-action bar — Item 4 Commit 3 Phase-D iteration. Mirror of
+ * the SCR bulk bar so reviewers see identical mechanics across both
+ * panels: Select All checkbox + per-row checkbox + bulk buttons. */
+.acr-panel .acr-bulk-bar {
+    position: sticky; top: 0; z-index: 2;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; margin-bottom: 12px;
+    background: var(--fg-color, #fafbfc);
+    border: 1px solid var(--border-color, #e2e6ea);
+    border-radius: 6px;
+}
+.acr-panel .acr-select-all-label {
+    display: inline-flex; align-items: center; gap: 8px; margin: 0;
+    font-size: 13px; font-weight: 500; cursor: pointer; user-select: none;
+}
+.acr-panel .acr-select-all { width: 16px; height: 16px; cursor: pointer; margin: 0; }
+.acr-panel .acr-bulk-actions { display: flex; gap: 8px; }
+.acr-panel .acr-bulk-count { font-variant-numeric: tabular-nums; font-weight: 600; }
+
+.acr-panel .acr-row-list {
+    display: flex; flex-direction: column; gap: 10px;
+}
+
+.acr-panel .acr-row {
+    display: grid;
+    grid-template-columns: 24px 1fr auto;
+    grid-template-areas:
+        "check head   actions"
+        "check body   actions";
+    gap: 4px 14px;
+    padding: 14px 16px;
+    background: #fff;
+    border: 1px solid var(--border-color, #e2e6ea);
+    border-radius: 6px;
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+.acr-panel .acr-row:hover {
+    border-color: var(--blue-400, #7aa5d2);
+    box-shadow: 0 1px 3px rgba(0,0,0,.04);
+}
+.acr-panel .acr-row.is-selected {
+    border-color: var(--blue-500, #2490ef);
+    background: var(--blue-50, #eff6ff);
+}
+
+.acr-panel .acr-row-select {
+    grid-area: check;
+    width: 16px; height: 16px; cursor: pointer; margin: 2px 0 0 0;
+}
+
+.acr-panel .acr-row-head {
+    grid-area: head;
+    display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+}
+.acr-panel .acr-status-badge {
+    display: inline-block;
+    padding: 2px 8px; font-size: 10px; font-weight: 700;
+    border-radius: 10px; letter-spacing: 0.4px; text-transform: uppercase;
+    line-height: 1.6;
+}
+.acr-panel .acr-status-badge.acr-pending {
+    background: var(--orange-100, #fff1d4); color: var(--orange-700, #8a5a00);
+}
+.acr-panel .acr-status-badge.acr-failed {
+    background: var(--red-100, #fde2e2); color: var(--red-700, #a51c1c);
+}
+.acr-panel .acr-row-name {
+    font-size: 14px; font-weight: 600; color: var(--text-color, #1f272e);
+    line-height: 1.3; flex: 1 1 auto; word-break: break-word;
+}
+
+.acr-panel .acr-row-body {
+    grid-area: body;
+    display: flex; flex-wrap: wrap; gap: 4px 20px;
+    font-size: 12px; color: var(--text-muted, #687178);
+    margin-top: 2px;
+}
+.acr-panel .acr-meta { display: inline-flex; gap: 4px; align-items: baseline; }
+.acr-panel .acr-meta-k { text-transform: uppercase; font-size: 10px; letter-spacing: 0.3px; color: var(--text-muted, #8d99a6); }
+.acr-panel .acr-meta-v { color: var(--text-color, #495057); font-weight: 500; }
+.acr-panel .acr-meta-v.acr-notes { font-style: italic; font-weight: normal; color: var(--text-muted, #687178); }
+
+.acr-panel .acr-error-preview {
+    grid-column: head / actions;
+    margin-top: 6px; padding: 6px 10px;
+    background: var(--red-50, #fdf2f2);
+    border-left: 3px solid var(--red-500, #dc3545);
+    color: var(--red-900, #4c1010); font-size: 11px;
+    font-family: var(--font-stack-monospace, monospace);
+    white-space: pre-wrap; border-radius: 2px;
+    max-height: 90px; overflow-y: auto;
+}
+
+.acr-panel .acr-row-actions {
+    grid-area: actions;
+    display: flex; gap: 6px; align-self: start;
+}
+.acr-panel .acr-row-actions .btn { white-space: nowrap; }
+</style>
+`;
+
+function renderACRGridHTML(rows) {
+    const rowHTML = (r) => {
+        const status_badge = r.status === "Failed"
+            ? `<span class="acr-status-badge acr-failed">${__("Failed")}</span>`
+            : `<span class="acr-status-badge acr-pending">${__("Pending")}</span>`;
+        const notes = (r.reviewer_notes || "").slice(0, 140);
+        const reason = (r.reason || "").slice(0, 140);
+        const error_preview = r.error_log
+            ? `<div class="acr-error-preview">${frappe.utils.escape_html(
+                (r.error_log || "").split("\n").slice(-4).join("\n")
+              )}</div>`
+            : "";
+
+        // Headline is the proposed bare account name. Subtitle in the
+        // body meta row carries the parent + root type + source decision.
+        const headline = r.proposed_account_name || "(no name)";
+
+        const meta_parts = [];
+        meta_parts.push(`
+            <span class="acr-meta">
+                <span class="acr-meta-k">${__("Parent")}</span>
+                <span class="acr-meta-v">${frappe.utils.escape_html(r.proposed_parent || "(none)")}</span>
+            </span>
+        `);
+        meta_parts.push(`
+            <span class="acr-meta">
+                <span class="acr-meta-k">${__("Root")}</span>
+                <span class="acr-meta-v">${frappe.utils.escape_html(r.proposed_root_type || "-")}</span>
+            </span>
+        `);
+        if (r.account_type) {
+            meta_parts.push(`
+                <span class="acr-meta">
+                    <span class="acr-meta-k">${__("Type")}</span>
+                    <span class="acr-meta-v">${frappe.utils.escape_html(r.account_type)}</span>
+                </span>
+            `);
+        }
+        meta_parts.push(`
+            <span class="acr-meta">
+                <span class="acr-meta-k">${__("From")}</span>
+                <span class="acr-meta-v">${frappe.utils.escape_html(r.source_decisions || "-")}</span>
+            </span>
+        `);
+        if (reason) {
+            meta_parts.push(`
+                <span class="acr-meta">
+                    <span class="acr-meta-k">${__("Reason")}</span>
+                    <span class="acr-meta-v acr-notes">${frappe.utils.escape_html(reason)}</span>
+                </span>
+            `);
+        }
+        if (notes) {
+            meta_parts.push(`
+                <span class="acr-meta">
+                    <span class="acr-meta-k">${__("Notes")}</span>
+                    <span class="acr-meta-v acr-notes">${frappe.utils.escape_html(notes)}</span>
+                </span>
+            `);
+        }
+
+        return `
+            <div class="acr-row" data-row-name="${frappe.utils.escape_html(r.row_name)}">
+                <input type="checkbox" class="acr-row-select" aria-label="${__("Select for bulk action")}" />
+                <div class="acr-row-head">
+                    ${status_badge}
+                    <span class="acr-row-name">${frappe.utils.escape_html(headline)}</span>
+                </div>
+                <div class="acr-row-body">
+                    ${meta_parts.join("")}
+                    ${error_preview}
+                </div>
+                <div class="acr-row-actions">
+                    <button class="btn btn-default btn-sm acr-btn-reject" type="button">${__("Reject")}</button>
+                    <button class="btn btn-primary btn-sm acr-btn-approve" type="button">
+                        ${r.status === "Failed" ? __("Retry Approve") : __("Approve")}
+                    </button>
+                </div>
+            </div>
+        `;
+    };
+
+    const bulk_bar = `
+        <div class="acr-bulk-bar">
+            <label class="acr-select-all-label">
+                <input type="checkbox" class="acr-select-all" />
+                <span>${__("Select all")} (${rows.length})</span>
+            </label>
+            <div class="acr-bulk-actions">
+                <button class="btn btn-default btn-sm acr-bulk-reject" type="button" disabled>
+                    ${__("Reject Selected")} (<span class="acr-bulk-count">0</span>)
+                </button>
+                <button class="btn btn-primary btn-sm acr-bulk-approve" type="button" disabled>
+                    ${__("Approve Selected")} (<span class="acr-bulk-count">0</span>)
+                </button>
+            </div>
+        </div>
+    `;
+
+    return `
+        ${ACR_PANEL_STYLES}
+        <div class="acr-panel">
+            ${bulk_bar}
+            <div class="acr-row-list">${rows.map(rowHTML).join("")}</div>
+        </div>
+    `;
+}
+
+function attachACRActions($body, frm, dialog) {
+    // --- Per-row actions ---
+    $body.find(".acr-btn-approve").on("click", (e) => {
+        const $row = $(e.currentTarget).closest(".acr-row");
+        const row_name = $row.data("row-name");
+        const account_name = $row.find(".acr-row-name").text().trim();
+        const parent = (($row.find(".acr-meta").eq(0).find(".acr-meta-v").text()) || "").trim();
+        frappe.confirm(
+            __(
+                "Create Account {0} under {1}? Source decision(s) will be Approved.",
+                [`<strong>${frappe.utils.escape_html(account_name)}</strong>`,
+                 `<strong>${frappe.utils.escape_html(parent)}</strong>`]
+            ),
+            () => doACRAction(frm, row_name, "approve_acr", dialog),
+        );
+    });
+    $body.find(".acr-btn-reject").on("click", (e) => {
+        const $row = $(e.currentTarget).closest(".acr-row");
+        const row_name = $row.data("row-name");
+        frappe.confirm(
+            __(
+                "Reject this ACR? Source decision(s) will be marked Rejected. " +
+                "opening_je will silent-skip them (no refusal, no contribution)."
+            ),
+            () => doACRAction(frm, row_name, "reject_acr", dialog),
+        );
+    });
+
+    // --- Checkbox + bulk-action wiring (mirror of SCR panel,
+    //     added Phase D iteration when reviewer asked for parity).
+    const $select_all = $body.find(".acr-select-all");
+    const $row_checks = $body.find(".acr-row-select");
+    const $bulk_approve = $body.find(".acr-bulk-approve");
+    const $bulk_reject = $body.find(".acr-bulk-reject");
+
+    function refresh_bulk_bar() {
+        const selected_count = $body.find(".acr-row-select:checked").length;
+        $body.find(".acr-bulk-count").text(selected_count);
+        $bulk_approve.prop("disabled", selected_count === 0);
+        $bulk_reject.prop("disabled", selected_count === 0);
+        // Highlight selected rows — visual cue that they're queued
+        $body.find(".acr-row-select").each((_, cb) => {
+            $(cb).closest(".acr-row").toggleClass("is-selected", cb.checked);
+        });
+        const total = $row_checks.length;
+        if (selected_count === 0) {
+            $select_all.prop("checked", false).prop("indeterminate", false);
+        } else if (selected_count === total) {
+            $select_all.prop("checked", true).prop("indeterminate", false);
+        } else {
+            $select_all.prop("checked", false).prop("indeterminate", true);
+        }
+    }
+
+    $row_checks.on("change", refresh_bulk_bar);
+    $select_all.on("change", () => {
+        const checked = $select_all.prop("checked");
+        $row_checks.prop("checked", checked);
+        refresh_bulk_bar();
+    });
+
+    function collect_selected_row_names() {
+        return $body.find(".acr-row-select:checked")
+            .map((_, cb) => $(cb).closest(".acr-row").data("row-name"))
+            .get();
+    }
+
+    $bulk_approve.on("click", () => {
+        const names = collect_selected_row_names();
+        if (!names.length) return;
+        frappe.confirm(
+            __(
+                "Approve {0} ACR(s)? An Account will be created for each and source decision(s) will be Approved.",
+                [names.length],
+            ),
+            () => doBulkACRAction(frm, names, "bulk_approve_acrs", dialog),
+        );
+    });
+
+    $bulk_reject.on("click", () => {
+        const names = collect_selected_row_names();
+        if (!names.length) return;
+        frappe.confirm(
+            __(
+                "Reject {0} ACR(s)? Source decision(s) will be marked Rejected. " +
+                "opening_je will silent-skip them.",
+                [names.length],
+            ),
+            () => doBulkACRAction(frm, names, "bulk_reject_acrs", dialog),
+        );
+    });
+}
+
+
+function doBulkACRAction(frm, acr_row_names, method, dialog) {
+    frappe.call({
+        method: `rgi_migration.rgi_migration.page.md_review.md_review.${method}`,
+        args: {
+            session_name: frm.doc.name,
+            acr_row_names: JSON.stringify(acr_row_names),
+        },
+        freeze: true,
+        freeze_message: __("Processing {0} ACR(s)...", [acr_row_names.length]),
+        callback: (r) => {
+            const resp = (r && r.message) || {};
+            const ok = (resp.ok || []).length;
+            const failed = (resp.failed || []).length;
+            if (failed === 0) {
+                frappe.show_alert({
+                    message: method === "bulk_approve_acrs"
+                        ? __("Approved {0} ACR(s).", [ok])
+                        : __("Rejected {0} ACR(s).", [ok]),
+                    indicator: "green",
+                }, 5);
+            } else {
+                const detail = (resp.failed || [])
+                    .map((f) => `<li><strong>${frappe.utils.escape_html(f.acr || "")}</strong>: ${frappe.utils.escape_html(f.error || "")}</li>`)
+                    .join("");
+                frappe.msgprint({
+                    title: __("Bulk action partially completed"),
+                    message: __("Succeeded: {0}. Failed: {1}.", [ok, failed]) +
+                        `<ul style="margin-top:8px">${detail}</ul>`,
+                    indicator: "orange",
+                });
+            }
+            dialog.hide();
+            frm.reload_doc().then(() => {
+                const remaining = (frm.doc.account_creation_requests || []).filter(
+                    (r) => r.status === "Pending" || r.status === "Failed"
+                ).length;
+                if (remaining > 0) {
+                    openACRProcessingDialog(frm);
+                }
+            });
+        },
+    });
+}
+
+function doACRAction(frm, row_name, method, dialog) {
+    frappe.call({
+        method: `rgi_migration.rgi_migration.page.md_review.md_review.${method}`,
+        args: { session_name: frm.doc.name, acr_row_name: row_name },
+        freeze: true,
+        freeze_message: __("Processing..."),
+        callback: (r) => {
+            const resp = (r && r.message) || {};
+            if (resp.status === "ok") {
+                let msg;
+                if (method === "approve_acr") {
+                    msg = __(
+                        "Account {0} created, {1} decision(s) approved.",
+                        [resp.created_account, (resp.updated_decisions || []).length]
+                    );
+                } else {
+                    msg = __(
+                        "{0} decision(s) marked Rejected.",
+                        [(resp.updated_decisions || []).length]
+                    );
+                }
+                frappe.show_alert({ message: msg, indicator: "green" }, 5);
+            } else if (resp.status === "failed") {
+                frappe.msgprint({
+                    title: __("Account creation failed"),
+                    message: __("ACR marked Failed. Error: {0}", [resp.error || "unknown"]),
+                    indicator: "red",
+                });
+            }
+            dialog.hide();
+            frm.reload_doc().then(() => {
+                const remaining = (frm.doc.account_creation_requests || []).filter(
+                    (r) => r.status === "Pending" || r.status === "Failed"
+                ).length;
+                if (remaining > 0) {
+                    openACRProcessingDialog(frm);
                 }
             });
         },

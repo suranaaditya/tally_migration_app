@@ -509,6 +509,24 @@ Apply AFTER every `scp`-based Python module update. Alternative:
 commit + push + `git pull` + `bench migrate` also works (migrate
 triggers a similar reload), but HUP is faster for iterative debugging.
 
+**Dynamic PID lookup — don't cache.** Gunicorn auto-rolls workers
+when `--max-requests 5000` is hit, and the master process itself can
+be replaced on certain events (OOM, service restart, etc.). Caching
+the master PID across deploys WILL fail silently the first time it
+rolls. Phase C deploy scripts must look up the master live:
+
+```bash
+# The master is the gunicorn process whose ppid is NOT another
+# gunicorn master — i.e. the one owned by the init-equivalent.
+# Simplest: the first gunicorn --preload process in ps output.
+PID=$(pgrep -f 'gunicorn.*frappe.app.*--preload' | head -1)
+kill -HUP "$PID"
+```
+
+First observed: Item 4 Commit 2 Phase E sync (2026-04-23). Previous
+commit's cached `kill -HUP 1133337` failed with "No such process";
+master had rolled to `1177777` between commits.
+
 Do NOT apply for `.js` / `.css` changes — those are browser-side; a
 hard browser refresh (`Ctrl+Shift+R`) suffices. Do NOT apply to the
 individual workers (`kill -HUP <worker-pid>`); only the master handles
@@ -579,6 +597,46 @@ patch in `audit_phase_*_patches` do the live bench-state alignment.
 The two should agree on what's added; they won't agree on ordering.
 
 First observed: Item 4 Commit 1 (2026-04-23).
+
+### ERPNext Account naming: collision is a hard error, not auto-suffix
+
+Observed during Item 4 Commit 3 Phase C smoke (2026-04-23). Two
+ACRs were approved with the same `proposed_account_name`
+("SMOKE_C3_COLLIDE") under the same parent + company. Expected
+behavior (by analogy with Frappe's generic Document autoname) was
+auto-suffix to `SMOKE_C3_COLLIDE - CACSPU 1`. Actual behavior:
+
+```
+DuplicateEntryError: ('Account', 'SMOKE_C3_COLLIDE - CACSPU',
+  IntegrityError(1062, "Duplicate entry 'SMOKE_C3_COLLIDE - CACSPU'
+  for key 'PRIMARY'"))
+```
+
+ERPNext's `Account.autoname()` controller (in
+`erpnext/accounts/doctype/account/account.py`) deterministically
+appends `' - <abbr>'` and does NOT probe for existing records before
+INSERT. The database's PRIMARY KEY constraint catches the collision
+and Frappe re-raises as `DuplicateEntryError`.
+
+**Implications for Item 4 ACR approval:**
+
+* The ACR approval path catches this exception, marks
+  `ACR.status = Failed`, and writes the traceback into `error_log`.
+  Source decisions are NOT updated on failure — the decision stays
+  in its pre-approve state so the reviewer can retry after fixing.
+* The reviewer's recovery path is: edit `proposed_account_name` on
+  the ACR child row (Session form) to a unique value, then re-Approve.
+  The "Retry Approve" button in the ACR processing panel is the
+  canonical UI affordance.
+* No server-side "try N, then N+1" retry loop. Reviewer judgement
+  picks the right alternative name (e.g. "Bank of Maharashtra
+  NSS Camp - Capital" vs the plain "Bank of Maharashtra NSS Camp"
+  already in the COA).
+
+Contrast with Supplier (Item 3) which is `autoname: field:supplier_name`
+at the Frappe level; Frappe's core autoname handles collision with an
+auto-increment suffix there. Account's behavior is owned by the
+ERPNext controller and is strict-unique.
 
 ### Generator refusals gate on `tier`, not `review_action` or `final_*`
 
