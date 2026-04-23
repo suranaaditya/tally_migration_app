@@ -2305,3 +2305,343 @@ def _payload_to_dict(payload):
         "status": payload.status,
         "is_anti_pattern": payload.is_anti_pattern,
     }
+
+
+# ---------------------------------------------------------------------------
+# Item 5 Commit 2 — Supplier Alias Rule reviewer promotion
+# ---------------------------------------------------------------------------
+
+
+# Account-target tiers — anything else is fair game for supplier-side
+# promotion. Kept as a tight whitelist (mirrors the account-side supplier
+# refusal list in _validate_promotable) so an MD whose tier was mutated
+# outside the reviewer flow doesn't accidentally get promoted through
+# the wrong namespace.
+_ACCOUNT_TIERS_FOR_ALIAS_REFUSAL = frozenset({
+    "tier1_exact",
+    "tier1_rule",
+    "tier1_pattern",
+    "tier2_fuzzy",
+    "tier3_claude",
+    "unmapped",
+    "excluded_pnl",
+    "group_refused",
+    "anti_pattern_blocked",
+    "pending_account_creation",
+    "excluded_zero_balance",
+})
+
+
+@frappe.whitelist()
+def promote_supplier_decision_to_alias_rule(decision_name, confirm=False):
+    """Promote an approved, supplier-target Mapping Decision into a
+    ``Supplier Alias Rule`` row.
+
+    Two-phase contract (parallel to account-side
+    :func:`promote_decision_to_rule`):
+
+    * ``confirm=False`` — preview; returns payload + duplicate/conflict
+      probe results. No writes.
+    * ``confirm=True`` — re-build + re-check, then insert (or link to
+      existing on duplicate). Refuses on conflict.
+
+    Scope (Item 5 Commit 2): supplier-side only. Account-target MDs
+    refuse at :func:`_validate_promotable_for_alias`.
+
+    α-architecture unchanged: promoted rows sit inert until Item 8
+    replaces ``find_alias_rule_supplier``'s ``return None`` stub. The
+    live mapper continues using only exact_ci + fuzzy layers.
+
+    Args:
+        decision_name: The Mapping Decision to promote.
+        confirm: Falsy → preview; truthy → commit. Accepts bool or
+            "true"/"false" string (HTTP transport shape).
+
+    Returns:
+        Preview mode:
+            ``{"status": "preview",
+              "payload": {...alias-rule-fields...},
+              "duplicate": null | {"rule_name": str, ...},
+              "conflict": null | {"rule_name": str,
+                                    "existing_erpnext_supplier": str,
+                                    "existing_entity_abbr": str | null,
+                                    "existing_session": str | null,
+                                    "existing_created_at": str | null}}``
+            Note: 5-field conflict surface per S-5 (adds
+            ``existing_erpnext_supplier`` vs account-side's 4 fields;
+            supplier conflicts often need GSTIN/address context that
+            reviewer resolves by deep-linking to the Supplier doc).
+
+        Commit mode:
+            * clean:     ``{"status": "created", "rule_name": "SAR-...",
+                            "payload": {...}}``
+            * duplicate: ``{"status": "duplicate",
+                            "rule_name": "SAR-...",
+                            "message": str, ...}``
+                         — times_applied + source_entities bumped
+                         on the existing row; MD's promoted_to_rule
+                         linked to it.
+            * conflict:  ``{"status": "conflict", ...}`` — no writes.
+
+    Raises:
+        frappe.ValidationError: MD is account-tier / not Approved /
+            missing final_supplier / session missing abbr.
+        frappe.DoesNotExistError: decision or session missing.
+        frappe.PermissionError: caller lacks read on the session.
+    """
+    is_confirm = confirm is True or (
+        isinstance(confirm, str) and confirm.lower() == "true"
+    )
+
+    decision_doc = frappe.get_doc("Mapping Decision", decision_name)
+    session_doc = frappe.get_doc("Tally Migration Session", decision_doc.session)
+    session_doc.check_permission("read")
+
+    _validate_promotable_for_alias(decision_doc)
+
+    abbr = session_doc.company_abbr
+    entity_type = _get_entity_type_for_abbr(abbr)
+
+    from rgi_migration.mapper.alias_promotion import (
+        NotPromotable as _AliasNotPromotable,
+        build_alias_rule_payload,
+    )
+
+    try:
+        payload = build_alias_rule_payload(
+            md_name=decision_doc.name,
+            tally_name=decision_doc.tally_name,
+            tier=decision_doc.tier,
+            final_supplier=decision_doc.final_supplier,
+            session_name=session_doc.name,
+            entity_type=entity_type,
+        )
+    except _AliasNotPromotable as exc:
+        frappe.throw(str(exc))
+        return  # unreachable
+
+    duplicate = _lookup_alias_duplicate(
+        payload.tally_name_pattern,
+        payload.tally_match_mode,
+        payload.erpnext_supplier,
+    )
+    conflict = None
+    if duplicate is None:
+        conflict = _lookup_alias_conflict(
+            tally_name_pattern=payload.tally_name_pattern,
+            tally_match_mode=payload.tally_match_mode,
+            new_erpnext_supplier=payload.erpnext_supplier,
+        )
+
+    payload_dict = _alias_payload_to_dict(payload)
+
+    if not is_confirm:
+        return {
+            "status": "preview",
+            "payload": payload_dict,
+            "duplicate": duplicate,
+            "conflict": conflict,
+        }
+
+    # --- Commit mode -------------------------------------------------
+    if conflict is not None:
+        return {
+            "status": "conflict",
+            "conflict": conflict,
+            "payload": payload_dict,
+        }
+
+    if duplicate is not None:
+        existing_rule_name = duplicate["rule_name"]
+        if decision_doc.promoted_to_rule != existing_rule_name:
+            decision_doc.db_set(
+                "promoted_to_rule",
+                existing_rule_name,
+                update_modified=False,
+            )
+        _bump_alias_rule_observability(
+            rule_name=existing_rule_name,
+            entity_abbr=abbr,
+        )
+        return {
+            "status": "duplicate",
+            "rule_name": existing_rule_name,
+            "message": (
+                f"An identical Supplier Alias Rule ({existing_rule_name}) "
+                f"already exists; linked this decision to it."
+            ),
+            "payload": payload_dict,
+        }
+
+    new_rule_doc = frappe.get_doc({
+        "doctype": "Supplier Alias Rule",
+        "tally_name_pattern": payload.tally_name_pattern,
+        "tally_match_mode": payload.tally_match_mode,
+        "erpnext_supplier": payload.erpnext_supplier,
+        "status": "confirmed",
+        "created_from": payload.created_from,
+        "applies_to_entity_types": payload.applies_to_entity_types,
+    }).insert(ignore_permissions=True)
+
+    # source_entities isn't a field on Supplier Alias Rule today, so the
+    # observability-bump path only touches times_applied + last_applied_at
+    # on duplicate. Initialise times_applied=0 is implicit via schema
+    # default.
+    decision_doc.db_set(
+        "promoted_to_rule",
+        new_rule_doc.name,
+        update_modified=False,
+    )
+
+    return {
+        "status": "created",
+        "rule_name": new_rule_doc.name,
+        "payload": payload_dict,
+    }
+
+
+def _validate_promotable_for_alias(decision_doc):
+    """Refuse MDs that shouldn't be promoted to a Supplier Alias Rule.
+
+    Raises frappe.ValidationError via frappe.throw with reviewer-facing
+    messages.
+    """
+    tier = decision_doc.get("tier") or ""
+    if tier in _ACCOUNT_TIERS_FOR_ALIAS_REFUSAL:
+        frappe.throw(
+            f"Decision {decision_doc.name!r} is an account-target "
+            f"decision (tier {tier!r}); use 'Approve & Promote' "
+            f"which routes to the account-side Mapping Rule. Supplier "
+            f"Alias Rule promotion only applies to supplier-target "
+            f"decisions."
+        )
+
+    if decision_doc.final_account and not decision_doc.final_supplier:
+        frappe.throw(
+            f"Decision {decision_doc.name!r} has final_account set but "
+            f"not final_supplier; this is an account-target decision. "
+            f"Use the account-side promotion path."
+        )
+
+    review_action = decision_doc.get("review_action") or ""
+    if review_action not in _PROMOTION_ALLOWED_REVIEW_ACTIONS:
+        frappe.throw(
+            f"Decision {decision_doc.name!r} has review_action "
+            f"{review_action!r}; promotion requires one of "
+            f"{sorted(_PROMOTION_ALLOWED_REVIEW_ACTIONS)}. Resolve the "
+            f"supplier target via the Supplier Resolution dialog first."
+        )
+
+    if not decision_doc.final_supplier:
+        frappe.throw(
+            f"Decision {decision_doc.name!r} has no final_supplier — "
+            f"cannot promote without a target. Resolve via the Supplier "
+            f"Resolution dialog first."
+        )
+
+
+def _lookup_alias_duplicate(tally_name_pattern, tally_match_mode, erpnext_supplier):
+    """Exact (pattern, match_mode, supplier) triple collision. A duplicate
+    means the same cleaned pattern already points at the same Supplier
+    via the same match mode — safe to no-op and bump observability.
+
+    Returns a dict or None.
+    """
+    rows = frappe.get_all(
+        "Supplier Alias Rule",
+        filters={
+            "tally_name_pattern": tally_name_pattern,
+            "tally_match_mode": tally_match_mode,
+            "erpnext_supplier": erpnext_supplier,
+        },
+        fields=["name", "created_from", "applies_to_entity_types"],
+        limit=1,
+    )
+    if not rows:
+        return None
+    r = rows[0]
+    return {
+        "rule_name": r["name"],
+        "created_from": r.get("created_from"),
+        "applies_to_entity_types": r.get("applies_to_entity_types"),
+    }
+
+
+def _lookup_alias_conflict(tally_name_pattern, tally_match_mode, new_erpnext_supplier):
+    """Same (pattern, match_mode) tuple but different Supplier target.
+    Returns the most-recent colliding rule (or None).
+
+    Match-mode split in the key means an ``exact_ci`` rule and a
+    ``fuzzy_85`` rule on the same pattern to different Suppliers are NOT
+    a conflict (they're different match semantics); but since Commit 2
+    hardcodes exact_ci, this branch is academic in v1.
+    """
+    candidates = frappe.get_all(
+        "Supplier Alias Rule",
+        filters={
+            "tally_name_pattern": tally_name_pattern,
+            "tally_match_mode": tally_match_mode,
+        },
+        fields=[
+            "name",
+            "erpnext_supplier",
+            "applies_to_entity_types",
+            "creation",
+        ],
+        order_by="creation desc",
+    )
+    for r in candidates:
+        existing = r.get("erpnext_supplier") or ""
+        if existing == new_erpnext_supplier:
+            continue  # duplicate, not conflict (caught by _lookup_alias_duplicate)
+        # Supplier Alias Rule has no created_via_session field; we
+        # can't surface existing_session from the row alone. A future
+        # enhancement would add one alongside source_entities. For
+        # Commit 2, existing_session and existing_entity_abbr come
+        # from applies_to_entity_types where available.
+        return {
+            "rule_name": r["name"],
+            "existing_erpnext_supplier": existing,
+            "existing_entity_abbr": r.get("applies_to_entity_types"),
+            "existing_session": None,
+            "existing_created_at": (
+                r.get("creation").isoformat()
+                if r.get("creation") and hasattr(r.get("creation"), "isoformat")
+                else (str(r.get("creation")) if r.get("creation") else None)
+            ),
+        }
+    return None
+
+
+def _bump_alias_rule_observability(rule_name, entity_abbr):
+    """Increment ``times_applied`` and refresh ``last_applied_at`` on an
+    existing Supplier Alias Rule. Parallels
+    :func:`_bump_rule_observability` but without the source_entities
+    widening (field doesn't exist on Supplier Alias Rule today —
+    source_entities stays an account-side-only concept).
+    """
+    rule_doc = frappe.get_doc("Supplier Alias Rule", rule_name)
+    current_count = int(rule_doc.times_applied or 0)
+    rule_doc.db_set(
+        "times_applied", current_count + 1, update_modified=False,
+    )
+    rule_doc.db_set(
+        "last_applied_at",
+        frappe.utils.now_datetime(),
+        update_modified=False,
+    )
+
+
+def _alias_payload_to_dict(payload):
+    """Flatten an ``AliasRulePayload`` dataclass to a plain dict for JSON
+    transport to the frontend.
+    """
+    return {
+        "tally_name_pattern": payload.tally_name_pattern,
+        "tally_match_mode": payload.tally_match_mode,
+        "erpnext_supplier": payload.erpnext_supplier,
+        "applies_to_entity_types": payload.applies_to_entity_types,
+        "created_from": payload.created_from,
+        "source_hash": payload.source_hash,
+        "session_name": payload.session_name,
+    }

@@ -10,13 +10,13 @@ here and reference the landing commit in the change log.
 
 ## Future design discussions
 
-### Item 5 Commit 1 Phase D browser verification — PENDING
+### Item 5 Commit 1 + Commit 2 Phase D browser verification — PENDING (stacked)
 
-Status: Backend validated via Phase C programmatic smoke (13/13 probes
-green on TMS-CACSPU--00495). Browser verification deferred for
-time-budget reasons.
+Status: Backends for BOTH commits validated via Phase C programmatic
+smoke (Commit 1: 13/13 probes; Commit 2: 10/10 probes). Both browser-
+verification gaps stacked together.
 
-What's unverified in browser:
+**Commit 1 unverified (account-side):**
 - `p` keyboard shortcut firing from reviewer's keyboard in live page
 - `_showPromoteConfirmationDialog` rendering + reviewer-facing copy
 - "Don't ask again this session" toggle — persists across rows within
@@ -28,16 +28,33 @@ What's unverified in browser:
   parameterized — intended?") — only exercisable in browser since
   no CACSPU-company Account is CACSPU-free
 
-Trigger point to close: BEFORE Item 8 ships. Item 8 unlocks the
-live-read path via FrappeRuleSource, at which point every reviewer
-approval on entities 2-59 may touch this promotion UI. Phase D gap
-becomes reviewer-impacting at that threshold, not before.
+**Commit 2 unverified (supplier-side):**
+- Row-type polymorphic dispatch on `p` shortcut — account row press
+  routes to account whitelist; supplier row press routes to supplier
+  whitelist
+- Supplier-row "Approve & Promote" button visibility rule: hidden
+  when review_action != Approved (pre-dialog); shown when
+  post-SupplierResolutionDialog Approved + not already promoted
+- `_showAliasConfirmationDialog` rendering (simpler than account-
+  side: 4 fields, no literal warning, no multi-occurrence notice)
+- `_showAliasConflictDialog` 5-field surface: existing_rule,
+  existing_erpnext_supplier (with deep-link to Supplier doc — the
+  supplier-specific addition), existing_session, existing_entity_abbr,
+  existing_created_at
+- Don't-ask-again toggle sharing semantics between account and
+  supplier dispatches (single flag per session, both flavors commit
+  silently once set)
+- Fail-loud toast on `p` over a supplier row whose review_action
+  isn't Approved
 
-Secondary trigger: before Item 5 Commit 2 (Supplier Alias Rule
-promotion) ships if that commit reuses any of the same UI patterns
-— regression catch opportunity.
+**Trigger point to close**: BEFORE Item 8 ships. Item 8 unlocks the
+live-read paths (FrappeRuleSource + find_alias_rule_supplier DocType
+read), at which point every reviewer approval on entities 2-59 may
+touch both promotion UIs. Phase D gap becomes reviewer-impacting at
+that threshold, not before.
 
-Estimated effort: ~20-30 min.
+**Estimated effort**: ~40-60 min (doubled since both dialogs need
+separate walkthrough; shared `p` dispatcher is a 2-minute add-on).
 
 ---
 

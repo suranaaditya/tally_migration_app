@@ -1709,19 +1709,34 @@ class DetailPane {
         if (approve.length) {
             approve.prop("disabled", this._saving || !this.isDirty());
         }
-        // Approve & Promote — Item 5 Commit 1, account-side only.
-        // Visibility:
-        //   - hidden on vendor rows (supplier alias promotion is Commit 2)
-        //   - hidden when the row is already promoted (promoted_to_rule
-        //     Link is populated); reviewer can re-open the rule via the
-        //     "Promoted to rule" kv row in the detail pane
-        // Enabled gate is identical to Approve & Next (dirty + not saving).
+        // Approve & Promote — Item 5 Commit 1 + 2, row-type-polymorphic.
+        // Account rows (Commit 1):
+        //   - hidden when promoted_to_rule set
+        //   - enabled on dirty + not saving (mirrors Approve & Next)
+        // Supplier rows (Commit 2, per S-6):
+        //   - hidden when MD.review_action not Approved / Manual Override
+        //     (reviewer must resolve via SupplierResolutionDialog first)
+        //   - hidden when promoted_to_rule set
+        //   - enabled when not saving (no dirty gate — supplier row is
+        //     already post-dialog-Approved; there's nothing in Section 4
+        //     to save here)
         const promote_btn = this.container.find(".action-approve-promote-btn");
         if (promote_btn.length) {
             const d = this.current_decision || {};
-            const show = !this._isVendorRow() && !d.promoted_to_rule;
+            const already_promoted = !!d.promoted_to_rule;
+            let show = false;
+            let disabled = true;
+            if (this._isVendorRow()) {
+                const ra = d.review_action || "";
+                const resolved = ra === "Approved" || ra === "Manual Override";
+                show = resolved && !already_promoted;
+                disabled = this._saving;
+            } else {
+                show = !already_promoted;
+                disabled = this._saving || !this.isDirty();
+            }
             promote_btn.toggle(show);
-            promote_btn.prop("disabled", this._saving || !this.isDirty());
+            promote_btn.prop("disabled", disabled);
         }
         // Defer / Reject / Request Creation are intentionally NOT
         // gated by isDirty(). Reviewers commonly want to reject or
@@ -2192,41 +2207,41 @@ class DetailPane {
     }
 
     /**
-     * Item 5 Commit 1 — Approve & Promote.
+     * Item 5 Commit 1 + Commit 2 — Approve & Promote (polymorphic).
      *
-     * Combined action: runs the same save+advance path as Approve & Next,
-     * then promotes the approved decision's mapping into a reusable
-     * Mapping Rule row. Flow:
+     * Row-type dispatcher. Routes to the account-side path
+     * (promote_decision_to_rule) or the supplier-side path
+     * (promote_supplier_decision_to_alias_rule) based on the current
+     * MD's target type:
      *
-     *   1. Refuse on vendor rows (supplier alias = Commit 2).
-     *   2. Validate Section 4 (same as _onApprove).
-     *   3. Save the decision WITHOUT advancing — we stay on the row so
-     *      the confirmation dialog (if shown) relates to the row the
-     *      reviewer is looking at.
-     *   4. Preview the promotion via promote_decision_to_rule(confirm=0).
-     *   5. Branch on preview outcome:
-     *      - conflict:      show conflict dialog, no write, no advance.
-     *        Reviewer resolves (edit final_account, or dismiss and leave
-     *        un-promoted — the Approve step already landed).
-     *      - duplicate:     silent commit (idempotent); toast; advance.
-     *      - is_literal:    MUST show confirmation dialog regardless of
-     *        "don't ask again" — this is the override case per Phase A
-     *        A-6. Reviewer explicitly confirms that a non-parameterized
-     *        rule is intended.
-     *      - don't-ask-again set: silent commit; toast; advance.
-     *      - default:       show confirmation dialog with full preview;
-     *        reviewer confirms → commit → advance.
-     *
-     * The save side of the action is independent of the promotion
-     * side — if promotion fails or is cancelled, the MD stays Approved.
+     *   - Account row: run Approve & Next semantics (validate →
+     *     save_decision → preview → dialog or silent commit →
+     *     advance). Full Commit 1 behavior.
+     *   - Supplier row + review_action=Approved: skip save step
+     *     (resolution already happened via SupplierResolutionDialog);
+     *     preview alias promotion → simpler dialog (no literal-
+     *     template surface) → commit → advance.
+     *   - Supplier row + review_action≠Approved: fail-loud toast
+     *     telling the reviewer to resolve via the `c` / dialog flow
+     *     first. Per S-6 the button is hidden in this state anyway;
+     *     this branch defends against shortcut-triggered clicks.
+     *   - Unknown row shape: fail-loud toast per S-6 (don't silent-
+     *     no-op).
      */
     async _onApproveAndPromote() {
         if (this._isVendorRow()) {
-            this._showValidationMessage(
-                __("Supplier rows can't be promoted via Approve & Promote yet (Commit 2 scope). Use Approve & Next.")
-            );
+            await this._onApproveAndPromoteSupplier();
             return;
         }
+        await this._onApproveAndPromoteAccount();
+    }
+
+    /**
+     * Account-side branch of Approve & Promote (Commit 1 behavior
+     * unchanged beyond being extracted into its own method for the
+     * dispatcher).
+     */
+    async _onApproveAndPromoteAccount() {
         const validation = this._validateApprove();
         if (!validation.ok) {
             this._showValidationMessage(validation.message);
@@ -2291,6 +2306,65 @@ class DetailPane {
         // Silent path — don't-ask-again enabled and template is
         // parameterized normally.
         await this._commitPromotion(decision_name, preview_payload, { silent: true });
+    }
+
+    /**
+     * Supplier-side branch of Approve & Promote (Item 5 Commit 2).
+     *
+     * No Section 4 save step — supplier rows are expected to be
+     * already-Approved via SupplierResolutionDialog. Button visibility
+     * rule (_update_action_button_states) hides the button in the
+     * pre-Approved case; this method defends against shortcut-
+     * triggered clicks anyway.
+     */
+    async _onApproveAndPromoteSupplier() {
+        const d = this.current_decision || {};
+        const review_action = d.review_action || "";
+        if (review_action !== "Approved" && review_action !== "Manual Override") {
+            // Fail-loud per S-6: don't silently no-op.
+            frappe.show_alert({
+                message: __("Resolve the supplier target via the Resolve Supplier dialog first, then press p to promote."),
+                indicator: "orange",
+            }, 5);
+            return;
+        }
+
+        const decision_name = this.current_decision_name;
+        if (!decision_name) return;
+
+        let preview;
+        try {
+            preview = await frappe.call({
+                method: "rgi_migration.rgi_migration.page.md_review.md_review.promote_supplier_decision_to_alias_rule",
+                args: { decision_name: decision_name, confirm: false },
+            });
+        } catch (err) {
+            console.error("md-review: promote_supplier_decision_to_alias_rule preview failed", err);
+            return;
+        }
+        const preview_payload = (preview && preview.message) || null;
+        if (!preview_payload) return;
+
+        if (preview_payload.conflict) {
+            this._showAliasConflictDialog(preview_payload);
+            return;
+        }
+
+        if (preview_payload.duplicate) {
+            await this._commitAliasPromotion(decision_name, preview_payload, { silent: true });
+            return;
+        }
+
+        // Don't-ask-again session flag is shared with the account
+        // branch — once the reviewer opts in, both promotion flavors
+        // commit silently. Simpler than two independent flags for a
+        // single session-scoped preference.
+        if (this._promote_dont_ask_again === true) {
+            await this._commitAliasPromotion(decision_name, preview_payload, { silent: true });
+            return;
+        }
+
+        this._showAliasConfirmationDialog(decision_name, preview_payload);
     }
 
     /**
@@ -2467,6 +2541,156 @@ class DetailPane {
                                     <tr><td><strong>${esc(__("Entities"))}</strong></td><td>${esc(conflict.existing_entity_abbr || "")}</td></tr>
                                     <tr><td><strong>${esc(__("Session"))}</strong></td><td>${esc(conflict.existing_session || "")}</td></tr>
                                     <tr><td><strong>${esc(__("Created at"))}</strong></td><td>${esc(conflict.existing_created_at || "")}</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    `,
+                },
+            ],
+            primary_action_label: __("Close"),
+            primary_action: () => d.hide(),
+        });
+        d.show();
+    }
+
+    /**
+     * Item 5 Commit 2 — commit a previewed supplier-alias promotion.
+     * Parallels _commitPromotion but calls the supplier whitelist and
+     * tolerates preview→commit conflict races (rare, but possible if
+     * another session created a conflicting alias rule between our
+     * preview and commit).
+     */
+    async _commitAliasPromotion(decision_name, preview_payload, opts = {}) {
+        const { silent = false } = opts;
+        let commit;
+        try {
+            commit = await frappe.call({
+                method: "rgi_migration.rgi_migration.page.md_review.md_review.promote_supplier_decision_to_alias_rule",
+                args: { decision_name: decision_name, confirm: true },
+            });
+        } catch (err) {
+            console.error("md-review: promote_supplier_decision_to_alias_rule commit failed", err);
+            return;
+        }
+        const commit_result = (commit && commit.message) || null;
+        if (!commit_result) return;
+
+        if (commit_result.status === "conflict") {
+            this._showAliasConflictDialog(commit_result);
+            return;
+        }
+
+        const rule_name = commit_result.rule_name;
+        const toast_msg = commit_result.status === "duplicate"
+            ? __("Linked to existing alias rule {0}", [rule_name])
+            : __("Promoted to alias rule {0}", [rule_name]);
+        frappe.show_alert({ message: toast_msg, indicator: "green" }, 4);
+
+        if (this.current_decision && this.current_decision.name === decision_name) {
+            this.current_decision.promoted_to_rule = rule_name;
+            this._update_action_button_states();
+        }
+
+        if (this.on_advance_requested) {
+            this.on_advance_requested(decision_name);
+        }
+
+        if (silent) return;
+    }
+
+    /**
+     * Item 5 Commit 2 — supplier-alias preview confirmation dialog.
+     *
+     * Simpler than the account-side dialog (S-3/S-4): no literal-
+     * template surface, no {ABBR}-occurrence count. 4 fields per S-4:
+     * pattern, match_mode, erpnext_supplier, scope.
+     */
+    _showAliasConfirmationDialog(decision_name, preview_payload) {
+        const payload = preview_payload.payload || {};
+        const esc = frappe.utils.escape_html;
+        const supplier_link = payload.erpnext_supplier
+            ? `<a href="/app/supplier/${encodeURIComponent(payload.erpnext_supplier)}" target="_blank" rel="noopener">${esc(payload.erpnext_supplier)} <span class="nav-icon">↗</span></a>`
+            : esc(__("(unset)"));
+
+        const d = new frappe.ui.Dialog({
+            title: __("Approve & Promote — confirm alias rule payload"),
+            fields: [
+                {
+                    fieldtype: "HTML",
+                    fieldname: "preview_html",
+                    options: `
+                        <div class="mdr-alias-preview">
+                            <table class="table table-sm" style="margin-bottom: 0;">
+                                <tbody>
+                                    <tr><td><strong>${esc(__("Tally pattern (cleaned)"))}</strong></td><td><code>${esc(payload.tally_name_pattern || "")}</code></td></tr>
+                                    <tr><td><strong>${esc(__("Match mode"))}</strong></td><td>${esc(payload.tally_match_mode || "")}</td></tr>
+                                    <tr><td><strong>${esc(__("ERPNext Supplier"))}</strong></td><td>${supplier_link}</td></tr>
+                                    <tr><td><strong>${esc(__("Scope"))}</strong></td><td>${esc(payload.applies_to_entity_types || "*")}</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    `,
+                },
+                {
+                    fieldtype: "Check",
+                    fieldname: "dont_ask_again",
+                    label: __("Don't ask again this session"),
+                    default: 0,
+                    description: __("Subsequent Approve & Promote presses — account or supplier — commit silently this session. Conflicts always still surface."),
+                },
+            ],
+            primary_action_label: __("Promote alias"),
+            primary_action: async (values) => {
+                if (values.dont_ask_again) {
+                    this._promote_dont_ask_again = true;
+                }
+                d.hide();
+                await this._commitAliasPromotion(decision_name, preview_payload);
+            },
+        });
+        d.set_secondary_action_label(__("Cancel"));
+        d.set_secondary_action(() => d.hide());
+        d.show();
+    }
+
+    /**
+     * Item 5 Commit 2 — supplier-alias conflict dialog.
+     *
+     * 5-field surface per S-5: existing_rule, existing_erpnext_supplier
+     * (with deep-link to /app/supplier/<name> — the supplier-specific
+     * addition over account-side's 4 fields; GSTIN/address often
+     * matters for supplier conflict resolution), existing_session,
+     * existing_entity_abbr, existing_created_at.
+     */
+    _showAliasConflictDialog(preview_payload) {
+        const conflict = preview_payload.conflict || {};
+        const esc = frappe.utils.escape_html;
+        const rule_link = conflict.rule_name
+            ? `<a href="/app/supplier-alias-rule/${encodeURIComponent(conflict.rule_name)}" target="_blank" rel="noopener">${esc(conflict.rule_name)} <span class="nav-icon">↗</span></a>`
+            : esc(__("(unknown)"));
+        const supplier_link = conflict.existing_erpnext_supplier
+            ? `<a href="/app/supplier/${encodeURIComponent(conflict.existing_erpnext_supplier)}" target="_blank" rel="noopener">${esc(conflict.existing_erpnext_supplier)} <span class="nav-icon">↗</span></a>`
+            : esc(__("(unknown)"));
+
+        const d = new frappe.ui.Dialog({
+            title: __("Alias promotion conflict — existing rule points at a different Supplier"),
+            fields: [
+                {
+                    fieldtype: "HTML",
+                    fieldname: "conflict_html",
+                    options: `
+                        <div class="mdr-alias-conflict">
+                            <div class="alert alert-danger">
+                                <strong>${esc(__("No rule was created."))}</strong>
+                                ${esc(__("An existing Supplier Alias Rule matches this cleaned Tally pattern but targets a different Supplier. Reviewer must resolve before this mapping can be promoted."))}
+                            </div>
+                            <table class="table table-sm">
+                                <tbody>
+                                    <tr><td><strong>${esc(__("Existing rule"))}</strong></td><td>${rule_link}</td></tr>
+                                    <tr><td><strong>${esc(__("Existing Supplier"))}</strong></td><td>${supplier_link}</td></tr>
+                                    <tr><td><strong>${esc(__("Session"))}</strong></td><td>${esc(conflict.existing_session || "—")}</td></tr>
+                                    <tr><td><strong>${esc(__("Entity scope"))}</strong></td><td>${esc(conflict.existing_entity_abbr || "—")}</td></tr>
+                                    <tr><td><strong>${esc(__("Created at"))}</strong></td><td>${esc(conflict.existing_created_at || "—")}</td></tr>
                                 </tbody>
                             </table>
                         </div>
@@ -2771,7 +2995,7 @@ const SHORTCUT_REFERENCE = [
             ["R",            "Reject"],
             ["C",            "Request Creation — on supplier rows, opens Resolve Supplier dialog"],
             ["D",            "Defer"],
-            ["P",            "Approve & Promote — saves + creates a reusable Mapping Rule (account rows only; Item 5 Commit 2 will extend to supplier rows)"],
+            ["P",            "Approve & Promote — account rows: save + create Mapping Rule; supplier rows (post-dialog Approved): create Supplier Alias Rule"],
             ["Ctrl+S",       "Approve & Next (validating; works from notes)"],
             ["Ctrl+Shift+S", "Save Without Advance"],
             ["Ctrl+Z",       "Undo last save (10s window)"],
