@@ -40,49 +40,39 @@ may be moot.
 
 ---
 
-## `reset_parse` does not sweep the SCR / ACR child tables
+## Pre-rollout bench COA hygiene audit
 
-**Raised:** Item 3 Commit 4 closing smoke (2026-04-22).
-**Scope extended:** Item 4 Commit 1 Phase C (2026-04-23) — confirmed
-ACR child table has the identical gap.
-**Target:** Item 4 Commit 3 (combined fix, both child tables in one
-patch).
+**Raised:** Item 4 Commit 4 closing smoke (2026-04-23).
+**Target:** Before Item 9 (end-to-end production migration) /
+before 59-entity rollout training.
 
-**Problem:** `rgi_migration.rgi_migration.doctype.tally_migration_session.tally_migration_session.reset_parse`
-deletes every `Mapping Decision` row for the session and clears the
-parse/map snapshot fields, but it does NOT clear the
-`supplier_creation_requests` OR `account_creation_requests` child
-tables on the session doc. Any SCR / ACR rows from a prior run
-persist; their `source_decisions` CSV tokens now reference deleted
-MD names (orphaned). On re-run of `run_mapper`, the child tables
-remain populated with stale history while the underlying decisions
-are freshly minted under new MD-YYYY-##### autonames.
+**Problem:** The `scripts/item4_closing_smoke.py` picker
+`_pick_existing_account` (used for Row A's Map-to-existing target)
+selects the first alphabetically-sorted enabled leaf Account in the
+session's Company + root_type branch. On CACSPU's dev bench this
+landed on `234567891234566 - Trial 34 - CACSPU` — a literal scratch
+/ test Account someone created during bench setup and never cleaned
+up.
 
-**Current smoke workaround:** Item 3 closing smoke
-(`scripts/item3_closing_smoke.py`) calls a helper
-`_clear_scr_child_table(session_name)` that writes
-`session.supplier_creation_requests = []` and saves. Reviewers doing
-Reset Parse from the UI do not get this sweep today. No equivalent
-helper exists yet for ACR rows — Item 4 Commit 4 smoke should either
-add a parallel helper or (preferably) rely on the in-product fix
-landing in Commit 3.
+The smoke's correctness is unaffected (picker is deterministic,
+assertions all pass), but the same first-alpha behavior surfaces
+more broadly: the AccountResolutionDialog's parent-picker
+autocomplete also orders by alpha at the top of each depth bucket,
+so a test Account under "Application Of Funds(Assets)" would
+appear as the FIRST option reviewers see. That's confusing in
+training, and in the worst case a reviewer could mistakenly select
+it as a parent.
 
-**Observed symptoms:** none yet in reviewer flow — orphan SCRs/ACRs
-are inert (no references point to them from live decisions, and the
-Process-* dialogs filter to `status=Pending/Failed` which may still
-display stale rows). Worth clearing to avoid confusing the reviewer.
+**Fix shape:** pre-rollout audit of each entity's COA for scratch
+/ test accounts. Candidates for cleanup:
 
-**Fix shape (Item 4 Commit 3):** add both child-table clears inside
-`reset_parse` between the Mapping Decision delete and the
-`session.save()`:
+- Accounts with non-word prefixes (digits-only, punctuation leading)
+- Accounts with "Test", "Trial", "Temp", "XX" in the name
+- Accounts with zero transactions and creation timestamps during
+  bench-setup windows
 
-```python
-session.set("supplier_creation_requests", [])
-session.set("account_creation_requests", [])
-```
-
-Write a unit test that seeds decisions + one SCR + one ACR, calls
-`reset_parse`, and asserts both child-table lengths are 0.
+Not a blocker for Item 4 closure. Flag for Item 9 scope and for
+whoever runs the 59-entity rollout playbook.
 
 
 ## Phase C deployment playbook — HUP gunicorn workers after `bench build`
