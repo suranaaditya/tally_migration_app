@@ -1899,3 +1899,409 @@ def bulk_approve_tier1(session_name, dry_run=False):
         "skipped": buckets["skipped"],
         "failed": failed,
     }
+
+
+# ---------------------------------------------------------------------------
+# Item 5 Commit 1 — Reviewer promotion of approved MD → Mapping Rule
+# ---------------------------------------------------------------------------
+
+
+# Supplier-target tiers are out of scope for Item 5 Commit 1. Commit 2
+# (Supplier Alias Rule promotion) will add a parallel whitelist. Keeping
+# the refusal explicit here rather than silently no-op'ing so reviewer
+# who presses `p` on a supplier row gets a clear message.
+_SUPPLIER_TIERS_FOR_PROMOTION_REFUSAL = frozenset({
+    "tier1_supplier_exact",
+    "tier1_supplier_alias",
+    "tier1_supplier_fuzzy",
+    "pending_supplier_creation",
+})
+
+# Review actions from which promotion is allowed. The MD must represent a
+# deliberate reviewer decision, not a mapper default or a deferred /
+# rejected row. Manual Override is allowed — it means the reviewer
+# picked a different final_account than the mapper proposed, which is
+# exactly the signal the rules library wants to capture.
+_PROMOTION_ALLOWED_REVIEW_ACTIONS = frozenset({
+    "Approved",
+    "Manual Override",
+})
+
+
+@frappe.whitelist()
+def promote_decision_to_rule(decision_name, confirm=False):
+    """Promote an approved Mapping Decision into a ``Mapping Rule`` row.
+
+    Two-phase contract:
+
+    * ``confirm=False`` (default) — preview mode. Builds the payload,
+      checks duplicates (exact source_hash match) and conflicts (same
+      pattern + root_type, different target), returns a preview dict.
+      No writes.
+    * ``confirm=True`` — commit mode. Re-builds the payload (race
+      safety: MD or session may have changed since preview), re-checks
+      duplicate/conflict, inserts the Mapping Rule if clean, and sets
+      ``promoted_to_rule`` on the source MD.
+
+    Scope (Item 5 Commit 1): account-side only. Supplier-target
+    decisions (tier1_supplier_*, pending_supplier_creation) are
+    refused — that surface belongs to Commit 2.
+
+    α-architecture (Phase A A-0): promoted rows sit inert in the
+    ``Mapping Rule`` DocType until Item 8 lands ``FrappeRuleSource``.
+    The live mapper continues reading ``docs/seed_plan.json``. This is
+    intentional; see ``WEEK4_DEFERRED_ITEMS.md`` ("Item 8 timing gate")
+    for the tripwire that flips α → γ if Item 8 slips past Item 9
+    (CACSPU production migration).
+
+    Args:
+        decision_name: The Mapping Decision to promote.
+        confirm: Falsy → preview, truthy → commit. Accepts bool or
+            "true"/"false" string (Frappe serialises bools as strings
+            over HTTP).
+
+    Returns:
+        Preview mode:
+            ``{"status": "preview",
+              "payload": {...mapping-rule-fields...},
+              "substitution": {"abbr": ..., "occurrences": N,
+                                "is_literal": bool,
+                                "raw_final_account": str},
+              "duplicate": null | {"rule_name": str, "source_section": str,
+                                    "created_from": str},
+              "conflict": null | {"rule_name": str,
+                                    "existing_template": str,
+                                    "existing_raw_final_account": str,
+                                    "existing_source_section": str,
+                                    "existing_entity_abbr": str | null,
+                                    "existing_session": str | null,
+                                    "existing_created_at": str | null}}``
+
+        Commit mode (confirm=True):
+            * clean:     ``{"status": "created", "rule_name": "MR-...",
+                            "payload": {...}}``
+            * duplicate: ``{"status": "duplicate",
+                            "rule_name": "MR-...",
+                            "message": str}``
+                         — promoted_to_rule on the MD is set to the
+                         existing rule (idempotent no-op for the
+                         reviewer: pressing promote twice on the same
+                         MD after a colleague already promoted an
+                         identical one doesn't error).
+            * conflict:  ``{"status": "conflict", ...same shape as
+                            preview conflict field...}`` — no writes.
+
+    Raises:
+        frappe.ValidationError: MD is supplier-tier / not Approved /
+            missing final_account / already promoted to a different
+            rule / session missing abbr.
+        frappe.DoesNotExistError: decision or session missing.
+        frappe.PermissionError: caller lacks read on the session.
+    """
+    # HTTP transport serialises booleans as strings.
+    is_confirm = confirm is True or (
+        isinstance(confirm, str) and confirm.lower() == "true"
+    )
+
+    decision_doc = frappe.get_doc("Mapping Decision", decision_name)
+    session_doc = frappe.get_doc("Tally Migration Session", decision_doc.session)
+    session_doc.check_permission("read")
+
+    _validate_promotable(decision_doc)
+
+    abbr = session_doc.company_abbr
+    entity_type = _get_entity_type_for_abbr(abbr)
+
+    # Pure-core payload build. Re-raises NotPromotable as ValidationError
+    # so Frappe surfaces it as a clean 417 to the UI.
+    from rgi_migration.mapper.rule_promotion import (
+        NotPromotable,
+        build_rule_payload,
+    )
+
+    try:
+        payload = build_rule_payload(
+            md_name=decision_doc.name,
+            tally_name=decision_doc.tally_name,
+            tally_root_type=decision_doc.tally_root_type,
+            final_account=decision_doc.final_account,
+            session_name=session_doc.name,
+            abbr=abbr,
+            entity_type=entity_type,
+        )
+    except NotPromotable as exc:
+        frappe.throw(str(exc))
+        return  # unreachable — frappe.throw raises
+
+    # --- Idempotency / conflict checks --------------------------------
+    duplicate = _lookup_duplicate(payload.source_hash)
+    conflict = None
+    if duplicate is None:
+        conflict = _lookup_conflict(
+            tally_pattern=payload.tally_pattern,
+            applicable_root_type=payload.applicable_root_type,
+            new_template=payload.erpnext_account_template,
+        )
+
+    substitution_info = {
+        "abbr": abbr,
+        "occurrences": payload.abbr_occurrences,
+        "is_literal": payload.is_literal_template,
+        "raw_final_account": payload.raw_final_account,
+    }
+
+    payload_dict = _payload_to_dict(payload)
+
+    # --- Preview mode ------------------------------------------------
+    if not is_confirm:
+        return {
+            "status": "preview",
+            "payload": payload_dict,
+            "substitution": substitution_info,
+            "duplicate": duplicate,
+            "conflict": conflict,
+        }
+
+    # --- Commit mode -------------------------------------------------
+    if conflict is not None:
+        # Refuse silently — no write. Reviewer can inspect via the
+        # surfaced existing-rule context and decide whether to widen
+        # the existing rule, pick a different final_account, or leave
+        # this decision un-promoted.
+        return {
+            "status": "conflict",
+            "conflict": conflict,
+            "payload": payload_dict,
+        }
+
+    if duplicate is not None:
+        # Idempotent: set promoted_to_rule on this MD (if not already
+        # pointing at the same rule) so subsequent runs of the same
+        # promote press are no-ops at the MD level too.
+        existing_rule_name = duplicate["rule_name"]
+        if decision_doc.promoted_to_rule != existing_rule_name:
+            decision_doc.db_set(
+                "promoted_to_rule",
+                existing_rule_name,
+                update_modified=False,
+            )
+        # Bump observability counters on the existing rule + widen
+        # source_entities if this is a new entity for it.
+        _bump_rule_observability(
+            rule_name=existing_rule_name,
+            entity_abbr=abbr,
+        )
+        return {
+            "status": "duplicate",
+            "rule_name": existing_rule_name,
+            "message": (
+                f"An identical Mapping Rule ({existing_rule_name}) already "
+                f"exists; linked this decision to it."
+            ),
+            "payload": payload_dict,
+        }
+
+    # Clean insert.
+    new_rule_doc = frappe.get_doc({
+        "doctype": "Mapping Rule",
+        "rule_name": payload.rule_name,
+        "is_anti_pattern": 0,
+        "status": payload.status,
+        "source_section": payload.source_section,
+        "source_hash": payload.source_hash,
+        "source_entities": abbr or "",
+        "created_from": payload.created_from,
+        "created_via_session": payload.created_via_session,
+        "tally_pattern": payload.tally_pattern,
+        "tally_match_mode": payload.tally_match_mode,
+        "applicable_root_type": payload.applicable_root_type,
+        "erpnext_account_template": payload.erpnext_account_template,
+        "raw_final_account": payload.raw_final_account,
+        "combine_amounts": 0,
+        "applies_to_entity_types": payload.applies_to_entity_types,
+        "creates_erpnext_account": 0,
+    }).insert(ignore_permissions=True)
+
+    decision_doc.db_set(
+        "promoted_to_rule",
+        new_rule_doc.name,
+        update_modified=False,
+    )
+
+    return {
+        "status": "created",
+        "rule_name": new_rule_doc.name,
+        "payload": payload_dict,
+    }
+
+
+def _validate_promotable(decision_doc):
+    """Refuse MDs that shouldn't be promoted. Raises frappe.ValidationError
+    via frappe.throw. Each refusal message is reviewer-facing; the
+    frontend surfaces the throw's message verbatim."""
+    tier = decision_doc.get("tier") or ""
+    if tier in _SUPPLIER_TIERS_FOR_PROMOTION_REFUSAL:
+        frappe.throw(
+            f"Decision {decision_doc.name!r} is a supplier-target decision "
+            f"(tier {tier!r}); promotion to Supplier Alias Rule lands in "
+            f"Item 5 Commit 2. Account-side promotion is scope for this "
+            f"commit only."
+        )
+
+    if decision_doc.final_supplier:
+        frappe.throw(
+            f"Decision {decision_doc.name!r} has final_supplier set; "
+            f"supplier-target promotions land in Item 5 Commit 2."
+        )
+
+    review_action = decision_doc.get("review_action") or ""
+    if review_action not in _PROMOTION_ALLOWED_REVIEW_ACTIONS:
+        frappe.throw(
+            f"Decision {decision_doc.name!r} has review_action "
+            f"{review_action!r}; promotion requires one of "
+            f"{sorted(_PROMOTION_ALLOWED_REVIEW_ACTIONS)}."
+        )
+
+    if not decision_doc.final_account:
+        frappe.throw(
+            f"Decision {decision_doc.name!r} has no final_account — "
+            f"cannot promote without a target."
+        )
+
+    # If promoted_to_rule is already set, the UI should have suppressed
+    # the button. If we get here anyway, treat as no-op: the caller will
+    # re-receive the existing rule via _lookup_duplicate. Nothing to
+    # enforce here.
+
+
+def _get_entity_type_for_abbr(abbr):
+    """Look up ``Company Abbreviation.entity_type`` for the session's
+    company_abbr. Returns ``"*"`` when the abbr is unset or the
+    Company Abbreviation row has no entity_type — same default as
+    rgi_migration.mapper.rule_source._filter_by_entity.
+    """
+    if not abbr:
+        return "*"
+    try:
+        row = frappe.get_doc("Company Abbreviation", abbr)
+    except frappe.DoesNotExistError:
+        return "*"
+    return (row.entity_type or "*").strip() or "*"
+
+
+def _lookup_duplicate(source_hash):
+    """Exact source_hash collision. Returns a dict suitable for the
+    preview payload, or None if no existing rule matches.
+    """
+    rows = frappe.get_all(
+        "Mapping Rule",
+        filters={"source_hash": source_hash},
+        fields=["name", "source_section", "created_from"],
+        limit=1,
+    )
+    if not rows:
+        return None
+    r = rows[0]
+    return {
+        "rule_name": r["name"],
+        "source_section": r.get("source_section"),
+        "created_from": r.get("created_from"),
+    }
+
+
+def _lookup_conflict(tally_pattern, applicable_root_type, new_template):
+    """Same (tally_pattern, applicable_root_type) tuple, but different
+    ``erpnext_account_template``. Returns the single most-recent
+    colliding rule (or None).
+
+    Match-mode is implicitly exact_ci for both sides in v1; when more
+    match modes land, this probe widens accordingly.
+    """
+    candidates = frappe.get_all(
+        "Mapping Rule",
+        filters={
+            "tally_pattern": tally_pattern,
+            "applicable_root_type": applicable_root_type,
+            "tally_match_mode": "exact_ci",
+            "is_anti_pattern": 0,
+        },
+        fields=[
+            "name",
+            "erpnext_account_template",
+            "raw_final_account",
+            "source_section",
+            "source_entities",
+            "created_via_session",
+            "creation",
+        ],
+        order_by="creation desc",
+    )
+    for r in candidates:
+        existing_template = r.get("erpnext_account_template") or ""
+        if existing_template == new_template:
+            # Identical target — not a conflict. Exact-hash collision
+            # (handled by _lookup_duplicate) is the stricter superset;
+            # anything passing it here would also have matched there,
+            # so this path is defensive.
+            continue
+        return {
+            "rule_name": r["name"],
+            "existing_template": existing_template,
+            "existing_raw_final_account": r.get("raw_final_account"),
+            "existing_source_section": r.get("source_section"),
+            "existing_entity_abbr": r.get("source_entities"),
+            "existing_session": r.get("created_via_session"),
+            "existing_created_at": (
+                r.get("creation").isoformat()
+                if r.get("creation") and hasattr(r.get("creation"), "isoformat")
+                else (str(r.get("creation")) if r.get("creation") else None)
+            ),
+        }
+    return None
+
+
+def _bump_rule_observability(rule_name, entity_abbr):
+    """Increment times_applied + update last_applied_at on an existing
+    rule, and widen source_entities CSV if this is a new entity abbr
+    for it.
+    """
+    rule_doc = frappe.get_doc("Mapping Rule", rule_name)
+    updates = {}
+
+    current_count = int(rule_doc.times_applied or 0)
+    updates["times_applied"] = current_count + 1
+    updates["last_applied_at"] = frappe.utils.now_datetime()
+
+    if entity_abbr:
+        existing_csv = (rule_doc.source_entities or "").strip()
+        existing_set = {
+            s.strip() for s in existing_csv.split(",") if s.strip()
+        }
+        if entity_abbr not in existing_set:
+            existing_set.add(entity_abbr)
+            updates["source_entities"] = ",".join(sorted(existing_set))
+
+    for field, value in updates.items():
+        rule_doc.db_set(field, value, update_modified=False)
+
+
+def _payload_to_dict(payload):
+    """Flatten a ``RulePayload`` dataclass to a plain dict for JSON transport.
+    Derived fields (``abbr_occurrences``, ``is_literal_template``) are
+    omitted — the frontend gets those via ``substitution`` instead.
+    """
+    return {
+        "rule_name": payload.rule_name,
+        "tally_pattern": payload.tally_pattern,
+        "tally_match_mode": payload.tally_match_mode,
+        "applicable_root_type": payload.applicable_root_type,
+        "erpnext_account_template": payload.erpnext_account_template,
+        "raw_final_account": payload.raw_final_account,
+        "source_section": payload.source_section,
+        "source_hash": payload.source_hash,
+        "applies_to_entity_types": payload.applies_to_entity_types,
+        "created_from": payload.created_from,
+        "created_via_session": payload.created_via_session,
+        "status": payload.status,
+        "is_anti_pattern": payload.is_anti_pattern,
+    }

@@ -10,6 +10,74 @@ here and reference the landing commit in the change log.
 
 ## Future design discussions
 
+### Item 5 Commit 1 Phase D browser verification — PENDING
+
+Status: Backend validated via Phase C programmatic smoke (13/13 probes
+green on TMS-CACSPU--00495). Browser verification deferred for
+time-budget reasons.
+
+What's unverified in browser:
+- `p` keyboard shortcut firing from reviewer's keyboard in live page
+- `_showPromoteConfirmationDialog` rendering + reviewer-facing copy
+- "Don't ask again this session" toggle — persists across rows within
+  session, resets on page reload (session-scoped flag contract)
+- Conflict dialog cross-entity context rendering (existing_rule,
+  existing_session, existing_entity_abbr, existing_created_at) to a
+  human reviewer
+- Literal-template override dialog ("Rule will be literal, not
+  parameterized — intended?") — only exercisable in browser since
+  no CACSPU-company Account is CACSPU-free
+
+Trigger point to close: BEFORE Item 8 ships. Item 8 unlocks the
+live-read path via FrappeRuleSource, at which point every reviewer
+approval on entities 2-59 may touch this promotion UI. Phase D gap
+becomes reviewer-impacting at that threshold, not before.
+
+Secondary trigger: before Item 5 Commit 2 (Supplier Alias Rule
+promotion) ships if that commit reuses any of the same UI patterns
+— regression catch opportunity.
+
+Estimated effort: ~20-30 min.
+
+---
+
+### Item 8 timing gate — promoted rules stay inert until FrappeRuleSource lands
+
+**Raised:** Item 5 Commit 1 Phase A (2026-04-23).
+**Decision:** Phase A A-0 chose **α** (DocType-write only, inert until
+Item 8).
+
+**What this means:** reviewer promotions via the Item 5 Commit 1
+"Approve & Promote" action write `Mapping Rule` rows to the DocType
+but the live mapper continues reading from `docs/seed_plan.json`
+through `JsonFileRuleSource`. Promoted rules are visible in Frappe
+(browsable, linkable from the Mapping Decision detail pane) but do
+NOT affect the next entity's `run_mapper` invocation until Item 8
+replaces `JsonFileRuleSource` with a DocType-backed `FrappeRuleSource`.
+
+The integration test `test_rule_promotion.py::
+test_promoted_rule_does_not_appear_in_json_rule_source` codifies this
+boundary. The test is future-forcing: when Item 8 lands, this test
+SHOULD fail, and the Item 8 author should update it to codify γ
+(DocType-backed live matching) rather than silencing.
+
+**Tripwire:** if Item 8 has not shipped by the time CACSPU is
+production-migrated (Item 9), **γ becomes mandatory before entity 2
+starts**. Rolling out 59 entities while every reviewer's promotions
+sit inert defeats the "rules library compounds" principle — the
+second entity would be mapping with identical tier-1 coverage to the
+first, and reviewers would compound the same corrections 59 times.
+
+**Action at tripwire:** pull forward the `FrappeRuleSource`
+implementation from Item 8 into the Item 9 migration scope. Minimum
+viable γ is a read-path-only `Mapping Rule` DocType source (no
+schema changes required — the fields already exist).
+
+Not blocking Item 5 Commit 1 ship. Logged here so the pre-Item-9
+checkpoint flags it explicitly.
+
+---
+
 ### Loader-time tier auto-lift when `final_*` is set
 
 **Raised:** Item 2 Commit 4.2 smoke-design (2026-04-22).

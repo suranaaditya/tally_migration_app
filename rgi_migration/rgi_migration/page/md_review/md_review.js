@@ -1496,6 +1496,9 @@ class DetailPane {
                         <button class="btn btn-primary btn-sm action-approve-btn" type="button" disabled>
                             Approve &amp; Next
                         </button>
+                        <button class="btn btn-primary btn-sm action-approve-promote-btn" type="button" disabled style="display: none;" title="Approve this decision and promote the mapping into a reusable Mapping Rule (p)">
+                            Approve &amp; Promote
+                        </button>
                     </div>
                 </div>
             </section>
@@ -1648,6 +1651,8 @@ class DetailPane {
             .off("click.mdr-request").on("click.mdr-request", () => this._onRequestCreation());
         this.container.find(".action-approve-btn")
             .off("click.mdr-approve").on("click.mdr-approve", () => this._onApprove());
+        this.container.find(".action-approve-promote-btn")
+            .off("click.mdr-approve-promote").on("click.mdr-approve-promote", () => this._onApproveAndPromote());
 
         // Button text polymorphism per row type (Item 3 Commit 1b, AMB-12).
         // Supplier rows → "Resolve Supplier" (opens rich dialog); account
@@ -1704,6 +1709,20 @@ class DetailPane {
         if (approve.length) {
             approve.prop("disabled", this._saving || !this.isDirty());
         }
+        // Approve & Promote — Item 5 Commit 1, account-side only.
+        // Visibility:
+        //   - hidden on vendor rows (supplier alias promotion is Commit 2)
+        //   - hidden when the row is already promoted (promoted_to_rule
+        //     Link is populated); reviewer can re-open the rule via the
+        //     "Promoted to rule" kv row in the detail pane
+        // Enabled gate is identical to Approve & Next (dirty + not saving).
+        const promote_btn = this.container.find(".action-approve-promote-btn");
+        if (promote_btn.length) {
+            const d = this.current_decision || {};
+            const show = !this._isVendorRow() && !d.promoted_to_rule;
+            promote_btn.toggle(show);
+            promote_btn.prop("disabled", this._saving || !this.isDirty());
+        }
         // Defer / Reject / Request Creation are intentionally NOT
         // gated by isDirty(). Reviewers commonly want to reject or
         // defer a row they haven't touched — e.g. "this Tally ledger
@@ -1745,6 +1764,11 @@ class DetailPane {
         if (!this.current_decision_name) return;
 
         this._saving = true;
+        // Reset the save-success marker up front. _onApproveAndPromote
+        // reads this flag to decide whether to proceed with the promote
+        // step; ordinary Approve & Next / Defer / Reject callers ignore
+        // it, so resetting here is harmless for them.
+        this._last_save_failed = false;
         this._update_action_button_states();
 
         const decision_name = this.current_decision_name;
@@ -1799,6 +1823,7 @@ class DetailPane {
             // shape). All we do here is log for dev debugging and
             // preserve dirty state so the reviewer can retry.
             console.error("md-review: save_decision failed", err);
+            this._last_save_failed = true;
         } finally {
             this._saving = false;
             this._update_action_button_states();
@@ -2166,6 +2191,294 @@ class DetailPane {
         await this.saveDecision({ advance: true });
     }
 
+    /**
+     * Item 5 Commit 1 — Approve & Promote.
+     *
+     * Combined action: runs the same save+advance path as Approve & Next,
+     * then promotes the approved decision's mapping into a reusable
+     * Mapping Rule row. Flow:
+     *
+     *   1. Refuse on vendor rows (supplier alias = Commit 2).
+     *   2. Validate Section 4 (same as _onApprove).
+     *   3. Save the decision WITHOUT advancing — we stay on the row so
+     *      the confirmation dialog (if shown) relates to the row the
+     *      reviewer is looking at.
+     *   4. Preview the promotion via promote_decision_to_rule(confirm=0).
+     *   5. Branch on preview outcome:
+     *      - conflict:      show conflict dialog, no write, no advance.
+     *        Reviewer resolves (edit final_account, or dismiss and leave
+     *        un-promoted — the Approve step already landed).
+     *      - duplicate:     silent commit (idempotent); toast; advance.
+     *      - is_literal:    MUST show confirmation dialog regardless of
+     *        "don't ask again" — this is the override case per Phase A
+     *        A-6. Reviewer explicitly confirms that a non-parameterized
+     *        rule is intended.
+     *      - don't-ask-again set: silent commit; toast; advance.
+     *      - default:       show confirmation dialog with full preview;
+     *        reviewer confirms → commit → advance.
+     *
+     * The save side of the action is independent of the promotion
+     * side — if promotion fails or is cancelled, the MD stays Approved.
+     */
+    async _onApproveAndPromote() {
+        if (this._isVendorRow()) {
+            this._showValidationMessage(
+                __("Supplier rows can't be promoted via Approve & Promote yet (Commit 2 scope). Use Approve & Next.")
+            );
+            return;
+        }
+        const validation = this._validateApprove();
+        if (!validation.ok) {
+            this._showValidationMessage(validation.message);
+            return;
+        }
+        this._clearValidationMessage();
+
+        const decision_name = this.current_decision_name;
+        if (!decision_name) return;
+
+        // Save without advance so the confirmation dialog anchors on the
+        // current row. Errors surface via Frappe's standard error dialog
+        // from saveDecision; _last_save_failed is flipped in the catch
+        // path so we can short-circuit cleanly.
+        this._last_save_failed = false;
+        await this.saveDecision({ advance: false });
+        if (this._last_save_failed) {
+            return;
+        }
+
+        // Preview the promotion.
+        let preview;
+        try {
+            preview = await frappe.call({
+                method: "rgi_migration.rgi_migration.page.md_review.md_review.promote_decision_to_rule",
+                args: { decision_name: decision_name, confirm: false },
+            });
+        } catch (err) {
+            console.error("md-review: promote_decision_to_rule preview failed", err);
+            return;
+        }
+        const preview_payload = (preview && preview.message) || null;
+        if (!preview_payload) return;
+
+        // Conflict — mandatory dialog, no write.
+        if (preview_payload.conflict) {
+            this._showPromoteConflictDialog(preview_payload);
+            return;
+        }
+
+        // Duplicate — exact hash already exists. Commit silently
+        // (idempotent: backend links this MD to the existing rule +
+        // bumps observability).
+        if (preview_payload.duplicate) {
+            await this._commitPromotion(decision_name, preview_payload, { silent: true });
+            return;
+        }
+
+        const is_literal = preview_payload.substitution &&
+            preview_payload.substitution.is_literal;
+        // Session-scoped flag stored on the DetailPane instance; clears
+        // on page reload (which is the "session" boundary for this
+        // reviewer session, matching A-6's "this session" scope).
+        const dont_ask_again = this._promote_dont_ask_again === true;
+
+        // Literal-template case overrides don't-ask-again per A-6.
+        if (is_literal || !dont_ask_again) {
+            this._showPromoteConfirmationDialog(decision_name, preview_payload);
+            return;
+        }
+
+        // Silent path — don't-ask-again enabled and template is
+        // parameterized normally.
+        await this._commitPromotion(decision_name, preview_payload, { silent: true });
+    }
+
+    /**
+     * Commit a previewed promotion. Thin wrapper around the
+     * promote_decision_to_rule whitelist with confirm=true. Writes
+     * the Mapping Rule (or sets the duplicate link), surfaces a toast,
+     * and advances to the next row on success.
+     *
+     * @param {string} decision_name
+     * @param {object} preview_payload  - return value of the preview call
+     * @param {object} opts
+     * @param {boolean} [opts.silent=false] - suppress the full dialog
+     *   (still shows a toast); intended for duplicate + don't-ask-again
+     *   paths.
+     */
+    async _commitPromotion(decision_name, preview_payload, opts = {}) {
+        const { silent = false } = opts;
+        let commit;
+        try {
+            commit = await frappe.call({
+                method: "rgi_migration.rgi_migration.page.md_review.md_review.promote_decision_to_rule",
+                args: { decision_name: decision_name, confirm: true },
+            });
+        } catch (err) {
+            console.error("md-review: promote_decision_to_rule commit failed", err);
+            return;
+        }
+        const commit_result = (commit && commit.message) || null;
+        if (!commit_result) return;
+
+        // A rare race: conflict surfaced between preview and commit
+        // (another session created a different rule for the same
+        // pattern). Show the conflict dialog — same as preview branch.
+        if (commit_result.status === "conflict") {
+            this._showPromoteConflictDialog(commit_result);
+            return;
+        }
+
+        const rule_name = commit_result.rule_name;
+        const toast_msg =
+            commit_result.status === "duplicate"
+                ? __("Linked to existing rule {0}", [rule_name])
+                : __("Promoted to rule {0}", [rule_name]);
+        frappe.show_alert({ message: toast_msg, indicator: "green" }, 4);
+
+        // Reflect promoted_to_rule locally so subsequent button-state
+        // updates hide the Promote button without needing a reload.
+        if (this.current_decision && this.current_decision.name === decision_name) {
+            this.current_decision.promoted_to_rule = rule_name;
+            this._update_action_button_states();
+        }
+
+        // Advance to the next pending row — parallels saveDecision's
+        // advance path on a successful Approve. Uses the same callback
+        // the Approve & Next flow uses so controller-level navigation
+        // stays consistent.
+        if (this.on_advance_requested) {
+            this.on_advance_requested(decision_name);
+        }
+
+        if (silent) return;
+    }
+
+    /**
+     * Render the preview confirmation dialog with the derived rule
+     * payload, substitution info, and (if the reviewer checks the
+     * "don't ask again this session" box) updates the session flag
+     * on the controller.
+     *
+     * Per Phase A A-6: literal templates MUST surface explicitly.
+     * Multi-occurrence substitutions surface the count so the reviewer
+     * can eyeball whether every occurrence should really become {ABBR}.
+     */
+    _showPromoteConfirmationDialog(decision_name, preview_payload) {
+        const payload = preview_payload.payload || {};
+        const subst = preview_payload.substitution || {};
+        const esc = frappe.utils.escape_html;
+
+        const is_literal = subst.is_literal;
+        const occurrences = subst.occurrences || 0;
+
+        const literal_warning = is_literal
+            ? `<div class="alert alert-warning" style="margin-top: 0.75rem;">
+                   <strong>${esc(__("Literal rule, not parameterized."))}</strong>
+                   ${esc(__("The final_account doesn't contain the entity abbr verbatim; the rule will match only this exact ERPNext account name, not a {ABBR}-parameterized equivalent on another entity. Intended?"))}
+               </div>`
+            : "";
+
+        const multi_notice = (!is_literal && occurrences > 1)
+            ? `<div class="alert alert-info" style="margin-top: 0.75rem;">
+                   ${esc(__("{0} occurrences of '{1}' will be substituted with {ABBR}.", [occurrences, subst.abbr || ""]))}
+               </div>`
+            : "";
+
+        const d = new frappe.ui.Dialog({
+            title: __("Approve & Promote — confirm rule payload"),
+            fields: [
+                {
+                    fieldtype: "HTML",
+                    fieldname: "preview_html",
+                    options: `
+                        <div class="mdr-promote-preview">
+                            <table class="table table-sm" style="margin-bottom: 0;">
+                                <tbody>
+                                    <tr><td><strong>${esc(__("Tally pattern"))}</strong></td><td><code>${esc(payload.tally_pattern || "")}</code></td></tr>
+                                    <tr><td><strong>${esc(__("Match mode"))}</strong></td><td>${esc(payload.tally_match_mode || "")}</td></tr>
+                                    <tr><td><strong>${esc(__("Root type"))}</strong></td><td>${esc(payload.applicable_root_type || "")}</td></tr>
+                                    <tr><td><strong>${esc(__("Account template"))}</strong></td><td><code>${esc(payload.erpnext_account_template || "")}</code></td></tr>
+                                    <tr><td><strong>${esc(__("Raw final_account"))}</strong></td><td>${esc(subst.raw_final_account || "")}</td></tr>
+                                    <tr><td><strong>${esc(__("Scope"))}</strong></td><td>${esc(payload.applies_to_entity_types || "*")}</td></tr>
+                                </tbody>
+                            </table>
+                            ${literal_warning}
+                            ${multi_notice}
+                        </div>
+                    `,
+                },
+                {
+                    fieldtype: "Check",
+                    fieldname: "dont_ask_again",
+                    label: __("Don't ask again this session"),
+                    default: 0,
+                    description: __("Subsequent Approve & Promote presses will commit silently this session (toast only). Literal-template rules and conflicts will still always surface."),
+                },
+            ],
+            primary_action_label: is_literal
+                ? __("Confirm literal rule")
+                : __("Promote"),
+            primary_action: async (values) => {
+                // Record the don't-ask-again flag on the DetailPane
+                // instance (session-scoped — clears on page reload).
+                if (values.dont_ask_again) {
+                    this._promote_dont_ask_again = true;
+                }
+                d.hide();
+                await this._commitPromotion(decision_name, preview_payload);
+            },
+        });
+        d.set_secondary_action_label(__("Cancel"));
+        d.set_secondary_action(() => d.hide());
+        d.show();
+    }
+
+    /**
+     * Render the conflict dialog. Read-only: surfaces the existing
+     * rule's origin so the reviewer can decide whether to amend their
+     * final_account or leave this decision un-promoted.
+     */
+    _showPromoteConflictDialog(preview_payload) {
+        const conflict = preview_payload.conflict || {};
+        const esc = frappe.utils.escape_html;
+        const existing_rule_link = conflict.rule_name
+            ? `<a href="/app/mapping-rule/${encodeURIComponent(conflict.rule_name)}" target="_blank" rel="noopener">${esc(conflict.rule_name)} <span class="nav-icon">↗</span></a>`
+            : esc(__("(unknown)"));
+
+        const d = new frappe.ui.Dialog({
+            title: __("Promotion conflict — existing rule points at a different target"),
+            fields: [
+                {
+                    fieldtype: "HTML",
+                    fieldname: "conflict_html",
+                    options: `
+                        <div class="mdr-promote-conflict">
+                            <div class="alert alert-danger">
+                                <strong>${esc(__("No rule was created."))}</strong>
+                                ${esc(__("An existing Mapping Rule matches this Tally pattern + root type but targets a different ERPNext account. Reviewer must resolve before this mapping can be promoted."))}
+                            </div>
+                            <table class="table table-sm">
+                                <tbody>
+                                    <tr><td><strong>${esc(__("Existing rule"))}</strong></td><td>${existing_rule_link}</td></tr>
+                                    <tr><td><strong>${esc(__("Existing template"))}</strong></td><td><code>${esc(conflict.existing_template || "")}</code></td></tr>
+                                    <tr><td><strong>${esc(__("Existing raw account"))}</strong></td><td>${esc(conflict.existing_raw_final_account || "")}</td></tr>
+                                    <tr><td><strong>${esc(__("Source"))}</strong></td><td>${esc(conflict.existing_source_section || "")}</td></tr>
+                                    <tr><td><strong>${esc(__("Entities"))}</strong></td><td>${esc(conflict.existing_entity_abbr || "")}</td></tr>
+                                    <tr><td><strong>${esc(__("Session"))}</strong></td><td>${esc(conflict.existing_session || "")}</td></tr>
+                                    <tr><td><strong>${esc(__("Created at"))}</strong></td><td>${esc(conflict.existing_created_at || "")}</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    `,
+                },
+            ],
+            primary_action_label: __("Close"),
+            primary_action: () => d.hide(),
+        });
+        d.show();
+    }
+
     async _onDefer() {
         await this._saveWithAction("Deferred");
     }
@@ -2458,6 +2771,7 @@ const SHORTCUT_REFERENCE = [
             ["R",            "Reject"],
             ["C",            "Request Creation — on supplier rows, opens Resolve Supplier dialog"],
             ["D",            "Defer"],
+            ["P",            "Approve & Promote — saves + creates a reusable Mapping Rule (account rows only; Item 5 Commit 2 will extend to supplier rows)"],
             ["Ctrl+S",       "Approve & Next (validating; works from notes)"],
             ["Ctrl+Shift+S", "Save Without Advance"],
             ["Ctrl+Z",       "Undo last save (10s window)"],
@@ -4132,6 +4446,21 @@ frappe.pages["md-review"].on_page_load = function(wrapper) {
             if (!detail_pane._saving) detail_pane._onDefer();
         },
         description: __("Defer"),
+        page: page,
+        ignore_inputs: false,
+    });
+
+    // Item 5 Commit 1 — `p` triggers Approve & Promote. The handler
+    // itself refuses vendor rows + already-promoted rows with an
+    // inline validation message, so binding unconditionally here is
+    // safe; suppressing the shortcut silently when the button is
+    // hidden would be more confusing than a reviewer-facing refusal.
+    frappe.ui.keys.add_shortcut({
+        shortcut: "p",
+        action: () => {
+            if (!detail_pane._saving) detail_pane._onApproveAndPromote();
+        },
+        description: __("Approve & Promote"),
         page: page,
         ignore_inputs: false,
     });

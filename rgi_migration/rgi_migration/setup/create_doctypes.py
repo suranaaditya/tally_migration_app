@@ -826,6 +826,51 @@ def run_audit_patches() -> dict:
     return r
 
 
+# =========================================================================
+# Item 5 Commit 1 — add raw_final_account field to Mapping Rule
+# =========================================================================
+#
+# Reviewer-promoted rules persist both the substituted
+# ``erpnext_account_template`` (match target) AND the pre-substitution
+# ``raw_final_account`` (observability / audit) per Item 5 Phase A
+# A-9. This function is idempotent and safe to re-run; existing benches
+# get the field added, fresh benches get it from the DocType JSON via
+# ``bench migrate``.
+
+
+def run_item5_patch() -> dict:
+    """Add ``raw_final_account`` Data field to Mapping Rule if missing.
+
+    Returns a single-entry results dict. Safe to re-run — existence check
+    on fieldname guards against duplicate append.
+    """
+    results: dict = {}
+    rule = frappe.get_doc("DocType", "Mapping Rule")
+    existing = {f.fieldname for f in rule.fields}
+    if "raw_final_account" in existing:
+        results["Mapping Rule"] = "no change (raw_final_account already present)"
+        return results
+
+    # Insert the field just after erpnext_account_template so the Form
+    # layout groups promotion-origin metadata alongside the match target.
+    # Frappe's DocType.append adds at the end; we re-order via insert
+    # into the fields list after save so the field_order in the JSON
+    # stays the source of truth for layout.
+    rule.append("fields", {
+        "fieldname": "raw_final_account",
+        "label": "Raw Final Account (promotion source)",
+        "fieldtype": "Data",
+        "read_only": 1,
+        "description": "Raw final_account captured from the promoting "
+                       "session (pre {ABBR} substitution). Observability "
+                       "only; erpnext_account_template is the match target.",
+    })
+    rule.save(ignore_permissions=True)
+    frappe.db.commit()
+    results["Mapping Rule"] = "added field: raw_final_account"
+    return results
+
+
 def run_all() -> dict:
     """Entry point. Phase 1 then Phase 2. Prints a plain-text summary."""
     print()

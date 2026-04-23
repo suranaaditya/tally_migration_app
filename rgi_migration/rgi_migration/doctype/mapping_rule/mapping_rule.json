@@ -28,6 +28,7 @@
   "tally_pattern_alternates",
   "erp_target_section",
   "erpnext_account_template",
+  "raw_final_account",
   "cb_erp_target",
   "combine_amounts",
   "account_creation_section",
@@ -173,6 +174,13 @@
    "fieldname": "erpnext_account_template",
    "fieldtype": "Data",
    "label": "ERPNext Account Template"
+  },
+  {
+   "description": "Raw final_account captured from the promoting session (pre {ABBR} substitution). Observability only; erpnext_account_template is the match target.",
+   "fieldname": "raw_final_account",
+   "fieldtype": "Data",
+   "label": "Raw Final Account (promotion source)",
+   "read_only": 1
   },
   {
    "fieldname": "cb_erp_target",
