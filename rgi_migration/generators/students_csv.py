@@ -40,6 +40,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
+from rgi_migration.generators._frappe_compat import whitelist
 from rgi_migration.parsers.normalized_schema import Ledger, ParsedTallyTB
 
 LOG = logging.getLogger(__name__)
@@ -266,6 +267,7 @@ def _append_error_log(session: Any, block: str) -> None:
     session.error_log = f"{existing}{separator}{block}"
 
 
+@whitelist()
 def generate_students_csv(session_name: str) -> str:
     """Generate Students CSV for the given session. Returns File doc name.
 

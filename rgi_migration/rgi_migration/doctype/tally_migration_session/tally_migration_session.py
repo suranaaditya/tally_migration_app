@@ -101,6 +101,8 @@ _STATUS_PARSING = "Parsing"
 _STATUS_PARSED = "Parsed"
 _STATUS_MAPPING = "Mapping"
 _STATUS_REVIEWING = "Reviewing"
+_STATUS_GENERATING = "Generating"
+_STATUS_GENERATED = "Generated"
 _STATUS_FAILED = "Failed"
 _STATUS_SUBMITTED = "Submitted"
 
@@ -109,6 +111,12 @@ _STATUS_SUBMITTED = "Submitted"
 # existing decisions before re-running. Failed lets reviewers retry
 # after fixing a configuration problem.
 _RUN_MAPPER_ALLOWED_FROM = frozenset({_STATUS_DRAFT, _STATUS_FAILED})
+
+# Statuses from which Generate All is permitted. Item 8.5 Stage 1 — only
+# Reviewing (reviewer has cleared the pending queue) OR Generated (re-run
+# to replace Draft artefacts) are accepted. Draft/Parsing/Mapping are
+# pre-review; Submitted is frozen.
+_GENERATE_ALLOWED_FROM = frozenset({_STATUS_REVIEWING, _STATUS_GENERATED})
 
 
 @frappe.whitelist()
@@ -585,3 +593,232 @@ def _record_failure(session_name: str, exc: Exception) -> None:
 		frappe.db.commit()
 	except Exception:  # noqa: BLE001 — don't mask original failure
 		pass
+
+
+# ---------------------------------------------------------------------------
+# Item 8.5 Stage 1 — Generate All orchestrator
+# ---------------------------------------------------------------------------
+#
+# Atomic single-pass invocation of the four generators in a fixed order:
+#
+#   1. Main Opening JE   — opening_je.generate_main_opening_je
+#   2. OIT CSV           — oit_csv.generate_oit_csv
+#   3. Advance JE        — advance_je.generate_advance_je
+#   4. Students CSV      — students_csv.generate_students_csv
+#
+# Stop-on-first-failure. On any generator raising, the wrapper rolls
+# status back to Reviewing (NOT Failed — generation attempts are
+# recoverable; Failed is reserved for unrecoverable session-level
+# errors like parser crashes) and captures which generators succeeded
+# vs failed in the return dict so the UI can surface mid-sequence
+# failures clearly.
+#
+# Per Phase A Q5: generators are self-idempotent. Re-running over a
+# Generated session deletes Draft JEs/Files and recreates. Submitted
+# artefacts refuse per each generator's internal contract (Q6).
+
+
+_GENERATOR_SEQUENCE = (
+	(
+		"Main Opening JE",
+		"rgi_migration.generators.opening_je.generate_main_opening_je",
+	),
+	(
+		"OIT CSV",
+		"rgi_migration.generators.oit_csv.generate_oit_csv",
+	),
+	(
+		"Advance JE",
+		"rgi_migration.generators.advance_je.generate_advance_je",
+	),
+	(
+		"Students CSV",
+		"rgi_migration.generators.students_csv.generate_students_csv",
+	),
+)
+
+
+@frappe.whitelist()
+def generate_all(session_name: str) -> dict[str, Any]:
+	"""Run all four generators in sequence.
+
+	Guards:
+	  * session status must be Reviewing or Generated (re-generate)
+	  * Submitted sessions are frozen (refused)
+
+	State transitions on success:
+	  Reviewing|Generated -> Generating -> Generated
+
+	On mid-sequence failure:
+	  Generating -> Reviewing (with error appended to error_log). Prior
+	  successful generators remain in their Draft state; a subsequent
+	  ``generate_all`` call will replace them via each generator's own
+	  idempotency logic.
+
+	Returns a dict shaped for the JS wrapper::
+
+	  {
+	    "status": "ok" | "partial_failure",
+	    "succeeded": [{"name": str, "artefact": str}, ...],
+	    "failed": {"name": str, "error": str} | None,
+	    "skipped": [str, ...],   # generator names after first failure
+	  }
+	"""
+	session = frappe.get_doc("Tally Migration Session", session_name)
+
+	if session.status not in _GENERATE_ALLOWED_FROM:
+		frappe.throw(
+			f"Cannot generate on session {session_name!r} with status "
+			f"{session.status!r}. Allowed statuses: "
+			f"{sorted(_GENERATE_ALLOWED_FROM)}. Reset Parse + Run Mapper "
+			f"required to reach Reviewing if currently Draft/Failed."
+		)
+
+	# Transition to Generating + commit so UI / concurrent readers see it.
+	session.status = _STATUS_GENERATING
+	session.save(ignore_permissions=True)
+	frappe.db.commit()
+
+	succeeded: list[dict[str, str]] = []
+	failed: dict[str, str] | None = None
+	skipped: list[str] = []
+
+	for i, (label, dotted_path) in enumerate(_GENERATOR_SEQUENCE):
+		if failed is not None:
+			# Already failed upstream; don't try to run this one.
+			continue
+		try:
+			fn = frappe.get_attr(dotted_path)
+			artefact_name = fn(session_name)
+			succeeded.append({"name": label, "artefact": artefact_name})
+		except Exception as exc:  # noqa: BLE001 — capture-all for UI
+			failed = {
+				"name": label,
+				"error": f"{type(exc).__name__}: {exc}",
+			}
+			# Mark remaining as skipped for clear UI messaging.
+			for remaining_label, _ in _GENERATOR_SEQUENCE[i + 1:]:
+				skipped.append(remaining_label)
+
+	# Transition to terminal state.
+	session.reload()
+	if failed is None:
+		session.status = _STATUS_GENERATED
+		session.save(ignore_permissions=True)
+		frappe.db.commit()
+		return {
+			"status": "ok",
+			"succeeded": succeeded,
+			"failed": None,
+			"skipped": [],
+		}
+
+	# Mid-sequence failure → back to Reviewing with error captured.
+	ts = frappe.utils.now_datetime().isoformat(timespec="seconds")
+	block_lines = [
+		f"[{ts}] generate_all partial failure:",
+		f"  succeeded: {[s['name'] for s in succeeded]}",
+		f"  failed: {failed['name']} — {failed['error']}",
+		f"  skipped: {skipped}",
+	]
+	block = "\n".join(block_lines)
+	existing = session.error_log or ""
+	separator = "\n\n" if existing else ""
+	session.error_log = f"{existing}{separator}{block}"
+	session.status = _STATUS_REVIEWING
+	session.save(ignore_permissions=True)
+	frappe.db.commit()
+
+	return {
+		"status": "partial_failure",
+		"succeeded": succeeded,
+		"failed": failed,
+		"skipped": skipped,
+	}
+
+
+# ---------------------------------------------------------------------------
+# Item 8.5 Stage 1 — Mark Submitted (Gap 11 closure)
+# ---------------------------------------------------------------------------
+#
+# Reviewer affirmation that all four artefacts have been submitted
+# (JEs) or consumed (CSVs) in their downstream systems. Transitions
+# the session to its terminal Submitted state, after which it is
+# frozen (per reset_parse's refusal at Submitted and the "never
+# regenerate" principle).
+#
+# Validation: hard check that Main JE and Advance JE are Submitted in
+# ERPNext (docstatus=1). OIT CSV and Students CSV are Files, not
+# submittable; they rely on the reviewer's explicit confirmation via
+# the JS confirm prompt. Temporary Opening balance verification is
+# manual by design per docs/mapper_design_notes.md §5.
+
+
+_MARK_SUBMITTED_ALLOWED_FROM = frozenset({_STATUS_GENERATED})
+
+
+@frappe.whitelist()
+def mark_submitted(session_name: str) -> dict[str, Any]:
+	"""Finalize a session: status Generated -> Submitted.
+
+	Guards:
+	  * session status must be Generated
+	  * both Main Opening JE and Advance JE (if present) must have
+	    docstatus=1 (Submitted in ERPNext Desk)
+
+	The reviewer is expected to have separately:
+	  * Imported the OIT CSV via ERPNext's Opening Invoice Tool and
+	    submitted the resulting Purchase Invoices
+	  * Handed the Students CSV to dux_voucher's Ex Student Opening Batch
+	  * Verified Temporary Opening - {ABBR} balance nets to zero in
+	    ERPNext GL (manual per §5 architectural decision)
+
+	The JS confirm prompt surfaces these expectations; this function
+	trusts the reviewer on them. Only the JE docstatus check is
+	enforced programmatically.
+
+	Returns ``{"status": "ok"}`` on success; raises
+	``frappe.ValidationError`` on guard failures.
+	"""
+	session = frappe.get_doc("Tally Migration Session", session_name)
+
+	if session.status not in _MARK_SUBMITTED_ALLOWED_FROM:
+		frappe.throw(
+			f"Cannot mark session {session_name!r} Submitted — status "
+			f"is {session.status!r}. Allowed: "
+			f"{sorted(_MARK_SUBMITTED_ALLOWED_FROM)}."
+		)
+
+	unsubmitted: list[str] = []
+	for field_name, je_label in (
+		("generated_je_draft", "Main Opening JE"),
+		("generated_advance_je", "Advance JE"),
+	):
+		je_name = getattr(session, field_name, None)
+		if not je_name:
+			# Generator may not have produced this artefact (e.g. no
+			# advance-Dr vendors → no advance_je). Skip silently.
+			continue
+		docstatus = frappe.db.get_value(
+			"Journal Entry", je_name, "docstatus",
+		)
+		if docstatus != 1:
+			status_label = {0: "Draft", 2: "Cancelled"}.get(
+				docstatus, f"docstatus={docstatus}"
+			)
+			unsubmitted.append(f"{je_label} ({je_name}) is {status_label}")
+
+	if unsubmitted:
+		frappe.throw(
+			"Cannot mark Submitted — the following Journal Entries "
+			"are not Submitted in ERPNext yet:\n\n  "
+			+ "\n  ".join(unsubmitted)
+			+ "\n\nSubmit each JE from its ERPNext Desk page, then try again."
+		)
+
+	session.status = _STATUS_SUBMITTED
+	session.completed_at = frappe.utils.now_datetime()
+	session.save(ignore_permissions=True)
+	frappe.db.commit()
+
+	return {"status": "ok", "session_status": _STATUS_SUBMITTED}

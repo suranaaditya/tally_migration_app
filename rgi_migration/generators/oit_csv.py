@@ -39,6 +39,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
+from rgi_migration.generators._frappe_compat import whitelist
 from rgi_migration.mapper.mapper import MappedDecision
 
 LOG = logging.getLogger(__name__)
@@ -309,6 +310,7 @@ def _append_error_log(session: Any, block: str) -> None:
     session.error_log = f"{existing}{separator}{block}"
 
 
+@whitelist()
 def generate_oit_csv(session_name: str) -> str:
     """Generate OIT CSV for the given session. Returns the File doc's name.
 

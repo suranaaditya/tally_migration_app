@@ -62,6 +62,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
+from rgi_migration.generators._frappe_compat import whitelist
 from rgi_migration.mapper.mapper import MappedDecision
 from rgi_migration.parsers.normalized_schema import Ledger, ParsedTallyTB
 
@@ -410,6 +411,7 @@ def _append_error_log(session: Any, block: str) -> None:
     session.error_log = f"{existing}{separator}{block}"
 
 
+@whitelist()
 def generate_main_opening_je(session_name: str) -> str:
     """Generate a Draft Main Opening JE for the given session. Returns JE.name.
 

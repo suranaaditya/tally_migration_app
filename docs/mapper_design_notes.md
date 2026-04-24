@@ -835,6 +835,140 @@ via `frappe.db.sql("SELECT <field> FROM tab<DocType>")` that the
 value persisted, not that `doc.<field>` returned it (ORM may mask the
 nullification depending on the read path).
 
+### Cross-artefact Temporary Opening reconciliation is manual by design
+
+Established during Item 8.5 Stage 1 Phase A (Q10 resolution).
+
+Each of the four generators posts to `Temporary Opening - {ABBR}` as
+its balancing account: Main JE absorbs the general-ledger residual,
+Advance JE absorbs the vendor-advance residual, OIT CSV's downstream
+Purchase Invoices post against it, Students CSV's downstream
+dux_voucher Ex-Student Opening Batch posts against it. After all
+four are submitted in ERPNext, the account's net balance should be
+zero (or within ₹1 tolerance per RGI rules §6.2).
+
+**The system does not verify this automatically.** The `Mark
+Submitted` action checks only that Main JE and Advance JE have
+`docstatus=1`; it does NOT aggregate Temporary Opening postings
+across artefacts.
+
+Rationale: this is accountant standard practice. The reviewer opens
+`Temporary Opening - {ABBR}` in ERPNext's GL view after all four
+artefacts submit and confirms the balance nets to zero. The confirm
+prompt on `Mark Submitted` reminds them to do so.
+
+Do NOT build automation for this unless real-world reviewer feedback
+from 10+ entity migrations indicates the manual process is
+unreliable. This is an architectural decision, not a deferral — do
+not add it to `docs/WEEK4_DEFERRED_ITEMS.md`.
+
+Reference: Item 8.5 Stage 1 commit (TBD; this doc update is part of
+that commit).
+
+### Frappe-compat shim for pure-importable Frappe-adjacent modules
+
+Established during Item 8.5 Stage 1 Phase B.
+
+Modules that expose `@frappe.whitelist()`-decorated entry points at
+module scope cannot be imported without Frappe installed, which
+breaks pure-pytest testing of any pure helpers in the same module.
+The generators are designed to be pure-importable (e.g.
+`from rgi_migration.generators.opening_je import MainJEGenerationError,
+build_je_payload` must work on a local venv with no Frappe) —
+applying `@frappe.whitelist()` naively would regress that property.
+
+The pattern: a small shim module (`rgi_migration.generators.
+_frappe_compat`) exports a `whitelist` callable that:
+
+* On the bench (Frappe installed): resolves to `frappe.whitelist`,
+  so `@whitelist()` behaves identically to `@frappe.whitelist()`.
+* Off the bench (Frappe absent): resolves to a no-op passthrough
+  decorator. The decorated function remains callable; attempting to
+  invoke it will still fail at the body's lazy `import frappe` —
+  correct behavior, because the function genuinely needs Frappe to
+  do anything useful.
+
+Reference implementation:
+`rgi_migration/generators/_frappe_compat.py` (31 LOC, fully
+documented). Apply this pattern whenever a new module must be both
+Frappe-whitelisted and pure-pytest-importable. DO NOT inline the
+`try/except ImportError` in each module — centralize in a shim so
+the passthrough contract is defined in one place.
+
+### Frappe `File` docs lack uniqueness on `file_url`
+
+Surfaced during Item 8.5 Stage 1 Phase C (Probe 5).
+
+When a generator (`oit_csv` / `students_csv`) regenerates an
+attachment and the filename is built from `datetime.now().strftime(
+"%Y%m%d%H%M%S")`, two regenerations within the same wall-clock
+second produce identical `file_name` values and therefore identical
+`file_url` values. Frappe's `File` DocType does NOT enforce a unique
+index on `file_url`; a second `frappe.get_doc({"doctype": "File",
+...}).insert()` with an already-used `file_url` succeeds, creating
+an orphan File doc.
+
+The generators' idempotency paths call
+`frappe.db.get_value("File", {"file_url": prior_url}, "name")` which
+returns the FIRST match. On collision, only one of the duplicate
+docs gets deleted. The other accumulates as tabFile orphan.
+
+Not user-visible — `session.generated_oit_file` / `session.
+student_ledger_file` always point to a valid, readable file. But the
+tabFile table fills with orphans over repeated regenerations. In
+real migrations the reviewer pauses between clicks so same-second
+collision is unlikely, but integration tests and back-to-back
+regeneration can hit it.
+
+Three candidate fixes (none urgent, ship when orphan count becomes
+measurable):
+1. Delete-all-matching in the idempotency path, not first match
+2. Microsecond-resolution timestamp in filename construction
+3. Content-hash suffix so identical content → identical name, else
+   divergent filenames per regeneration
+
+Reference: Phase C Probe 5 observed 3-4 File docs accumulating at a
+single `file_url` during same-second regenerations. Documented as a
+known limitation, not a Stage 1 blocker.
+
+### JE submission requires Fiscal Year scope alignment with target Company
+
+Surfaced during Item 8.5 Stage 1 Phase C (Probe 7).
+
+ERPNext's `JournalEntry._submit` path calls `get_fiscal_years(
+posting_date, company=<X>)` which raises `FiscalYearError` when no
+Fiscal Year doc covers `posting_date` AND is either unscoped or
+scoped to Company `<X>`. A Fiscal Year doc with a non-empty
+`companies` child table restricts which Companies may post against
+it; without the target Company in that table, submit refuses even
+if the date range matches.
+
+Consequence for the migration app: the session's `tb_date` (which
+becomes each generated JE's `posting_date`) must fall within a
+Fiscal Year doc that either has empty `companies` (applies to all)
+or explicitly includes the target ERPNext Company.
+
+Observed failure case: synthetic test sessions with `tb_date =
+nowdate()` hit `FiscalYearError` on JE submit because the bench's
+current-year Fiscal Year doc didn't have GHR CACS Pune in its
+Companies scope. Fixed in the synthetic helper by defaulting
+`tb_date = "2025-04-01"` — an older date with a Fiscal Year that
+DOES include GHR CACS Pune.
+
+Pre-flight requirement for real migrations (Item 9 and onward):
+verify that the Fiscal Year doc for `session.tb_date` either has
+empty `companies` OR explicitly includes the migration target
+Company. Run the following bench check before generating:
+
+```python
+frappe.get_doc("Fiscal Year", fy_name).companies
+# Expected: [] (unscoped) or list containing target ERPNext Company
+```
+
+This is a bench-config prerequisite, not a code defect. The
+generators correctly surface the failure; the responsibility to
+align FY scope lives with the bench administrator.
+
 ### Config-default changes don't propagate to persisted state
 
 Surfaced during Item 6 Phase D (commit `709eae2`, fuzzy threshold

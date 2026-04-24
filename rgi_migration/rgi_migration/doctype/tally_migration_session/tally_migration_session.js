@@ -78,6 +78,108 @@ frappe.ui.form.on("Tally Migration Session", {
             );
         }
 
+        // Generate All — visible when the session is Reviewing (pending
+        // decisions resolved) or Generated (re-run to replace Drafts).
+        // Item 8.5 Stage 1: atomic single-pass of all four generators.
+        // Each generator is self-idempotent (Draft JEs deleted and
+        // regenerated; attached Files replaced); Submitted JEs refuse
+        // per each generator's internal contract.
+        const generate_allowed_from = new Set(["Reviewing", "Generated"]);
+        if (generate_allowed_from.has(status)) {
+            const label = status === "Generated"
+                ? __("Regenerate All")
+                : __("Generate All");
+            frm.add_custom_button(label, () => {
+                frappe.call({
+                    method:
+                        "rgi_migration.rgi_migration.doctype.tally_migration_session" +
+                        ".tally_migration_session.generate_all",
+                    args: { session_name: frm.doc.name },
+                    freeze: true,
+                    freeze_message: __(
+                        "Generating 4 artefacts... (this may take up to 10 seconds)"
+                    ),
+                    callback: (r) => {
+                        const resp = (r && r.message) || {};
+                        if (resp.status === "ok") {
+                            const names = (resp.succeeded || [])
+                                .map((s) => s.name).join(", ");
+                            frappe.show_alert({
+                                message: __(
+                                    "Generated 4 artefacts: {0}. Status now Generated.",
+                                    [names]
+                                ),
+                                indicator: "green",
+                            }, 10);
+                        } else if (resp.status === "partial_failure") {
+                            const succeeded = (resp.succeeded || [])
+                                .map((s) => `  ✓ ${s.name} → ${s.artefact}`)
+                                .join("<br>");
+                            const failed = resp.failed
+                                ? `  ✗ ${resp.failed.name}: ${frappe.utils.escape_html(resp.failed.error)}`
+                                : "";
+                            const skipped = (resp.skipped || []).length
+                                ? `  ⊝ Not run: ${resp.skipped.join(", ")}`
+                                : "";
+                            frappe.msgprint({
+                                title: __("Partial generation failure"),
+                                message:
+                                    __("Status rolled back to Reviewing.") +
+                                    "<br><br>" +
+                                    (succeeded || __("(no generators succeeded)")) +
+                                    "<br>" + failed +
+                                    (skipped ? "<br>" + skipped : "") +
+                                    "<br><br>" +
+                                    __("Fix the underlying issue and re-run Generate All. Any artefacts already produced will be replaced via generator idempotency."),
+                                indicator: "red",
+                            });
+                        }
+                        frm.reload_doc();
+                    },
+                });
+            }).addClass("btn-primary");
+        }
+
+        // Mark Submitted — visible when status is Generated. Hard-checks
+        // Main JE + Advance JE docstatus server-side; a JS confirm prompt
+        // surfaces the reviewer's manual responsibilities (OIT import,
+        // Students CSV handoff, Temporary Opening GL balance). Once marked
+        // Submitted the session is frozen.
+        if (status === "Generated") {
+            frm.add_custom_button("Mark Submitted", () => {
+                const confirm_html = `
+                    <p><strong>${__("Mark Submitted finalizes this session. Before confirming, verify:")}</strong></p>
+                    <ul>
+                        <li>${__("Main Opening JE and Advance JE are Submitted in ERPNext (this is checked automatically)")}</li>
+                        <li>${__("OIT CSV has been imported via ERPNext's Opening Invoice Tool and those invoices are Submitted")}</li>
+                        <li>${__("Students CSV has been handed off to dux_voucher processing")}</li>
+                        <li>${__("Temporary Opening account balance in ERPNext GL nets to zero")}</li>
+                    </ul>
+                    <p>${__("Once marked Submitted, this session is frozen and cannot be regenerated.")}</p>
+                    <p><strong>${__("Proceed?")}</strong></p>
+                `;
+                frappe.confirm(confirm_html, () => {
+                    frappe.call({
+                        method:
+                            "rgi_migration.rgi_migration.doctype.tally_migration_session" +
+                            ".tally_migration_session.mark_submitted",
+                        args: { session_name: frm.doc.name },
+                        freeze: true,
+                        freeze_message: __("Finalizing session..."),
+                        callback: (r) => {
+                            if (r && r.message && r.message.status === "ok") {
+                                frappe.show_alert({
+                                    message: __("Session marked Submitted. Workflow complete."),
+                                    indicator: "green",
+                                }, 7);
+                                frm.reload_doc();
+                            }
+                        },
+                    });
+                });
+            });
+        }
+
         // Reset Parse — visible when the session has moved past Draft (and
         // is not Submitted). Drops all Mapping Decisions for the session
         // and resets snapshot fields. error_log is preserved for audit.
