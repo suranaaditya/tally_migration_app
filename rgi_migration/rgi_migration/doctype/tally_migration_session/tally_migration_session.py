@@ -12,6 +12,32 @@ from frappe.model.document import Document
 
 
 class TallyMigrationSession(Document):
+	def before_insert(self) -> None:
+		"""Auto-populate ``fiscal_year_short`` from ``fiscal_year``.
+
+		``fiscal_year_short`` is spliced into the session autoname
+		(``TMS-{company_abbr}-{fiscal_year_short}-{#####}``) and is
+		read-only in the UI. Computing it here — rather than asking
+		the user — prevents malformed autonames like
+		``TMS-CACSPU--00495`` (the in-flight session that predates
+		this hook).
+
+		Validation is strict: fiscal_year must be exactly ``YYYY-YYYY``
+		with consecutive years. A malformed input cascades into a
+		broken session name, so we raise at insert time rather than
+		silently leaving ``fiscal_year_short`` blank.
+		"""
+		from rgi_migration.session.fiscal_year import (
+			compute_fiscal_year_short,
+		)
+
+		try:
+			self.fiscal_year_short = compute_fiscal_year_short(
+				self.fiscal_year or ""
+			)
+		except ValueError as exc:
+			frappe.throw(str(exc))
+
 	def get_decisions(
 		self,
 		filters: dict | None = None,
@@ -279,7 +305,39 @@ def reset_parse(session_name: str) -> dict[str, Any]:
 
 	Refuses on Submitted sessions (those are frozen by policy).
 
-	Returns ``{"status": "ok", "deleted_count": int}``.
+	Returns ``{"status": "ok", "deleted_count": int, "scr_swept": int,
+	"acr_swept": int}``.
+
+	**Wiped (session-local state):**
+	  * ``Mapping Decision`` rows where ``session == session_name``
+	    (direct SQL delete)
+	  * ``Supplier Creation Request`` child rows on this session
+	  * ``Account Creation Request`` child rows on this session
+	  * ``Account Creation Source`` rows (transitively, via ACR parent
+	    deletion)
+
+	**Preserved (cross-entity learning artifacts):**
+	  * ``Mapping Rule`` rows where
+	    ``created_via_session == session_name``. These are rule
+	    promotions from reviewer approvals (Item 5 Commit 1).
+	  * ``Supplier Alias Rule`` rows where
+	    ``created_from == "session_review"``. These are alias
+	    promotions (Item 5 Commit 2).
+
+	**Why preserved?** Per CLAUDE.md architectural decisions: the rules
+	library compounds. Every approved mapping becomes a reusable rule;
+	the goal is Tier 1 auto-mapping 70 %+ by entity 10. Promoted rules
+	are cross-entity learning artifacts, not session-local state. The
+	``created_via_session`` / ``created_from`` fields carry provenance,
+	not scope. Wiping them on Reset Parse would destroy the learning
+	loop and defeat the 59-entity rollout strategy.
+
+	**Note to future contributors:** do not modify Reset Parse to wipe
+	promoted Mapping Rules or Supplier Alias Rules. The Item 7 Fix 3
+	audit (2026-04-24) explicitly evaluated this and concluded that
+	preserving them is correct. Any change here needs an architectural
+	decision note in ``docs/mapper_design_notes.md``, not a silent
+	tweak.
 	"""
 	session = frappe.get_doc("Tally Migration Session", session_name)
 	if session.status == _STATUS_SUBMITTED:
