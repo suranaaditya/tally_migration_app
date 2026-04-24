@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any
 
 import frappe
@@ -207,6 +206,7 @@ def run_mapper(session_name: str) -> dict[str, Any]:
 		coa = _load_coa(erpnext_company, session.company_abbr)
 		suppliers = _load_suppliers()
 		rule_source = _load_rule_source()
+		alias_rule_source = _load_alias_rule_source()
 		entity_type = abbr_doc.entity_type or "*"
 
 		# ---- Run pure-core pipeline ----------------------------------
@@ -218,6 +218,7 @@ def run_mapper(session_name: str) -> dict[str, Any]:
 			coa=coa,
 			suppliers=suppliers,
 			rule_source=rule_source,
+			alias_rule_source=alias_rule_source,
 		)
 
 		# ---- Transition to Parsed + persist summary ------------------
@@ -457,14 +458,37 @@ def _load_suppliers() -> list:
 
 
 def _load_rule_source():
-	"""Load rules from ``docs/seed_plan.json`` — the committed seed is the
-	source of truth for Tier-1 rules until Item 8 lands FrappeRuleSource.
-	"""
-	from rgi_migration.mapper.rule_source import JsonFileRuleSource
+	"""Load the live rule library from the ``Mapping Rule`` DocType.
 
-	app_root = Path(frappe.get_app_path("rgi_migration")).parent
-	seed_path = app_root / "docs" / "seed_plan.json"
-	return JsonFileRuleSource(seed_path)
+	Item 8 (α→γ unlock): seeds and session-review promotions are now
+	both persisted as ``Mapping Rule`` rows; the ``created_from`` field
+	distinguishes provenance but they are architecturally equivalent.
+	Reviewers can deprecate any rule regardless of ``created_from``.
+
+	``docs/seed_plan.json`` is retained in the repo as a seed-bootstrap
+	artefact for fresh-bench setup (Item 13); it is NOT read at runtime.
+	``JsonFileRuleSource`` is kept in ``rgi_migration.mapper.rule_source``
+	as a reference implementation and debugging aid.
+	"""
+	from rgi_migration.mapper.rule_source import FrappeRuleSource
+
+	return FrappeRuleSource()
+
+
+def _load_alias_rule_source():
+	"""Load the live supplier alias rule library from the
+	``Supplier Alias Rule`` DocType.
+
+	Item 8 (α→γ unlock): Layer-2 supplier alias matching now reads
+	promoted SAR rows live. Only ``status="confirmed"`` rules are
+	returned. ``exact_ci`` is the only supported match mode today;
+	the SAR DocType allows ``fuzzy_85`` / ``fuzzy_90`` Select values
+	but ``find_alias_rule_supplier`` raises ``NotImplementedError``
+	on those — defensive against write-path drift.
+	"""
+	from rgi_migration.mapper.alias_rule_source import FrappeAliasRuleSource
+
+	return FrappeAliasRuleSource()
 
 
 def _load_rule_name_by_section() -> dict[str, str]:

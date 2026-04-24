@@ -52,6 +52,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
+from rgi_migration.mapper.alias_rule_source import AliasRule, AliasRuleSource
 from rgi_migration.mapper.rule_source import (
     JsonFileRuleSource,
     Rule,
@@ -164,6 +165,7 @@ class Mapper:
         entity_type: str = "*",
         *,
         supplier_source: SupplierSource | None = None,
+        alias_rule_source: AliasRuleSource | None = None,
         supplier_fuzzy_threshold: float = 85.0,
         account_fuzzy_threshold: float = 80.0,
     ):
@@ -172,10 +174,15 @@ class Mapper:
         self.abbr = abbr
         self.entity_type = entity_type
         self.supplier_source = supplier_source
+        self.alias_rule_source = alias_rule_source
         self.supplier_fuzzy_threshold = supplier_fuzzy_threshold
         self.account_fuzzy_threshold = account_fuzzy_threshold
         self._positive: list[Rule] = rule_source.positive_rules(entity_type)
         self._anti: list[Rule] = rule_source.anti_pattern_rules(entity_type)
+        self._alias_rules: list[AliasRule] = (
+            alias_rule_source.alias_rules(entity_type)
+            if alias_rule_source is not None else []
+        )
 
     # ---------- public API ----------
 
@@ -535,6 +542,7 @@ class Mapper:
             ledger,
             self.supplier_source,
             fuzzy_threshold=self.supplier_fuzzy_threshold,
+            alias_rules=self._alias_rules,
         )
 
         base = dict(

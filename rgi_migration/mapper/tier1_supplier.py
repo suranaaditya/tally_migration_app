@@ -28,12 +28,16 @@ Tier-1 supplier matching).
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 
 from rapidfuzz import fuzz, process
 
+from rgi_migration.mapper.alias_rule_source import AliasRule
 from rgi_migration.mapper.supplier_source import Supplier, SupplierSource
+
+LOG = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -166,17 +170,73 @@ def find_exact_supplier(
 def find_alias_rule_supplier(
     ledger_name: str,
     supplier_source: SupplierSource,
+    alias_rules: list[AliasRule] | None = None,
 ) -> tuple[Supplier, str] | None:
     """Layer 2 — iterate Supplier Alias Rule rows and return the first
     match. Returns (supplier, rule_name) for audit provenance.
 
-    STUB: Supplier Alias Rule table is empty on erp.jewonline.in. This
-    helper returns None until the reviewer-promotion workflow starts
-    populating rules in a later sprint. Placeholder left in place so
-    the three-layer flow in mapper.py has the right call site already
-    wired up.
+    Only status="confirmed" rules reach this function (the caller's
+    AliasRuleSource filters at construction time). Match mode: only
+    ``exact_ci`` is supported today. Other modes (``fuzzy_85`` /
+    ``fuzzy_90`` per the SAR DocType's Select options) raise
+    ``NotImplementedError`` — defensive against write-path drift per
+    Commit 2 S-2 deferral.
+
+    Multi-match policy: first-match-wins in the order the caller's
+    `AliasRuleSource` supplied the rules (`FrappeAliasRuleSource` loads
+    ``ORDER BY creation ASC`` so oldest promotion takes precedence).
+    When a second match is found on the same cleaned ledger name, emits
+    a WARNING log entry surfacing both rule names for investigation —
+    doesn't block the mapper run.
+
+    When ``alias_rules`` is None or empty, returns None — preserves the
+    pre-Item-8 stub contract so callers that haven't wired an
+    AliasRuleSource get no-op behavior.
     """
-    return None
+    if not alias_rules:
+        return None
+
+    cleaned = _clean(ledger_name)
+    if not cleaned:
+        return None
+    target = cleaned.lower()
+
+    first_hit: tuple[AliasRule, Supplier] | None = None
+    for rule in alias_rules:
+        mode = rule.tally_match_mode
+        if mode != "exact_ci":
+            raise NotImplementedError(
+                f"Supplier Alias Rule match mode {mode!r} is not "
+                f"implemented. Only 'exact_ci' is supported today; "
+                f"'fuzzy_85' / 'fuzzy_90' are deferred per "
+                f"docs/mapper_design_notes.md §6."
+            )
+        if _clean(rule.tally_name_pattern).lower() != target:
+            continue
+
+        supplier = supplier_source.get_by_id(rule.erpnext_supplier)
+        if supplier is None:
+            # Alias rule references a Supplier that no longer exists on
+            # the bench (deleted after promotion). Skip silently — the
+            # alias is stale; a later rule may still match.
+            continue
+
+        if first_hit is None:
+            first_hit = (rule, supplier)
+            continue
+
+        # Second match on the same cleaned ledger — duplicate promotion.
+        LOG.warning(
+            "Multiple Supplier Alias Rules match cleaned ledger %r: "
+            "%r wins (oldest creation), later rule %r also matches — "
+            "investigate duplicate promotion.",
+            cleaned, first_hit[0].name, rule.name,
+        )
+
+    if first_hit is None:
+        return None
+    rule, supplier = first_hit
+    return supplier, rule.name
 
 
 def find_fuzzy_supplier(
@@ -221,6 +281,7 @@ def resolve_supplier(
     ledger: Any,
     supplier_source: SupplierSource,
     fuzzy_threshold: float = 85.0,
+    alias_rules: list[AliasRule] | None = None,
 ) -> tuple[str, Supplier | None, float, str | None]:
     """Resolve a party ledger to a Supplier (or Supplier Creation Request).
 
@@ -241,8 +302,8 @@ def resolve_supplier(
     if exact is not None:
         return "tier1_supplier_exact", exact, 1.0, None
 
-    # Layer 2 — saved Supplier Alias Rule (stub)
-    alias = find_alias_rule_supplier(cleaned, supplier_source)
+    # Layer 2 — saved Supplier Alias Rule (Item 8 live)
+    alias = find_alias_rule_supplier(cleaned, supplier_source, alias_rules)
     if alias is not None:
         supplier, rule_name = alias
         return "tier1_supplier_alias", supplier, 1.0, rule_name

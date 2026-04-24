@@ -63,6 +63,7 @@ def translate_matched_rule(
     if value.startswith("tier2:"):
         return value
     return rule_name_by_section.get(value, value)
+from rgi_migration.mapper.alias_rule_source import AliasRuleSource
 from rgi_migration.mapper.rule_source import RuleSource
 from rgi_migration.mapper.supplier_source import InMemorySupplierSource, Supplier
 from rgi_migration.parsers.normalized_schema import Ledger, ParsedTallyTB
@@ -117,6 +118,7 @@ def run_mapper_pipeline(
     coa: dict[str, CoaAccount],
     suppliers: list[Supplier],
     rule_source: RuleSource,
+    alias_rule_source: AliasRuleSource | None = None,
     supplier_fuzzy_threshold: float = 85.0,
     account_fuzzy_threshold: float = 80.0,
 ) -> ParseAndMapResult:
@@ -132,6 +134,7 @@ def run_mapper_pipeline(
         abbr=abbr,
         entity_type=entity_type,
         supplier_source=InMemorySupplierSource(suppliers),
+        alias_rule_source=alias_rule_source,
         supplier_fuzzy_threshold=supplier_fuzzy_threshold,
         account_fuzzy_threshold=account_fuzzy_threshold,
     )
@@ -152,6 +155,7 @@ def run_parse_and_map(
     coa: dict[str, CoaAccount],
     suppliers: list[Supplier],
     rule_source: RuleSource,
+    alias_rule_source: AliasRuleSource | None = None,
     supplier_fuzzy_threshold: float = 85.0,
     account_fuzzy_threshold: float = 80.0,
 ) -> ParseAndMapResult:
@@ -164,6 +168,7 @@ def run_parse_and_map(
         coa=coa,
         suppliers=suppliers,
         rule_source=rule_source,
+        alias_rule_source=alias_rule_source,
         supplier_fuzzy_threshold=supplier_fuzzy_threshold,
         account_fuzzy_threshold=account_fuzzy_threshold,
     )
