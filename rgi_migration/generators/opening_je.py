@@ -342,8 +342,15 @@ def build_je_payload(
     reference_id: str,
     timestamp_iso: str,
     old_je_audit: str | None = None,
-) -> MainJEPayload:
+) -> MainJEPayload | None:
     """Build the Draft JE payload without touching Frappe.
+
+    Returns ``None`` when there are no eligible contributions — a
+    legitimate state in Stage 3 multi-pass migrations where Pass N
+    may resolve only supplier-side decisions, leaving the main JE
+    with nothing to emit. Callers must treat ``None`` as
+    "empty-success: skip JE creation this pass." See
+    ``docs/mapper_design_notes.md §5`` (Generator empty-payload guard).
 
     Raises :class:`MainJEGenerationError` on refusal or post-balancer
     imbalance. Caller is responsible for invoking Frappe ORM (see
@@ -355,6 +362,16 @@ def build_je_payload(
     contributions, refusals = _select_contributions(decisions, ledger_index)
     _enforce_refusals(refusals, session_name)
     warnings = _pnl_corner_case_warnings(decisions, ledger_index)
+
+    if not contributions:
+        # Item 8.5 Stage 3: empty-payload guard. Constructing a balancer
+        # over zero rows produces a single 0/0 Dr/Cr line which Frappe
+        # rejects ("Both Debit and Credit values cannot be zero"). For
+        # multi-pass migrations this is a routine state — Pass N
+        # resolved only supplier-side decisions, no main-JE-eligible
+        # ledgers to emit. Return None so the caller skips JE creation
+        # and records null artefact in the Migration Pass row.
+        return None
 
     rows = _group_by_account(contributions)
     temp_opening_account = f"Temporary Opening - {abbr}"
@@ -404,9 +421,18 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _default_reference_id(abbr: str, fiscal_year: str) -> str:
+def _default_reference_id(
+    abbr: str, fiscal_year: str, *, pass_number: int = 1,
+) -> str:
+    """Base reference ID per RGI rules §6.2, with Stage 3 pass suffix.
+
+    Pass 1:    ``OB-CACSPU-2025-01``   (no suffix).
+    Pass N>=2: ``OB-CACSPU-2025-01-P{N}``.
+    """
+    from rgi_migration.generators.pass_tracking import build_reference_suffix
+
     start_year = fiscal_year.split("-")[0] if fiscal_year else ""
-    return f"OB-{abbr}-{start_year}-01"
+    return f"OB-{abbr}-{start_year}-01{build_reference_suffix(pass_number)}"
 
 
 def _append_error_log(session: Any, block: str) -> None:
@@ -503,14 +529,24 @@ def generate_main_opening_je(session_name: str) -> str:
     # Reads from the DocType that run_mapper() populated, preferring the
     # reviewer's final_account / final_supplier over mapper proposals.
     # See rgi_migration/session/parse_and_map.py for the loader.
+    #
+    # Item 8.5 Stage 3: use the pass-aware loader, which filters out
+    # decisions already stamped ``generated_in_pass`` (prior pass) and
+    # decisions with ``review_action == 'Deferred'`` (future pass).
     from rgi_migration.session.parse_and_map import (
-        load_decisions_from_session,
+        load_pass_pending_decisions_from_session,
         require_generator_status,
         synthesize_tb_from_ledger_index,
     )
+    from rgi_migration.generators.pass_tracking import (
+        determine_current_pass_number,
+    )
 
     require_generator_status(session, "generate_main_opening_je")
-    decisions, ledger_index = load_decisions_from_session(session_name)
+    pass_number = determine_current_pass_number(session)
+    decisions, ledger_index = load_pass_pending_decisions_from_session(
+        session_name, current_pass_number=pass_number,
+    )
 
     # build_je_payload's signature still takes ``tb: ParsedTallyTB`` because
     # pure-core tests construct hand-crafted TBs against it. Synthesize a
@@ -534,9 +570,13 @@ def generate_main_opening_je(session_name: str) -> str:
         )
 
     # --- 4. Build payload ---------------------------------------------------
-    reference_id = (
-        session.generated_je_reference
-        or _default_reference_id(session.company_abbr, session.fiscal_year)
+    # Reference ID: Pass 1 uses OB-{ABBR}-{FY}-01. Pass N>=2 uses the
+    # P{N}-suffixed variant per RGI rules §6.2 + Stage 3 Q-G. We don't
+    # reuse session.generated_je_reference here because across passes
+    # that field mirrors the LATEST pass; a fresh computation from
+    # (abbr, fy, pass_number) is the source of truth.
+    reference_id = _default_reference_id(
+        session.company_abbr, session.fiscal_year, pass_number=pass_number,
     )
     tb_date_val = session.tb_date
     posting_date = (
@@ -553,6 +593,33 @@ def generate_main_opening_je(session_name: str) -> str:
         reference_id=reference_id, timestamp_iso=_iso_now(),
         old_je_audit=old_je_audit,
     )
+
+    # --- 4b. Empty-payload short-circuit (Item 8.5 Stage 3, §5) -----------
+    # build_je_payload returns None when no contributions were eligible.
+    # Pass 2+ may legitimately have zero main-JE rows if the reviewer
+    # only resolved supplier-side decisions since the previous pass.
+    # Skip JE creation, clear session fields, append an audit log,
+    # return "" so generate_all treats this as success-no-artefact.
+    if payload is None:
+        ts = _iso_now()
+        log_line = (
+            f"[{ts}] main-je: 0 eligible contributions for session "
+            f"{session_name}; no Draft JE created (empty-payload guard)."
+        )
+        # Clear session-level Main-JE fields so the Migration Pass row's
+        # main_je_name lands as None (Q-H semantic continues to mirror
+        # latest pass — and latest pass has no Main JE this round).
+        session.generated_je_draft = None
+        session.generated_je_reference = None
+        session.temp_opening_amount = 0
+        _append_error_log(session, log_line)
+        session.save(ignore_permissions=True)
+        frappe.db.commit()
+        LOG.info(
+            "Skipped Main JE creation for session %s — no eligible "
+            "contributions (empty-payload guard).", session_name,
+        )
+        return ""
 
     # --- 5. Create Draft JE -------------------------------------------------
     je = frappe.new_doc("Journal Entry")

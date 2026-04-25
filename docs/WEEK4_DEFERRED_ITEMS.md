@@ -357,3 +357,127 @@ Bundle required before 59-entity production rollout:
   "Pre-rollout bench COA hygiene audit" section above)
 - HUP-gunicorn deployment playbook formalization (fold into standard
   recipe — see "Phase C deployment playbook" section above)
+
+
+### Generator zero-balancer guard — exactly-balanced contributions
+
+**Surfaced:** Item 8.5 Stage 3 Phase D walkthrough B2 (2026-04-25).
+Synthetic session with 4 account-side contributions that summed
+exactly Dr=Cr produced a Temporary Opening balancer row with
+`debit=0, credit=0`, which Frappe Journal Entry validation rejects:
+`Row 3: Both Debit and Credit values cannot be zero`.
+
+**Status:** Same class as the empty-payload guard (already shipped
+in Phase C, see `mapper_design_notes.md §5 → Generator empty-payload
+guard`). The empty-payload fix handles `not contributions`. A
+non-empty contributions list whose Dr-total exactly equals Cr-total
+slips through that guard but produces the same Frappe-rejected
+zero-balancer row.
+
+**Unblocked workaround:** Phase D walkthrough adjusted the synthetic
+session to ensure Dr ≠ Cr after Deferred markings (one Dr-row + one
+Cr-row deferred instead of two Dr-rows). Real CACSPU data rarely
+hits this — Tally rounding usually leaves a residual — but the latent
+edge remains.
+
+**Trigger to revisit:** First real entity that crashes with
+"Row N: Both Debit and Credit values cannot be zero" on a generator
+that has contributions. Or proactively before 59-entity rollout.
+
+**Fix shape:** in `build_je_payload`, after computing the balancer,
+include the row only if `balancer.debit > 0 OR balancer.credit > 0`.
+Same pattern for any future balancer-based generator. `_assert_balanced`
+already passes when totals are equal (delta=0 ≤ tolerance), so the JE
+is structurally fine without the zero-row.
+
+**Estimated work:** ~1 hour (3-line generator change + 2 tests).
+
+
+### Approve & Next button semantic — saves dropdown value, doesn't hardcode Approved
+
+**Surfaced:** Item 8.5 Stage 3 Phase D walkthrough B6 (2026-04-25).
+Reviewer clicked "Approve & Next" on a Deferred row expecting the
+review_action to flip to Approved. Instead the saved value matched
+the dropdown's current value (still "Deferred"), updating only the
+modified timestamp without semantic effect.
+
+**Existing behavior (intentional, Stage 1+2):**
+`md_review.js:_onApprove` validates then calls `saveDecision`, which
+reads `review_action` from the dropdown's current value
+(`section4_controls.review_action.get_value()`). The reviewer is
+expected to manually set the dropdown to "Approved" / "Manual
+Override" / "Rejected" first, then click the button. This allows
+flexibility (a Manual Override decision still uses the same button).
+
+**UX gap:** The button label "Approve & Next" promises a specific
+action; a reviewer with intuition that the click implies Approved
+gets a silent no-op. Friction during 59-entity rollout where
+reviewers will routinely transition Deferred → Approved.
+
+**Trigger to revisit:** Reviewer feedback during real CACSPU
+migration, or 59-entity rollout discipline review.
+
+**Fix options (decide later):**
+1. Hardcode `review_action = "Approved"` inside `_onApprove` before
+   `saveDecision` (mirrors fuzzy-match accept handler at
+   `md_review.js:1225`). Lose the "use the button to save Manual
+   Override" affordance.
+2. Rename the button to "Save & Next" and add a separate "Mark
+   Approved" shortcut that hardcodes the value.
+3. Keep current behavior; add a tooltip or inline note clarifying
+   that the dropdown drives the save.
+
+No work today; out of Stage 3 scope.
+
+
+### md-review lock icon — Unicode emoji polish
+
+**Surfaced:** Item 8.5 Stage 3 Phase D extension S3 (2026-04-25).
+Lock icon for Pass-Submitted-stamped MDs uses the Unicode glyph 🔒.
+Renders correctly on Frappe's default theme on modern browsers.
+
+**Trigger to revisit:** If reviewer reports rendering issues
+(grayscale/unsupported emoji rendering on certain browsers/themes)
+or wants a more uniform icon style (e.g., FontAwesome `fa-lock` to
+match other Frappe UI icons).
+
+**Fix shape:** swap the inline `<span class="md-row-lock">🔒</span>`
+for `<span class="md-row-lock"><i class="fa fa-lock"></i></span>` and
+update CSS accordingly. CSS `.md-row-lock` already scoped to the
+`.master-row.locked` selector, so the swap is local.
+
+**Estimated work:** ~30 min (visual swap + CSS adjustment).
+
+
+### `requires_combine` / `combine_with` — sibling-completion semantics
+
+**Surfaced:** Item 8.5 Stage 3 Phase A research (R1).
+
+**Status:** Mapping Decision DocType has `requires_combine` (Check)
+and `combine_with` (Small Text — CSV of sibling decision idxs)
+fields, persisted today but **inert** — no generator reads or
+enforces them. `_group_by_account` in `opening_je.py` aggregates by
+ERPNext account name only; `combine_with` relationships are
+invisible to the JE construction.
+
+**Why it's deferred (not a bug today):** Real CACSPU data hasn't
+exercised the sibling-coupling case at scale. Stage 3 multi-pass
+adds a new failure mode — a partial Pass 2 resolving one sibling
+while another remains Deferred — that the generators handle by
+emitting independently (no structural assertion fails). For Pass 1
+single-pass migrations, the inertness is a no-op.
+
+**Trigger to revisit:** Real reviewer feedback during 59-entity
+rollout where two Tally ledgers MUST be combined into one ERPNext
+JE row for a correctness reason that can't be expressed as
+"same proposed_account." If that scenario lands, design surface is:
+- Generator-side enforcement: refuse generation if any
+  `combine_with` link points to a Mapping Decision in a different
+  pass (Pass 1 stamped vs. Pass 2 NULL → mismatch)
+- md-review surface: indicate "this row is part of a combine group
+  with N other rows; resolve all together."
+- Semantics question: does combine_with imply same review_action?
+  Same proposed_account? Both?
+
+**No work today.** Inert until a real case exercises it.
+

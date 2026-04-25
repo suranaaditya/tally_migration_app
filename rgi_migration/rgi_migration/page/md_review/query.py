@@ -42,6 +42,13 @@ DEFAULT_DECISION_FIELDS: list[str] = [
     "review_action",
     "opening_dr",
     "opening_cr",
+    # Item 8.5 Stage 3 Q-L: required by master pane's lock-icon
+    # decoration. The JS row render reads decision.generated_in_pass
+    # and looks it up against the session.migration_passes map; absent
+    # this field, every row's stamped_pass collapses to 0 and lock
+    # icons never render even when the server's _decision_locked_pass
+    # would refuse a write to that decision.
+    "generated_in_pass",
 ]
 
 

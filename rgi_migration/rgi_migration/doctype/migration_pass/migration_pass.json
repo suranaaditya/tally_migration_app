@@ -1,0 +1,137 @@
+{
+ "actions": [],
+ "allow_rename": 1,
+ "creation": "2026-04-25 00:00:00.000000",
+ "description": "Permanent audit row for one generation pass of a Tally Migration Session. Item 8.5 Stage 3. Session-level artefact fields (session.generated_je_draft etc.) mirror the MOST RECENT pass's Draft/Submitted JE; this child table is the permanent per-pass record.",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "pass_number",
+  "pass_status",
+  "generated_at",
+  "submitted_at",
+  "main_je_name",
+  "advance_je_name",
+  "oit_file_url",
+  "students_file_url",
+  "reference_id_main",
+  "reference_id_advance",
+  "decisions_included_count",
+  "decisions_deferred_count",
+  "student_decisions_count",
+  "temp_opening_contribution",
+  "generator_error_log"
+ ],
+ "fields": [
+  {
+   "description": "1-based pass counter. Pass 1 is the first generate_all run; Pass 2+ are delta generations from Partial Submitted state.",
+   "fieldname": "pass_number",
+   "fieldtype": "Int",
+   "in_list_view": 1,
+   "label": "Pass Number",
+   "reqd": 1
+  },
+  {
+   "default": "Draft",
+   "description": "Draft after generate; Submitted after mark_submitted verifies JE docstatus=1; Failed if atomic generate_all rolled back mid-sequence.",
+   "fieldname": "pass_status",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Pass Status",
+   "options": "Draft\nSubmitted\nFailed",
+   "reqd": 1
+  },
+  {
+   "fieldname": "generated_at",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "label": "Generated At",
+   "reqd": 1
+  },
+  {
+   "fieldname": "submitted_at",
+   "fieldtype": "Datetime",
+   "label": "Submitted At"
+  },
+  {
+   "description": "Draft (Pass active) or Submitted (Pass locked). Pass 1 Main JE's docname; Pass 2 uses the P2-suffixed reference_id.",
+   "fieldname": "main_je_name",
+   "fieldtype": "Link",
+   "label": "Main JE",
+   "options": "Journal Entry"
+  },
+  {
+   "fieldname": "advance_je_name",
+   "fieldtype": "Link",
+   "label": "Advance JE",
+   "options": "Journal Entry"
+  },
+  {
+   "fieldname": "oit_file_url",
+   "fieldtype": "Data",
+   "label": "OIT CSV URL"
+  },
+  {
+   "fieldname": "students_file_url",
+   "fieldtype": "Data",
+   "label": "Students CSV URL"
+  },
+  {
+   "description": "Artefact reference ID per RGI rules sec 6.2. Pass 1: OB-{ABBR}-{FY}-01. Pass N (N>=2): OB-{ABBR}-{FY}-01-P{N}.",
+   "fieldname": "reference_id_main",
+   "fieldtype": "Data",
+   "label": "Main JE Reference"
+  },
+  {
+   "fieldname": "reference_id_advance",
+   "fieldtype": "Data",
+   "label": "Advance JE Reference"
+  },
+  {
+   "description": "Count of Mapping Decisions stamped generated_in_pass = this pass_number (account-side + supplier-side, excludes students bypass).",
+   "fieldname": "decisions_included_count",
+   "fieldtype": "Int",
+   "label": "Decisions Included"
+  },
+  {
+   "description": "Count of Mapping Decisions with review_action=Deferred at the moment this pass generated. Carries forward to Pass N+1.",
+   "fieldname": "decisions_deferred_count",
+   "fieldtype": "Int",
+   "label": "Decisions Deferred (post-pass)"
+  },
+  {
+   "description": "Student ledger count written to this pass's Students CSV. Students bypass the mapper (parser-flagged is_student_ledger), tracked separately from decisions_included_count.",
+   "fieldname": "student_decisions_count",
+   "fieldtype": "Int",
+   "label": "Student Decisions"
+  },
+  {
+   "description": "Signed Temporary Opening contribution for this pass (Main JE balancer + Advance JE balancer). Cumulative sum across passes should net to zero after the final pass in ERPNext GL.",
+   "fieldname": "temp_opening_contribution",
+   "fieldtype": "Currency",
+   "label": "Temp Opening Contribution (signed)"
+  },
+  {
+   "description": "Per-generator log lines captured during this pass's generate_all. Preserved across re-runs; audit trail.",
+   "fieldname": "generator_error_log",
+   "fieldtype": "Long Text",
+   "label": "Generator Log"
+  }
+ ],
+ "grid_page_length": 50,
+ "index_web_pages_for_search": 1,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-04-25 00:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Rgi Migration",
+ "name": "Migration Pass",
+ "owner": "Administrator",
+ "permissions": [],
+ "row_format": "Dynamic",
+ "rows_threshold_for_grid_search": 20,
+ "sort_field": "pass_number",
+ "sort_order": "ASC",
+ "states": []
+}

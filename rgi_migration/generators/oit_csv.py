@@ -393,12 +393,19 @@ def generate_oit_csv(session_name: str) -> str:
     # that run_mapper() populated. Reviewer overrides on final_account /
     # final_supplier are picked up transparently by decision_from_doc_row.
     from rgi_migration.session.parse_and_map import (
-        load_decisions_from_session,
+        load_pass_pending_decisions_from_session,
         require_generator_status,
+    )
+    from rgi_migration.generators.pass_tracking import (
+        build_filename_suffix,
+        determine_current_pass_number,
     )
 
     require_generator_status(session, "generate_oit_csv")
-    decisions, _ = load_decisions_from_session(session_name)
+    pass_number = determine_current_pass_number(session)
+    decisions, _ = load_pass_pending_decisions_from_session(
+        session_name, current_pass_number=pass_number,
+    )
 
     # --- 4. Supplier master snapshot ---
     supplier_index = _load_supplier_index()
@@ -420,8 +427,12 @@ def generate_oit_csv(session_name: str) -> str:
 
     # --- 6. Format + attach ---
     csv_content = format_csv(rows)
+    # Item 8.5 Stage 3: Pass 2+ filenames get a _p{N} suffix before the
+    # timestamp so the OIT CSV for Pass 1 and Pass 2 are distinguishable
+    # by reviewer visually and by dux_voucher's file-consumer script.
     filename = (
-        f"oit-{session.company_abbr}-{session.fiscal_year}-"
+        f"oit-{session.company_abbr}-{session.fiscal_year}"
+        f"{build_filename_suffix(pass_number)}-"
         f"{_timestamp_suffix()}.csv"
     )
     file_doc = frappe.get_doc({

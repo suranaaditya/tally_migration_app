@@ -11,6 +11,7 @@ Scope progression:
 """
 
 import json
+from typing import Any
 
 import frappe
 import frappe.utils
@@ -143,6 +144,54 @@ def get_decision_detail(decision_name):
     return result
 
 
+def _decision_locked_pass(
+    decision_doc: Any, session_doc: Any,
+) -> dict[str, Any] | None:
+	"""Return lock metadata if this decision is frozen by a Submitted pass.
+
+	Item 8.5 Stage 3 Q-L. A Mapping Decision is locked when:
+
+	  1. ``generated_in_pass`` is set (non-zero), AND
+	  2. The corresponding Migration Pass row on the session has
+	     ``pass_status == 'Submitted'``.
+
+	Returns ``{"pass_number": N, "submitted_at": str}`` if locked,
+	``None`` otherwise. Used by ``save_decision`` (hard refuse) and
+	exposed to the UI via a companion helper so the lock icon + tooltip
+	can render.
+	"""
+	stamped_pass = getattr(decision_doc, "generated_in_pass", None) or 0
+	if not stamped_pass:
+		return None
+	for p in (session_doc.migration_passes or []):
+		if int(p.pass_number or 0) == int(stamped_pass):
+			if p.pass_status == "Submitted":
+				return {
+					"pass_number": p.pass_number,
+					"submitted_at": str(p.submitted_at or ""),
+				}
+			return None
+	return None
+
+
+@frappe.whitelist()
+def decision_lock_info(decision_name: str) -> dict[str, Any] | None:
+	"""UI helper: return lock metadata for a decision (or None).
+
+	Called by the md-review DetailPane on loadDecision to decide
+	whether to render the Stage 3 lock icon + tooltip and disable
+	write actions (Defer / Reject / Approve override). The hard
+	refuse lives server-side in :func:`save_decision`; this call is
+	for display-only purposes.
+	"""
+	decision_doc = frappe.get_doc("Mapping Decision", decision_name)
+	session_doc = frappe.get_doc(
+		"Tally Migration Session", decision_doc.session,
+	)
+	session_doc.check_permission("read")
+	return _decision_locked_pass(decision_doc, session_doc)
+
+
 @frappe.whitelist()
 def save_decision(decision_name, review_action, final_account, reviewer_notes):
     """Persist a Mapping Decision update from the review UI.
@@ -189,6 +238,22 @@ def save_decision(decision_name, review_action, final_account, reviewer_notes):
     decision_doc = frappe.get_doc("Mapping Decision", decision_name)
     session_doc = frappe.get_doc("Tally Migration Session", decision_doc.session)
     session_doc.check_permission("read")
+
+    # Item 8.5 Stage 3 Q-L: post-Submit immutability. A decision stamped
+    # with generated_in_pass=N whose pass is Submitted is frozen — its
+    # JE is docstatus=1 in ERPNext. Any re-review (Defer, Reject,
+    # change account, etc.) would desync the audit trail. Reviewer
+    # must use ERPNext's Amend workflow on the JE for corrections.
+    locked_pass = _decision_locked_pass(decision_doc, session_doc)
+    if locked_pass is not None:
+        frappe.throw(
+            f"Decision {decision_name!r} is locked — it was included "
+            f"in Pass {locked_pass['pass_number']} "
+            f"(submitted {locked_pass['submitted_at']}). Submitted "
+            f"passes are immutable. Use ERPNext's Amend workflow on "
+            f"the Pass {locked_pass['pass_number']} Journal Entry for "
+            f"corrections; do not modify the decision."
+        )
 
     current = decision_doc.as_dict()
     previous_review_action = current.get("review_action")

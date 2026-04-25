@@ -1163,6 +1163,151 @@ running concurrent with reviewer work), escalate.
 
 ---
 
+### Generator empty-payload guard
+
+**Surfaced:** Item 8.5 Stage 3 Phase C, Probe 5 (2026-04-25).
+Generate Pass 2 from a Partial Submitted session crashed with Frappe
+`ValidationError: Row 1: Both Debit and Credit values cannot be zero`
+when the Pass 2 candidate set had only account-side decisions
+(supplier MDs already stamped in Pass 1). Advance JE built an empty
+`lines` list, then constructed a balancer row with `debit=0,
+credit=round(0, 2)=0` and tried to insert a JE with one Dr=Cr=0 row.
+
+**Pattern (must apply to any generator constructing a balancer):**
+
+In the pure `build_*_payload` function, AFTER eligible rows are
+collected and BEFORE the balancer is constructed, guard against an
+empty rows list and return `None`:
+
+```python
+if not contributions:  # or: if not lines:
+    # Empty-payload guard — Frappe rejects 0/0 balancer rows.
+    # Multi-pass migrations legitimately reach this state when Pass N
+    # resolves only one side (account-side OR supplier-side).
+    return None
+```
+
+In the Frappe-aware caller (`generate_main_opening_je` /
+`generate_advance_je`), AFTER calling the build function, detect the
+None sentinel BEFORE calling Frappe ORM:
+
+```python
+if payload is None:
+    # Skip JE creation. Clear session-level artefact fields so the
+    # Migration Pass row's main_je_name (or advance_je_name) lands
+    # as None for this pass — accurate audit trail "no JE produced
+    # this pass."
+    session.generated_je_draft = None
+    session.generated_je_reference = None
+    session.temp_opening_amount = 0
+    _append_error_log(session, "<generator>: 0 contributions; no Draft JE created")
+    session.save(ignore_permissions=True)
+    frappe.db.commit()
+    return ""  # success-no-artefact sentinel for generate_all
+```
+
+The orchestrator (`generate_all`) treats the empty string return as
+success-no-artefact: succeeded list records `{"name": label,
+"artefact": ""}`, and the Migration Pass row's `main_je_name` /
+`advance_je_name` lands as `None` because the session-level field is
+None at upsert time.
+
+**Why this isn't merely "no advance suppliers exist":**
+Stage 1/2 single-pass entities are unlikely to hit this naturally —
+real CACSPU has both account-side and supplier-side ledgers. But:
+- Stage 3's Pass 2+ commonly drains one side: e.g., reviewer Defers
+  all supplier-side rows in Pass 1, resolves them in Pass 2, and now
+  Pass 3 has nothing on the supplier side.
+- Stage 1/2 single-pass entity with zero advance vendors (e.g., a
+  small subsidiary with all suppliers paid up) would also crash.
+
+The guard fixes both — Stage 3 multi-pass case is the surfacing
+trigger, Stage 1/2 latent crash is fixed as a side benefit.
+
+**Tests covering this pattern:**
+- `tests/test_generator_empty_handling.py` (new) — both build
+  functions return None on empty input; both Frappe wrappers handle
+  None correctly + clear session fields.
+- `tests/test_generator_advance_je.py::test_net_cr_supplier_produces_zero_lines`,
+  `::test_net_zero_supplier_silently_skipped_no_refusal` — updated
+  to assert `payload is None` (was: `payload.supplier_count == 0`).
+
+**Future generators:** any generator that constructs a balancer or
+balancing entry against `Temporary Opening - {ABBR}` MUST follow
+this pattern. Currently affects `opening_je` and `advance_je`. OIT
+CSV produces a CSV with no balancer (empty CSV is valid Frappe File
+content; no Frappe-side validation). Students CSV uses
+`refuse_if_empty` because empty student data is operationally a
+parser bug for any session that has students at all.
+
+---
+
+### Phase rhythm — Phase B clean is necessary but not sufficient
+
+**Surfaced:** Item 8.5 Stage 3 closure (2026-04-25). Pattern across
+Stages 2 and 3.
+
+The standard A → B → C → D → E rhythm allocates work as follows:
+
+- **Phase A**: research + ambiguity block + Aditya's resolutions.
+- **Phase B**: implementation per resolutions, unit + static-string
+  tests, local pytest green.
+- **Phase C**: integration testing on synthetic sessions (server
+  behavior, status transitions, atomic rollback, schema persistence).
+- **Phase D**: UX verification (server-side static checks, then
+  browser walkthrough with explicit affordance probes).
+- **Phase E**: documentation, atomic commit, 3-location sync,
+  closure report.
+
+**Empirical observation across Stages 1-3:** Phase B reaching "all
+tests green, zero pause-and-surface triggers" is necessary but not
+sufficient for stage closure. Each later phase exposes a different
+failure surface that the earlier phase didn't reach:
+
+- **Phase C** surfaces bugs in code paths unit tests don't reach.
+  Stage 3 caught 3 here: empty-payload guard in opening_je /
+  advance_je (latent since Stage 1; never tripped because real
+  Tally always has a residual + Stage 1 single-pass always had
+  supplier MDs); Migration Pass child row stale-link validation
+  during intra-pass regen; pass-aware loader needing regen-awareness
+  to allow same-pass re-emission. All three were design-level —
+  unit tests passed because they exercised pure functions with
+  hand-crafted inputs; integration tests on synthetic sessions
+  exercised the Frappe ORM path where the bugs lived.
+
+- **Phase D** surfaces affordance gaps that server-side correctness
+  alone doesn't catch. Stage 3 caught 3 here: Generate Pass N
+  disabled-state-with-tooltip not shipped (server enforced, client
+  didn't); md-review lock icon not shipped (server enforced, client
+  didn't); decision-fields query missing `generated_in_pass` (data
+  layer starved the JS render path). The first two were Phase B
+  oversights against explicit Phase A resolutions (Q-J, Q-L) where
+  the server was implemented but the visual UX was forgotten. The
+  third was a latent data-flow break that no static-string test
+  could catch.
+
+**Implication:** Stage closure requires all three later phases to
+validate the implementation. Skipping Phase C "because Phase B
+passes" or skipping Phase D "because Phase C synthetic probes pass"
+ships incomplete work. The discipline pattern is non-negotiable for
+the 59-entity rollout — bugs caught during real CACSPU migration
+are operationally expensive.
+
+**Cost data point** (Stage 3, 2026-04-25):
+- Phase B: ~14 hours (within the 12-18 estimate from Phase A).
+- Phase C: 3 bug fixes inline (~1 hour).
+- Phase D extension: 2 affordance fixes + 1 data-layer fix (~2
+  hours combined).
+- Phase E: documentation + commit + sync (this).
+
+The "Phase D extension" of 2 affordance fixes mid-walkthrough kept
+Stage 3 within scope (not new design — completion of Q-J and Q-L
+resolutions). The pattern: Phase A resolutions are the contract;
+Phase D validates the contract is honored end-to-end. Server-side
+implementation alone doesn't satisfy a UX commitment.
+
+---
+
 ## 6. Supplier matching (Tier-1)
 
 Operational notes on vendor/party-ledger routing and supplier resolution.

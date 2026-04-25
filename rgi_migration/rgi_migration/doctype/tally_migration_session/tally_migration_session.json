@@ -55,7 +55,8 @@
   "reviewer_notes",
   "sb_children",
   "account_creation_requests",
-  "supplier_creation_requests"
+  "supplier_creation_requests",
+  "migration_passes"
  ],
  "fields": [
   {
@@ -141,7 +142,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Status",
-   "options": "Draft\nParsing\nParsed\nMapping\nReviewing\nGenerating\nGenerated\nSubmitted\nCancelled\nFailed",
+   "options": "Draft\nParsing\nParsed\nMapping\nReviewing\nGenerating\nGenerated\nPartial Submitted\nSubmitted\nCancelled\nFailed",
    "reqd": 1
   },
   {
@@ -342,6 +343,13 @@
    "fieldtype": "Table",
    "label": "Supplier Creation Requests",
    "options": "Supplier Creation Request"
+  },
+  {
+   "description": "Permanent per-pass audit (Item 8.5 Stage 3). One row per generate_all run. Pass 1 is the initial generation; Pass 2+ are delta generations after Deferred decisions are resolved.",
+   "fieldname": "migration_passes",
+   "fieldtype": "Table",
+   "label": "Migration Passes",
+   "options": "Migration Pass"
   },
   {
    "description": "Reference ID for the Advance JE, e.g. OB-CACSPU-2026-02 per RGI rules sec 6.2.",

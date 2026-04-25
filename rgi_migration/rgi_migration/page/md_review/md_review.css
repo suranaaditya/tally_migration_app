@@ -348,6 +348,33 @@
 .mapping-decision-review-app .indicator-dot.deferred  { background: var(--yellow-500, #f0c000); }
 
 
+/* --- Pass-immutability lock decoration (Item 8.5 Stage 3 Q-L) ------------ */
+/*
+ * Decisions stamped with generated_in_pass=N where pass N is Submitted are
+ * frozen — the JE that consumed them is docstatus=1 in ERPNext and any
+ * re-edit would desynchronize the audit trail. Lock icon prefixes the
+ * tally_name cell; row gets a subtle muted background to signal
+ * read-only at a glance. Server-side save_decision throws if a write is
+ * attempted (single source of truth); this is the visual affordance.
+ */
+.mapping-decision-review-app .master-row.locked {
+    background: var(--bg-light-gray, #fafbfc);
+}
+.mapping-decision-review-app .master-row.locked .col-tally-name {
+    color: var(--text-muted, #687178);
+}
+.mapping-decision-review-app .md-row-lock {
+    display: inline-block;
+    margin-right: 4px;
+    cursor: help;
+    user-select: none;
+    /* Slightly desaturate the emoji glyph so it's a quiet signal,
+     * not a shouty warning — the row is informational, not error. */
+    filter: grayscale(0.4);
+    font-size: 12px;
+}
+
+
 /* --- Tier chip (column 6) ------------------------------------------------- */
 
 .mapping-decision-review-app .tier-chip {

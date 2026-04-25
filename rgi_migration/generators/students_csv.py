@@ -341,6 +341,16 @@ def generate_students_csv(session_name: str) -> str:
             f"generating the Students CSV."
         )
 
+    # --- Stage 3: resolve pass number for filename suffix. Students CSV
+    # doesn't use Mapping Decisions (students bypass the mapper via
+    # parser flag) but still gets a P{N}-suffixed filename on Pass 2+
+    # so dux_voucher's file-consumer can distinguish passes.
+    from rgi_migration.generators.pass_tracking import (
+        build_filename_suffix,
+        determine_current_pass_number,
+    )
+    pass_number = determine_current_pass_number(session)
+
     # --- 4. Parse ---
     tb = _parse_source(str(source_path), session.source_format or "xml")
 
@@ -373,7 +383,8 @@ def generate_students_csv(session_name: str) -> str:
     # --- 8. Format + attach ---
     csv_content = format_csv(rows)
     filename = (
-        f"students-{session.company_abbr}-{session.fiscal_year}-"
+        f"students-{session.company_abbr}-{session.fiscal_year}"
+        f"{build_filename_suffix(pass_number)}-"
         f"{_timestamp_suffix()}.csv"
     )
     file_doc = frappe.get_doc({

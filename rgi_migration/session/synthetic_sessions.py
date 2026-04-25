@@ -378,6 +378,143 @@ def add_synthetic_pending_acr(
     return md.name, acr_row_name
 
 
+def advance_session_to_submitted_pass_1(
+	session_name: str,
+	*,
+	mock_je_docstatus: bool = True,
+) -> dict[str, Any]:
+	"""Fast-forward a synthetic session through Pass 1 → Submitted.
+
+	Item 8.5 Stage 3 test helper (Q-P). Used by Stage 3 multi-pass tests
+	to quickly reach a Partial Submitted / Submitted state without
+	manually clicking through Generate All + Mark Submitted in the UI.
+
+	Steps:
+	  1. Runs ``generate_all`` to produce the four artefacts (Main JE,
+	     Advance JE, OIT CSV, Students CSV) — populates session fields
+	     and appends the Pass 1 Migration Pass row.
+	  2. Submits the Main JE and Advance JE in ERPNext (forcing
+	     docstatus=1) if ``mock_je_docstatus`` is True. This bypasses
+	     the normal ERPNext submit flow for test purposes.
+	  3. Calls ``mark_submitted`` which checks docstatus=1 and
+	     transitions the session to Submitted (or Partial Submitted if
+	     Deferred rows exist).
+
+	Args:
+	  session_name: A Tally Migration Session already in Reviewing.
+	  mock_je_docstatus: When True, directly sets generated JEs'
+	    ``docstatus=1`` via ``frappe.db.set_value`` so mark_submitted's
+	    validation passes. Set False only if the test has another
+	    mechanism to submit the JEs.
+
+	Returns:
+	  Dict: ``{"pass_number": 1, "session_status": "Submitted"|"Partial
+	  Submitted", "deferred_count": int, "main_je": str|None,
+	  "advance_je": str|None}``.
+	"""
+	import frappe
+
+	from rgi_migration.rgi_migration.doctype.tally_migration_session.tally_migration_session import (  # noqa: E501
+		generate_all,
+		mark_submitted,
+	)
+
+	generate_result = generate_all(session_name)
+	if generate_result.get("status") != "ok":
+		raise RuntimeError(
+			f"advance_session_to_submitted_pass_1: generate_all failed — "
+			f"{generate_result!r}"
+		)
+
+	session = frappe.get_doc("Tally Migration Session", session_name)
+	main_je = session.generated_je_draft
+	advance_je = session.generated_advance_je
+
+	if mock_je_docstatus:
+		for je_name in (main_je, advance_je):
+			if je_name and frappe.db.exists("Journal Entry", je_name):
+				frappe.db.set_value(
+					"Journal Entry", je_name, "docstatus", 1,
+				)
+		frappe.db.commit()
+
+	submit_result = mark_submitted(session_name)
+
+	return {
+		"pass_number": submit_result.get("pass_number"),
+		"session_status": submit_result.get("session_status"),
+		"deferred_count": submit_result.get("deferred_count", 0),
+		"main_je": main_je,
+		"advance_je": advance_je,
+	}
+
+
+def add_synthetic_resolved_deferred_decision(
+	session_name: str,
+	*,
+	tier: str = "tier1_exact",
+	opening_dr: float = 750.0,
+) -> str:
+	"""Insert a decision that was Deferred in Pass 1, Approved in Pass 2.
+
+	Item 8.5 Stage 3 test helper (Q-P). Specifically: inserts a new
+	Mapping Decision with ``generated_in_pass = NULL`` (so it wasn't
+	part of any prior pass) and ``review_action = Approved``, with
+	``final_account`` populated. This simulates a reviewer having
+	resolved a Deferred row between Pass N and Pass N+1.
+
+	Callers use this in multi-pass tests as: set up Pass 1 via
+	:func:`advance_session_to_submitted_pass_1`, then call this to add
+	a "newly-resolved" decision, then call ``generate_all`` again —
+	Pass 2 should emit this decision.
+
+	Args:
+	  session_name: A Pass 1-submitted synthetic session.
+	  tier: The tier to stamp on the new decision.
+	  opening_dr: Dr amount (Cr is 0). Keeps the JE-side direction
+	    predictable so generators don't skip on balance grounds.
+
+	Returns:
+	  The new Mapping Decision's docname.
+	"""
+	import frappe
+
+	session = frappe.get_doc("Tally Migration Session", session_name)
+	abbr = session.company_abbr
+
+	suffix = frappe.generate_hash(length=4).upper()
+	ledger_name = f"SYNTHETIC Newly-Resolved {suffix}"
+	# Pick a final_account that exists on the target company's COA.
+	# Mirror the same fallback used by _decision_row in this module.
+	final_account = f"Cash - {abbr}"
+	if not frappe.db.exists("Account", final_account):
+		# Fall back to Temporary Opening which is always seeded on
+		# the CACSPU COA (dev bench invariant).
+		final_account = f"Temporary Opening - {abbr}"
+
+	md = frappe.get_doc({
+		"doctype": "Mapping Decision",
+		"session": session_name,
+		"tally_name": ledger_name,
+		"tally_id": f"NR{suffix[:4]}",
+		"tally_parent_chain": "SYNTHETIC > Current Assets",
+		"tally_root_type": "Asset",
+		"opening_dr": opening_dr,
+		"opening_cr": 0.0,
+		"net_amount": -opening_dr,
+		"net_side": "Dr",
+		"tier": tier,
+		"proposed_account": final_account,
+		"final_account": final_account,
+		"review_action": "Approved",
+		# Explicitly NULL so the pass-aware loader picks it up on the
+		# next generate_all run.
+		"generated_in_pass": None,
+	}).insert(ignore_permissions=True)
+	frappe.db.commit()
+	return md.name
+
+
 def teardown_synthetic_session(session_name: str) -> dict[str, int]:
     """Delete a synthetic session and every artefact it touched.
 

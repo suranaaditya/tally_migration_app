@@ -7,6 +7,13 @@ frappe.ui.form.on("Tally Migration Session", {
             return;
         }
 
+        // Item 8.5 Stage 3 Q-K: hybrid summary at top of form. A plain-
+        // English sentence describing the migration's pass-history
+        // state, sitting above the Migration Pass child-table grid. The
+        // grid (default Frappe render) carries the per-pass detail
+        // (pass_number, generated_at, submitted_at, JE names, counts).
+        renderPassHistoryIntro(frm);
+
         // Review Decisions — navigates to the custom master-detail review page.
         // Per docs/week4_review_ui_design.md §1.1 entry point.
         // Page name is "md-review" (9 chars) due to Frappe Page controller's
@@ -84,12 +91,33 @@ frappe.ui.form.on("Tally Migration Session", {
         // Each generator is self-idempotent (Draft JEs deleted and
         // regenerated; attached Files replaced); Submitted JEs refuse
         // per each generator's internal contract.
-        const generate_allowed_from = new Set(["Reviewing", "Generated"]);
+        // Item 8.5 Stage 3: also visible from "Partial Submitted" — the
+        // delta-gen state after a prior pass was submitted with Deferred
+        // rows remaining. Button label reflects the pass number.
+        const generate_allowed_from = new Set([
+            "Reviewing", "Generated", "Partial Submitted",
+        ]);
         if (generate_allowed_from.has(status)) {
-            const label = status === "Generated"
-                ? __("Regenerate All")
-                : __("Generate All");
-            frm.add_custom_button(label, () => {
+            // Compute pass number for label: existing Migration Pass
+            // rows + 1 if starting fresh (all prior are Submitted),
+            // else resume the current Draft pass.
+            const passes = frm.doc.migration_passes || [];
+            const draft_pass = passes.find(
+                (p) => p.pass_status === "Draft" || p.pass_status === "Failed"
+            );
+            const next_pass_number = draft_pass
+                ? draft_pass.pass_number
+                : (passes.length + 1);
+            let label;
+            if (status === "Generated") {
+                label = __("Regenerate Pass {0}", [next_pass_number]);
+            } else if (status === "Partial Submitted") {
+                label = __("Generate Pass {0}", [next_pass_number]);
+            } else {
+                // status === "Reviewing" — first generate ever on this session
+                label = __("Generate All");
+            }
+            const $generate_btn = frm.add_custom_button(label, () => {
                 frappe.call({
                     method:
                         "rgi_migration.rgi_migration.doctype.tally_migration_session" +
@@ -104,11 +132,15 @@ frappe.ui.form.on("Tally Migration Session", {
                         if (resp.status === "ok") {
                             const names = (resp.succeeded || [])
                                 .map((s) => s.name).join(", ");
+                            const pass_num = resp.pass_number;
+                            const deferred_note = (resp.deferred_count || 0) > 0
+                                ? __(" ({0} Deferred carrying forward.)", [resp.deferred_count])
+                                : "";
+                            const pass_label = pass_num
+                                ? __("Generated Pass {0} artefacts: {1}.{2} Status now Generated.", [pass_num, names, deferred_note])
+                                : __("Generated 4 artefacts: {0}.{1} Status now Generated.", [names, deferred_note]);
                             frappe.show_alert({
-                                message: __(
-                                    "Generated 4 artefacts: {0}. Status now Generated.",
-                                    [names]
-                                ),
+                                message: pass_label,
                                 indicator: "green",
                             }, 10);
                         } else if (resp.status === "partial_failure") {
@@ -137,16 +169,78 @@ frappe.ui.form.on("Tally Migration Session", {
                         frm.reload_doc();
                     },
                 });
-            }).addClass("btn-primary");
+            });
+            $generate_btn.addClass("btn-primary");
+
+            // Item 8.5 Stage 3 Q-J: when starting a fresh new pass from
+            // Partial Submitted, the button should be DISABLED with a
+            // tooltip when the reviewer hasn't resolved any Deferred
+            // decisions since the previous pass submitted. Server-side
+            // generate_all enforces the same guard (line 742-765 in
+            // tally_migration_session.py); this client check is the UX
+            // affordance — surface the constraint BEFORE the click.
+            //
+            // The "resolvable" count mirrors the server's emittable
+            // filter: review_action NOT IN any of the non-emittable
+            // states + generated_in_pass IS NULL.
+            if (status === "Partial Submitted") {
+                frappe.call({
+                    method: "frappe.client.get_count",
+                    args: {
+                        doctype: "Mapping Decision",
+                        filters: {
+                            session: frm.doc.name,
+                            generated_in_pass: ["is", "not set"],
+                            review_action: ["not in", [
+                                "Pending",
+                                "Deferred",
+                                "Rejected",
+                                "Skipped",
+                                "Excluded (P&L)",
+                                "Excluded (Zero Balance)",
+                                "Pending Account Creation",
+                                "Pending Group Account Resolution",
+                                "Pending Supplier Creation",
+                                "Supplier Creation Requested",
+                                "Account Creation Requested",
+                            ]],
+                        },
+                    },
+                    callback: (r) => {
+                        const resolvable = (r && r.message) || 0;
+                        if (resolvable === 0) {
+                            $generate_btn.prop("disabled", true);
+                            $generate_btn.attr("title", __(
+                                "Resolve at least one Deferred decision before generating Pass {0}",
+                                [next_pass_number]
+                            ));
+                            // Visual hint — fade to look disabled.
+                            $generate_btn.css("opacity", "0.5");
+                        }
+                    },
+                });
+            }
         }
 
         // Mark Submitted — visible when status is Generated. Hard-checks
         // Main JE + Advance JE docstatus server-side; a JS confirm prompt
         // surfaces the reviewer's manual responsibilities (OIT import,
-        // Students CSV handoff, Temporary Opening GL balance). Once marked
-        // Submitted the session is frozen.
+        // Students CSV handoff, Temporary Opening GL balance).
+        //
+        // Item 8.5 Stage 3: target status depends on post-submit
+        // deferred_count. deferred > 0 → Partial Submitted (reviewer
+        // can generate Pass N+1 later). deferred == 0 → Submitted
+        // (terminal, migration complete).
         if (status === "Generated") {
-            frm.add_custom_button("Mark Submitted", () => {
+            const mark_passes = frm.doc.migration_passes || [];
+            const draft_pass = mark_passes.find(
+                (p) => p.pass_status === "Draft" || p.pass_status === "Failed"
+            );
+            const current_pn = draft_pass ? draft_pass.pass_number : mark_passes.length;
+            const mark_label = current_pn > 1
+                ? __("Mark Pass {0} Submitted", [current_pn])
+                : __("Mark Submitted");
+            frm.add_custom_button(mark_label, () => {
                 // Item 8.5 Stage 2: fetch Deferred count server-side
                 // so the confirm dialog can surface a specific warning
                 // when unresolved decisions remain. The count is small
@@ -178,7 +272,11 @@ frappe.ui.form.on("Tally Migration Session", {
                         <li>${__("Temporary Opening account balance in ERPNext GL nets to zero")}</li>
                         ${deferred_item}
                     </ul>
-                    <p>${__("Once marked Submitted, this session is frozen and cannot be regenerated.")}</p>
+                    <p>${
+                        deferred_count > 0
+                            ? __("With {0} Deferred decision(s), this pass will lock in but the session stays in <strong>Partial Submitted</strong> — you can resolve Deferred rows and Generate Pass {1} afterward.", [deferred_count, current_pn + 1])
+                            : __("No Deferred decisions remain — this will finalize the session to the terminal <strong>Submitted</strong> state.")
+                    }</p>
                     <p><strong>${__("Proceed?")}</strong></p>
                 `;
                         _mark_submitted_confirm(frm, confirm_html);
@@ -201,10 +299,16 @@ frappe.ui.form.on("Tally Migration Session", {
                     freeze_message: __("Finalizing session..."),
                     callback: (r) => {
                         if (r && r.message && r.message.status === "ok") {
+                            const pn = r.message.pass_number;
+                            const new_status = r.message.session_status;
+                            const dc = r.message.deferred_count || 0;
+                            const msg = new_status === "Submitted"
+                                ? __("Pass {0} Submitted; session now terminal (Submitted). Migration complete.", [pn])
+                                : __("Pass {0} Submitted; {1} Deferred row(s) remain — session is Partial Submitted. Resolve Deferred rows and generate Pass {2}.", [pn, dc, pn + 1]);
                             frappe.show_alert({
-                                message: __("Session marked Submitted. Workflow complete."),
+                                message: msg,
                                 indicator: "green",
-                            }, 7);
+                            }, 10);
                             frm.reload_doc();
                         }
                     },
@@ -220,7 +324,13 @@ frappe.ui.form.on("Tally Migration Session", {
             "Parsing", "Parsed", "Mapping", "Reviewing",
             "Generating", "Generated", "Failed", "Cancelled",
         ]);
-        if (reset_allowed_from.has(status)) {
+        // Item 8.5 Stage 3 Q-M: hide Reset Parse when any Submitted
+        // Migration Pass exists. Server-side refusal is authoritative;
+        // hiding the button prevents the reviewer from clicking it and
+        // hitting a refuse modal.
+        const has_submitted_pass = (frm.doc.migration_passes || [])
+            .some((p) => p.pass_status === "Submitted");
+        if (reset_allowed_from.has(status) && !has_submitted_pass) {
             frm.add_custom_button("Reset Parse", () => {
                 frappe.confirm(
                     __(
@@ -1155,3 +1265,69 @@ function doACRAction(frm, row_name, method, dialog) {
         },
     });
 }
+
+
+// ===========================================================================
+// Migration Pass history intro (Item 8.5 Stage 3 — Q-K hybrid display)
+// ===========================================================================
+//
+// A dynamic plain-English summary above the form body describing the
+// migration's pass state. Uses Frappe's frm.set_intro() which renders
+// as a top banner — tasteful, non-intrusive, and doesn't require
+// custom HTML field stitching around the Migration Pass grid.
+//
+// Copy rules (Q-K):
+//   - No passes yet: no intro (default form state, pre-generate).
+//   - 1+ pass Draft: "Pass {N} is Draft — … Mark Submitted to lock."
+//   - 1+ pass Submitted, Deferred remain: "Migration in progress — …
+//     Resolve Deferred rows, then Generate Pass {S+1}."
+//   - All submitted, no Deferred: no intro (status badge = Submitted).
+
+function renderPassHistoryIntro(frm) {
+    const passes = frm.doc.migration_passes || [];
+    if (!passes.length) {
+        frm.set_intro("");
+        return;
+    }
+
+    const submitted = passes.filter((p) => p.pass_status === "Submitted");
+    const draft = passes.find(
+        (p) => p.pass_status === "Draft" || p.pass_status === "Failed"
+    );
+    const latest_deferred = passes.length
+        ? (passes[passes.length - 1].decisions_deferred_count || 0)
+        : 0;
+
+    if (frm.doc.status === "Submitted" && latest_deferred === 0) {
+        frm.set_intro("");
+        return;
+    }
+
+    let msg;
+    if (draft) {
+        const included = draft.decisions_included_count || 0;
+        msg = __(
+            "Pass {0} is Draft — {1} decision(s) included so far, {2} Deferred. Review and Mark Submitted to lock this pass.",
+            [draft.pass_number, included, (draft.decisions_deferred_count || 0)]
+        );
+    } else if (submitted.length) {
+        const last_sub = submitted[submitted.length - 1];
+        const next_n = last_sub.pass_number + 1;
+        if (latest_deferred > 0) {
+            msg = __(
+                "Migration in progress: {0} pass(es) submitted, {1} Deferred awaiting Pass {2}. Resolve Deferred rows, then Generate Pass {2}.",
+                [submitted.length, latest_deferred, next_n]
+            );
+        } else {
+            msg = __(
+                "Migration in progress: {0} pass(es) submitted.",
+                [submitted.length]
+            );
+        }
+    } else {
+        msg = "";
+    }
+
+    frm.set_intro(msg, (draft || latest_deferred > 0) ? "orange" : "blue");
+}
+

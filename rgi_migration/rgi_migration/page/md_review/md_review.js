@@ -23,6 +23,10 @@
 class FilterBar {
     // Filter preset: "pending" applies the review-action-is-blocking filter
     // per §1.3; "all" drops the filter for diagnostic inspection.
+    // Item 8.5 Stage 3 (Q-I): "deferred" preset pill surfaces rows the
+    // reviewer explicitly deferred, so they can be resolved for the
+    // next pass. Hidden when deferred_count=0 to keep the filter row
+    // uncluttered mid-migration.
     static PENDING_REVIEW_ACTIONS = [
         "Pending",
         "Pending Account Creation",
@@ -51,11 +55,12 @@ class FilterBar {
     constructor(container_el) {
         this.container = $(container_el);
         this.state = {
-            preset: "pending",            // "pending" | "all"
+            preset: "pending",            // "pending" | "all" | "deferred"
             tiers: [],                    // empty = no filter, else subset of TIER_OPTIONS
             root_types: [],               // empty = no filter, else subset of ROOT_TYPE_OPTIONS
             search: "",                   // free-text, matches tally_name like "%text%"
         };
+        this._deferred_count = 0;         // Populated by setDeferredCount(); hides pill when 0
         this._change_callback = null;
         this._search_debounce_timer = null;
         this._render();
@@ -67,6 +72,10 @@ class FilterBar {
                 <div class="filter-preset-group" role="tablist">
                     <button class="filter-preset-pill active" data-preset="pending">Pending</button>
                     <button class="filter-preset-pill" data-preset="all">All decisions</button>
+                    <button class="filter-preset-pill filter-preset-deferred" data-preset="deferred"
+                            style="display: none;">
+                        Deferred <span class="filter-deferred-count">(0)</span>
+                    </button>
                 </div>
                 <div class="filter-field filter-tier"></div>
                 <div class="filter-field filter-root-type"></div>
@@ -81,6 +90,29 @@ class FilterBar {
         this._wire_tier_select();
         this._wire_root_type_select();
         this._wire_search_input();
+    }
+
+    /**
+     * Update the Deferred pill's count badge + visibility. Called by
+     * md_review on load and after each decision-save that could
+     * transition a row to/from Deferred.
+     *
+     * @param {number} count — total Deferred Mapping Decisions on session
+     */
+    setDeferredCount(count) {
+        this._deferred_count = count | 0;
+        const $pill = this.container.find(".filter-preset-deferred");
+        if (this._deferred_count > 0) {
+            $pill.css("display", "");
+            $pill.find(".filter-deferred-count").text(`(${this._deferred_count})`);
+        } else {
+            $pill.css("display", "none");
+            // Auto-flip to Pending if reviewer was on Deferred preset and
+            // it just zeroed out (migration advanced; no deferred rows left).
+            if (this.state.preset === "deferred") {
+                this.setPreset("pending");
+            }
+        }
     }
 
     _wire_preset_toggle() {
@@ -169,7 +201,7 @@ class FilterBar {
      */
     setPreset(preset) {
         if (preset === this.state.preset) return;
-        if (preset !== "pending" && preset !== "all") return;
+        if (preset !== "pending" && preset !== "all" && preset !== "deferred") return;
         this.container.find(".filter-preset-pill").removeClass("active");
         this.container.find(`.filter-preset-pill[data-preset="${preset}"]`).addClass("active");
         this.state.preset = preset;
@@ -214,6 +246,10 @@ class FilterBar {
 
         if (this.state.preset === "pending") {
             filters.review_action = ["in", FilterBar.PENDING_REVIEW_ACTIONS];
+        } else if (this.state.preset === "deferred") {
+            // Item 8.5 Stage 3 Q-I: surface only Deferred rows so the
+            // reviewer can quickly resolve them for the next pass.
+            filters.review_action = "Deferred";
         }
         // "all" preset → no review_action filter
 
@@ -318,7 +354,28 @@ class MasterPane {
         this.pagination_start = 0;
         this.current_filters = {};
 
+        // Item 8.5 Stage 3 Q-L: pass-status lookup keyed by pass_number.
+        // Populated by setPassStatusMap() on page load + after mark_submitted.
+        // Used by _render_row to decide whether to render the lock icon
+        // for a decision stamped generated_in_pass=N where pass N is
+        // Submitted (immutable per Q-L). Empty map until populated;
+        // empty means no lock decoration on any row.
+        this.pass_status_map = {};
+
         this._render_shell();
+    }
+
+    /**
+     * Update the pass-status lookup map. Keyed by pass_number, value is
+     * {pass_status: "Draft|Submitted|Failed", submitted_at: str|null}.
+     * Triggers a re-render so existing rows pick up newly-Submitted
+     * passes' lock icons without a full reload.
+     */
+    setPassStatusMap(map) {
+        this.pass_status_map = map || {};
+        if (this.current_decisions && this.current_decisions.length) {
+            this._render_rows(this.current_decisions);
+        }
     }
 
     _render_shell() {
@@ -602,6 +659,29 @@ class MasterPane {
         const proposed_account = decision.proposed_account || "";
         const tier_label = decision.tier || "";
 
+        // Item 8.5 Stage 3 Q-L: pass-immutability lock decoration.
+        // A decision is locked iff:
+        //   1. generated_in_pass is set (non-zero), AND
+        //   2. The corresponding pass_status is "Submitted".
+        // Pass-N-Draft decisions are NOT locked — reviewer can still
+        // edit them within the open pass window.
+        // Server-side enforcement lives in save_decision (hard refuse);
+        // this render decoration is the visual affordance.
+        const stamped_pass = decision.generated_in_pass | 0;
+        const pass_meta = stamped_pass
+            ? this.pass_status_map[stamped_pass]
+            : null;
+        const is_locked = pass_meta && pass_meta.pass_status === "Submitted";
+        let lock_glyph_html = "";
+        if (is_locked) {
+            const submitted_at = pass_meta.submitted_at || "";
+            const tooltip = __(
+                "Locked — included in Pass {0}, submitted {1}. Use ERPNext Amend for corrections.",
+                [stamped_pass, submitted_at]
+            );
+            lock_glyph_html = `<span class="md-row-lock" title="${frappe.utils.escape_html(tooltip)}" aria-label="locked">🔒</span> `;
+        }
+
         // Tier chip display rule: the mapper's tier classification is
         // historical — it describes what the mapper initially proposed.
         // Once the reviewer has resolved the decision (Approved,
@@ -654,14 +734,15 @@ class MasterPane {
             ? root_type + " > " + chain
             : (root_type || chain);
 
+        const row_classes = is_locked ? "master-row locked" : "master-row";
         return `
-            <tr class="master-row" data-index="${idx}" data-name="${frappe.utils.escape_html(decision.name)}">
+            <tr class="${row_classes}" data-index="${idx}" data-name="${frappe.utils.escape_html(decision.name)}">
                 <td class="col-indicator">
                     <span class="indicator-dot ${indicator_state}"
                           title="${frappe.utils.escape_html(decision.review_action || "")}"></span>
                 </td>
                 <td class="col-tally-name" title="${frappe.utils.escape_html(tally_name)}">
-                    ${frappe.utils.escape_html(tally_name)}
+                    ${lock_glyph_html}${frappe.utils.escape_html(tally_name)}
                 </td>
                 <td class="col-parent-chain" title="${frappe.utils.escape_html(parent_chain_display)}">
                     <span class="parent-chain-ellipsis"><bdo dir="ltr">${frappe.utils.escape_html(parent_chain_display)}</bdo></span>
@@ -4766,6 +4847,12 @@ frappe.pages["md-review"].on_page_load = function(wrapper) {
             // decision dict.
             on_save_success: (name, saved) => {
                 if (master_pane) master_pane.updateRow(name, saved);
+                // Item 8.5 Stage 3 Q-I: refresh Deferred pill count
+                // whenever a decision saves — the save may have
+                // transitioned the row into or out of Deferred.
+                if (controller && controller.refresh_deferred_count) {
+                    controller.refresh_deferred_count();
+                }
             },
 
             // After a save that should advance — call get_next_pending
@@ -4857,6 +4944,50 @@ frappe.pages["md-review"].on_page_load = function(wrapper) {
         on_show_all: () => {
             if (filter_bar) filter_bar.setPreset("all");
         },
+
+        // Item 8.5 Stage 3 Q-I: refresh the Deferred pill's count badge.
+        // Called on page load and after any save_decision that could
+        // transition a row to/from Deferred. Server round-trip is cheap
+        // (one SQL COUNT) so we refresh eagerly rather than tracking
+        // state client-side.
+        refresh_deferred_count: () => {
+            if (!filter_bar) return;
+            frappe.call({
+                method: "frappe.client.get_count",
+                args: {
+                    doctype: "Mapping Decision",
+                    filters: {
+                        session: session_name,
+                        review_action: "Deferred",
+                    },
+                },
+                callback: (r) => {
+                    const count = (r && r.message) || 0;
+                    filter_bar.setDeferredCount(count);
+                },
+            });
+        },
+
+        // Item 8.5 Stage 3 Q-L: fetch the session's migration_passes
+        // child table once and build a {pass_number → pass_status,
+        // submitted_at} map for the master pane's lock-icon decision.
+        // Re-called on init + after any session-mutating action that
+        // could have flipped a pass to Submitted (mark_submitted).
+        refresh_pass_status_map: () => {
+            if (!master_pane) return;
+            frappe.db.get_doc(
+                "Tally Migration Session", session_name,
+            ).then((sess) => {
+                const map = {};
+                for (const p of (sess.migration_passes || [])) {
+                    map[p.pass_number] = {
+                        pass_status: p.pass_status,
+                        submitted_at: p.submitted_at,
+                    };
+                }
+                master_pane.setPassStatusMap(map);
+            });
+        },
     };
 
     filter_bar = new FilterBar(container.find(".filter-bar-container"));
@@ -4865,6 +4996,13 @@ frappe.pages["md-review"].on_page_load = function(wrapper) {
         session_name,
         controller
     );
+
+    // Item 8.5 Stage 3: initial Deferred-count fetch so the pill
+    // shows up on page load if any rows are Deferred. Fire-and-forget.
+    controller.refresh_deferred_count();
+    // Stage 3 Q-L: initial pass-status-map fetch so locked rows
+    // render the lock icon on first paint.
+    controller.refresh_pass_status_map();
 
     filter_bar.onChange(() => {
         master_pane.setFilters(filter_bar.getFilters());

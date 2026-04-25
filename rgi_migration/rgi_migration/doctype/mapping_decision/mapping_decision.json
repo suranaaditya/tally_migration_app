@@ -47,6 +47,7 @@
   "promoted_to_rule",
   "requires_combine",
   "combine_with",
+  "generated_in_pass",
   "session",
   "naming_series"
  ],
@@ -283,6 +284,14 @@
    "fieldname": "combine_with",
    "fieldtype": "Small Text",
    "label": "Combine With (sibling decision idxs, CSV)"
+  },
+  {
+   "description": "Item 8.5 Stage 3: stamped by the generator that first emitted this decision. NULL until emitted. Pass 1+ decisions are locked for re-defer/re-reject once their pass is Submitted.",
+   "fieldname": "generated_in_pass",
+   "fieldtype": "Int",
+   "in_standard_filter": 1,
+   "label": "Generated In Pass",
+   "read_only": 1
   },
   {
    "fieldname": "session",

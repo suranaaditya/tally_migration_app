@@ -422,6 +422,131 @@ def load_decisions_from_session(
     return decisions, ledger_index
 
 
+def load_pass_pending_decisions_from_session(
+    session_name: str,
+    current_pass_number: int | None = None,
+) -> tuple[list[MappedDecision], dict[tuple[str, str], Ledger]]:
+    """Pass-aware variant of :func:`load_decisions_from_session` (Item 8.5 Stage 3).
+
+    Filters at the SQL level to return Mapping Decisions that are
+    candidates for emission in the CURRENT pass. Two cases:
+
+    1. **Fresh pass start / Pass 1**: ``current_pass_number`` is the new
+       pass number. Loader returns MDs that are unstamped
+       (``generated_in_pass IS NULL``) — no prior-pass stamps exist
+       for this pass yet.
+
+    2. **Intra-pass regeneration**: reviewer re-runs ``generate_all`` on
+       a Generated session before mark_submitted to replace the Draft
+       artefacts. The MDs emitted in the FIRST run of this pass were
+       stamped with ``generated_in_pass = current_pass_number`` already.
+       To keep the regen output equivalent to the first run (same
+       contributions, replaced JE name), the loader includes them too:
+
+           ``generated_in_pass IS NULL OR generated_in_pass = current_pass``
+
+       Prior-pass-stamped MDs (e.g. ``generated_in_pass = 1`` while
+       ``current_pass_number = 2``) are still excluded — this is the
+       cross-pass isolation guarantee from Q-F.
+
+    Additionally excludes ``review_action = 'Deferred'`` (Q-F: those
+    are reviewer-flagged for a future pass).
+
+    Backwards-compatibility: when ``current_pass_number`` is None
+    (legacy callers), falls back to the original ``IS NULL`` filter.
+
+    Used by ``opening_je.generate_main_opening_je``,
+    ``oit_csv.generate_oit_csv``, and ``advance_je.generate_advance_je``.
+    """
+    import frappe
+
+    if current_pass_number is None:
+        # Legacy / backwards-compatible path.
+        rows = frappe.get_all(
+            "Mapping Decision",
+            filters={
+                "session": session_name,
+                "generated_in_pass": ["is", "not set"],
+                "review_action": ["!=", "Deferred"],
+            },
+            fields=["*"],
+            order_by="creation",
+            limit_page_length=0,
+        )
+    else:
+        # Pass-aware filter: include unstamped MDs AND MDs already
+        # stamped with the current pass (regen case). Raw SQL because
+        # frappe.get_all's filter syntax can't cleanly express
+        # "IS NULL OR equals" with NULL semantics.
+        rows = frappe.db.sql(
+            """
+            SELECT * FROM `tabMapping Decision`
+            WHERE session = %(session)s
+              AND review_action != 'Deferred'
+              AND (generated_in_pass IS NULL
+                   OR generated_in_pass = 0
+                   OR generated_in_pass = %(pass)s)
+            ORDER BY creation
+            """,
+            {"session": session_name, "pass": int(current_pass_number)},
+            as_dict=True,
+        )
+
+    decisions: list[MappedDecision] = []
+    ledger_index: dict[tuple[str, str], Ledger] = {}
+    for row in rows:
+        d = decision_from_doc_row(row)
+        l = ledger_from_doc_row(row)
+        decisions.append(d)
+        ledger_index[(d.tally_name, d.tally_id or "")] = l
+    return decisions, ledger_index
+
+
+def stamp_pass_on_decisions(session_name: str, pass_number: int) -> int:
+    """Bulk-stamp ``generated_in_pass = pass_number`` on this pass's MDs.
+
+    Called by ``generate_all`` after all four generators succeed atomically.
+    Scope:
+
+    - Sets ``generated_in_pass`` for every decision on the session where:
+      * ``generated_in_pass`` is currently NULL (prior-pass stamps are
+        preserved — never overwritten), AND
+      * ``review_action`` is NOT in ``{"Rejected", "Deferred"}``.
+
+    Rationale:
+
+    - Rejected is terminal ("never post"); stays unstamped so reviewer
+      can see it was never included in any pass.
+    - Deferred is the reviewer's "come back to this in Pass N+1" marker;
+      stays unstamped so the next pass loads it.
+    - Every other review_action (Pending, Approved, Manual Override,
+      Excluded (P&L), Pending Account Creation, etc.) gets stamped —
+      the MD was processed this pass, either as a contribution or as a
+      silent-skipped excluded row. Stamping produces a consistent audit
+      trail for "what did Pass N consider?"
+
+    Returns the count of stamped rows (for audit-log in the Migration
+    Pass row).
+    """
+    import frappe
+
+    frappe.db.sql(
+        """
+        UPDATE `tabMapping Decision`
+        SET generated_in_pass = %(pass_number)s
+        WHERE session = %(session)s
+          AND (generated_in_pass IS NULL OR generated_in_pass = 0)
+          AND review_action NOT IN ('Rejected', 'Deferred')
+        """,
+        {"session": session_name, "pass_number": pass_number},
+    )
+    # Count reflects rows newly stamped this call.
+    return frappe.db.count(
+        "Mapping Decision",
+        {"session": session_name, "generated_in_pass": pass_number},
+    )
+
+
 def synthesize_tb_from_ledger_index(
     ledger_index: dict[tuple[str, str], Ledger],
     *,

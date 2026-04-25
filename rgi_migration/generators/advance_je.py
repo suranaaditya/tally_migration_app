@@ -251,8 +251,15 @@ def build_advance_je_payload(
     reference_id: str,
     timestamp_iso: str,
     old_je_audit: str | None = None,
-) -> AdvanceJEPayload:
+) -> AdvanceJEPayload | None:
     """Build the Draft Advance JE payload without touching Frappe.
+
+    Returns ``None`` when there are no eligible net-Dr supplier
+    contributions — a legitimate state in Stage 3 multi-pass
+    migrations where Pass N may resolve only account-side decisions.
+    Callers must treat ``None`` as "empty-success: skip JE creation
+    this pass." See ``docs/mapper_design_notes.md §5`` (Generator
+    empty-payload guard).
 
     Raises :class:`AdvanceJEGenerationError` on refusal or post-balancer
     imbalance. Caller is responsible for invoking Frappe ORM (see
@@ -285,6 +292,17 @@ def build_advance_je_payload(
             credit=0.0,
             user_remark=remark,
         ))
+
+    if not lines:
+        # Item 8.5 Stage 3: empty-payload guard. Constructing a 0/0
+        # balancer over zero advance rows produces a single Dr=Cr=0
+        # line which Frappe rejects ("Both Debit and Credit values
+        # cannot be zero"). For multi-pass migrations this is a
+        # routine state — Pass N resolved only account-side decisions,
+        # all advance suppliers were stamped in earlier passes.
+        # Return None so the caller skips JE creation and records
+        # null artefact in the Migration Pass row.
+        return None
 
     # Balancer — single Cr row on Temp Opening
     dr_total = sum(l.debit for l in lines)
@@ -371,9 +389,18 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _default_reference_id(abbr: str, fiscal_year: str) -> str:
+def _default_reference_id(
+    abbr: str, fiscal_year: str, *, pass_number: int = 1,
+) -> str:
+    """Advance JE reference per RGI rules §6.2 + Stage 3 Q-G.
+
+    Pass 1:    ``OB-CACSPU-2025-02``
+    Pass N>=2: ``OB-CACSPU-2025-02-P{N}``
+    """
+    from rgi_migration.generators.pass_tracking import build_reference_suffix
+
     start_year = fiscal_year.split("-")[0] if fiscal_year else ""
-    return f"OB-{abbr}-{start_year}-02"
+    return f"OB-{abbr}-{start_year}-02{build_reference_suffix(pass_number)}"
 
 
 def _append_error_log(session: Any, block: str) -> None:
@@ -464,20 +491,28 @@ def generate_advance_je(session_name: str) -> str:
         session.generated_advance_je = None
 
     # --- 3. Load persisted Mapping Decisions (Item 2 §9.1 architecture) ---
+    # Item 8.5 Stage 3: pass-aware loader; prior-pass-stamped and
+    # Deferred MDs are excluded at SQL level.
     from rgi_migration.session.parse_and_map import (
-        load_decisions_from_session,
+        load_pass_pending_decisions_from_session,
         require_generator_status,
+    )
+    from rgi_migration.generators.pass_tracking import (
+        determine_current_pass_number,
     )
 
     require_generator_status(session, "generate_advance_je")
-    decisions, _ = load_decisions_from_session(session_name)
+    pass_number = determine_current_pass_number(session)
+    decisions, _ = load_pass_pending_decisions_from_session(
+        session_name, current_pass_number=pass_number,
+    )
 
     supplier_index = _load_supplier_index()
 
     # --- 4. Build payload ---
-    reference_id = (
-        session.generated_advance_je_reference
-        or _default_reference_id(session.company_abbr, session.fiscal_year)
+    # Stage 3 Q-G: pass-aware reference. Pass 1 = -02; Pass N>=2 = -02-P{N}.
+    reference_id = _default_reference_id(
+        session.company_abbr, session.fiscal_year, pass_number=pass_number,
     )
     posting_date_val = session.tb_date
     posting_date_iso = (
@@ -498,6 +533,30 @@ def generate_advance_je(session_name: str) -> str:
         timestamp_iso=_iso_now(),
         old_je_audit=old_je_audit,
     )
+
+    # --- 4b. Empty-payload short-circuit (Item 8.5 Stage 3, §5) ---
+    # build_advance_je_payload returns None when no net-Dr supplier
+    # rows are eligible. Pass 2+ may legitimately have no advance
+    # vendors if all supplier MDs were stamped in an earlier pass.
+    # Skip JE creation, clear session fields, append audit log, and
+    # return "" so generate_all treats this as success-no-artefact.
+    if payload is None:
+        ts = _iso_now()
+        log_line = (
+            f"[{ts}] advance-je: 0 eligible net-Dr supplier rows for "
+            f"session {session_name}; no Draft JE created "
+            f"(empty-payload guard)."
+        )
+        session.generated_advance_je = None
+        session.generated_advance_je_reference = None
+        _append_error_log(session, log_line)
+        session.save(ignore_permissions=True)
+        frappe.db.commit()
+        LOG.info(
+            "Skipped Advance JE creation for session %s — no eligible "
+            "supplier contributions (empty-payload guard).", session_name,
+        )
+        return ""
 
     # --- 5. Create Draft JE ---
     je = frappe.new_doc("Journal Entry")

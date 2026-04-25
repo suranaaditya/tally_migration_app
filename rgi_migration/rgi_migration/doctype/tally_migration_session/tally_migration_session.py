@@ -105,6 +105,11 @@ _STATUS_GENERATING = "Generating"
 _STATUS_GENERATED = "Generated"
 _STATUS_FAILED = "Failed"
 _STATUS_SUBMITTED = "Submitted"
+# Item 8.5 Stage 3: non-terminal "submitted current pass, Deferred rows
+# remain." Reviewer resolves Deferred rows, then Generate Pass N+1 runs
+# from this state. Reaches Submitted only when deferred_count=0 at
+# mark_submitted time.
+_STATUS_PARTIAL_SUBMITTED = "Partial Submitted"
 
 # Statuses from which Run Mapper is permitted. Reviewing / Generating /
 # Generated / Submitted sessions must use Reset Parse first to drop
@@ -112,11 +117,27 @@ _STATUS_SUBMITTED = "Submitted"
 # after fixing a configuration problem.
 _RUN_MAPPER_ALLOWED_FROM = frozenset({_STATUS_DRAFT, _STATUS_FAILED})
 
-# Statuses from which Generate All is permitted. Item 8.5 Stage 1 — only
-# Reviewing (reviewer has cleared the pending queue) OR Generated (re-run
-# to replace Draft artefacts) are accepted. Draft/Parsing/Mapping are
-# pre-review; Submitted is frozen.
-_GENERATE_ALLOWED_FROM = frozenset({_STATUS_REVIEWING, _STATUS_GENERATED})
+# Statuses from which Generate All is permitted.
+# Item 8.5 Stage 1: Reviewing (cleared pending queue) OR Generated
+# (re-run to replace Draft artefacts).
+# Item 8.5 Stage 3: Partial Submitted (delta-gen for Pass N>=2 — reviewer
+# has resolved some Deferred decisions since the previous pass submitted).
+_GENERATE_ALLOWED_FROM = frozenset({
+	_STATUS_REVIEWING, _STATUS_GENERATED, _STATUS_PARTIAL_SUBMITTED,
+})
+
+# Session-level artefact fields cleared when a fresh Pass N>=2 begins.
+# Prior-pass artefacts are preserved on their Migration Pass child row.
+# Clearing these prevents each generator's idempotency check from seeing
+# a prior-pass Submitted JE and refusing.
+_SESSION_ARTEFACT_FIELDS: tuple[str, ...] = (
+	"generated_je_draft",
+	"generated_advance_je",
+	"generated_oit_file",
+	"student_ledger_file",
+	"generated_je_reference",
+	"generated_advance_je_reference",
+)
 
 
 @frappe.whitelist()
@@ -355,6 +376,28 @@ def reset_parse(session_name: str) -> dict[str, Any]:
 			f"Submitted. Submitted sessions are frozen."
 		)
 
+	# Item 8.5 Stage 3 Q-M: hard refuse Reset Parse if any Migration
+	# Pass has been Submitted. Prior-pass JEs in ERPNext are immutable
+	# (submitted, potentially with downstream postings); wiping the
+	# decisions that produced them would desynchronize the audit trail.
+	# If the reviewer genuinely needs to redo from scratch, cancel the
+	# session and create a fresh one.
+	submitted_passes = [
+		p for p in (session.migration_passes or [])
+		if p.pass_status == "Submitted"
+	]
+	if submitted_passes:
+		submitted_list = ", ".join(
+			f"Pass {p.pass_number}" for p in submitted_passes
+		)
+		frappe.throw(
+			f"Cannot reset session {session_name!r} — it has "
+			f"Submitted Migration Pass(es): {submitted_list}. "
+			f"Submitted JEs in ERPNext are immutable; resetting would "
+			f"desynchronize the audit trail. Cancel this session and "
+			f"create a fresh one if you need to redo from scratch."
+		)
+
 	deleted_count = frappe.db.count(
 		"Mapping Decision", {"session": session_name}
 	)
@@ -379,6 +422,12 @@ def reset_parse(session_name: str) -> dict[str, Any]:
 	acr_swept = len(session.account_creation_requests or [])
 	session.set("supplier_creation_requests", [])
 	session.set("account_creation_requests", [])
+
+	# Item 8.5 Stage 3: wipe any Draft/Failed Migration Pass rows. The
+	# Submitted-row guard above already prevents reset when locked passes
+	# exist, so anything remaining here is recoverable in-progress state.
+	passes_swept = len(session.migration_passes or [])
+	session.set("migration_passes", [])
 
 	# Clear all parse + map snapshot fields. error_log preserved.
 	session.status = _STATUS_DRAFT
@@ -409,6 +458,7 @@ def reset_parse(session_name: str) -> dict[str, Any]:
 		"deleted_count": deleted_count,
 		"scr_swept": scr_swept,
 		"acr_swept": acr_swept,
+		"passes_swept": passes_swept,
 	}
 
 
@@ -664,6 +714,11 @@ def generate_all(session_name: str) -> dict[str, Any]:
 	    "skipped": [str, ...],   # generator names after first failure
 	  }
 	"""
+	from rgi_migration.generators.pass_tracking import (
+		determine_current_pass_number,
+		is_fresh_pass_start,
+	)
+
 	session = frappe.get_doc("Tally Migration Session", session_name)
 
 	if session.status not in _GENERATE_ALLOWED_FROM:
@@ -673,6 +728,82 @@ def generate_all(session_name: str) -> dict[str, Any]:
 			f"{sorted(_GENERATE_ALLOWED_FROM)}. Reset Parse + Run Mapper "
 			f"required to reach Reviewing if currently Draft/Failed."
 		)
+
+	# Item 8.5 Stage 3: pass-number resolution. determine_current_pass_number
+	# reads ``session.migration_passes`` and returns 1 for Pass 1, or N+1
+	# for a fresh new pass, or the current Draft's N for intra-pass re-run.
+	pass_number = determine_current_pass_number(session)
+	fresh_pass = is_fresh_pass_start(session)
+
+	# Item 8.5 Stage 3 Q-D: Generate Pass N (N>=2) from Partial Submitted
+	# requires at least one Deferred decision to have been resolved since
+	# the prior pass. Otherwise there's nothing new to emit.
+	if session.status == _STATUS_PARTIAL_SUBMITTED:
+		emittable_count = frappe.db.count(
+			"Mapping Decision",
+			{
+				"session": session_name,
+				"generated_in_pass": ["is", "not set"],
+				"review_action": ["not in", (
+					"Pending", "Deferred", "Rejected", "Skipped",
+					"Excluded (P&L)", "Excluded (Zero Balance)",
+					"Pending Account Creation",
+					"Pending Group Account Resolution",
+					"Pending Supplier Creation",
+					"Supplier Creation Requested",
+					"Account Creation Requested",
+				)],
+			},
+		)
+		if emittable_count == 0:
+			frappe.throw(
+				f"Cannot generate Pass {pass_number} on session "
+				f"{session_name!r} — no Deferred decisions have been "
+				f"resolved since the previous pass submitted. Resolve "
+				f"at least one Deferred decision (Approved / Manual "
+				f"Override / etc.) before generating a new pass."
+			)
+
+	# Fresh Pass 2+: clear session-level artefact fields so each
+	# generator's idempotency check sees a clean slate (prior-pass
+	# Submitted JEs live on their Migration Pass row — they must not
+	# be touched).
+	if pass_number > 1 and fresh_pass:
+		for field_name in _SESSION_ARTEFACT_FIELDS:
+			setattr(session, field_name, None)
+		session.temp_opening_amount = 0
+
+	# Item 8.5 Stage 3 Phase C bug fix: intra-pass regeneration clears
+	# the in-progress Migration Pass row's artefact Link fields up-front.
+	#
+	# Why: the row holds Link → Journal Entry fields (main_je_name,
+	# advance_je_name) that Frappe validates on every session.save().
+	# When a generator deletes its prior-pass-Draft JE and creates a
+	# new one (idempotency), the next session.save() — even an
+	# unrelated one in the empty-payload short-circuit — validates the
+	# stale link in the child row and fails with LinkValidationError.
+	# Clearing the row's artefact fields here decouples mid-flow saves
+	# from the row's eventual state. The end-of-generate_all
+	# _upsert_migration_pass_row repopulates with current session
+	# fields. See docs/mapper_design_notes.md §5 for the full pattern.
+	if not fresh_pass:
+		for p in (session.migration_passes or []):
+			if (
+				int(p.pass_number or 0) == pass_number
+				and p.pass_status in ("Draft", "Failed")
+			):
+				p.main_je_name = None
+				p.advance_je_name = None
+				p.oit_file_url = None
+				p.students_file_url = None
+				p.reference_id_main = None
+				p.reference_id_advance = None
+				p.temp_opening_contribution = 0
+				# decisions_included_count + decisions_deferred_count are
+				# refreshed at _upsert time. generated_at preserved (it's
+				# the original kickoff time of this pass, not the regen
+				# time). pass_status stays Draft.
+				break
 
 	# Transition to Generating + commit so UI / concurrent readers see it.
 	session.status = _STATUS_GENERATING
@@ -705,19 +836,39 @@ def generate_all(session_name: str) -> dict[str, Any]:
 	if failed is None:
 		session.status = _STATUS_GENERATED
 
+		# Item 8.5 Stage 3: bulk-stamp generated_in_pass on MDs that
+		# participated in this pass. MUST run BEFORE the Migration
+		# Pass row upsert so decisions_included_count reflects the
+		# freshly-stamped count. See stamp_pass_on_decisions for the
+		# "what gets stamped" policy (Rejected + Deferred stay NULL).
+		from rgi_migration.session.parse_and_map import (
+			stamp_pass_on_decisions,
+		)
+		stamp_pass_on_decisions(session_name, pass_number)
+
 		# Item 8.5 Stage 2: log Deferred-count as provenance when non-
 		# zero. Grep-able format — Stage 3's delta-gen audit reads
-		# this to understand Pass 1's scope.
+		# this to understand Pass N's scope.
 		deferred_count = frappe.db.count(
 			"Mapping Decision",
 			{"session": session_name, "review_action": "Deferred"},
 		)
+
+		# Item 8.5 Stage 3: upsert Migration Pass row for this pass.
+		# Counts the MDs that were emitted this pass (stamped with
+		# generated_in_pass=pass_number by the generators).
+		_upsert_migration_pass_row(
+			session=session,
+			pass_number=pass_number,
+			deferred_count=deferred_count,
+		)
+
 		if deferred_count:
 			ts = frappe.utils.now_datetime().isoformat(timespec="seconds")
 			log_line = (
-				f"[{ts}] generate_all: completed Reviewing → Generated, "
-				f"4 artefacts generated, {deferred_count} decisions "
-				f"Deferred for next pass"
+				f"[{ts}] generate_all: completed Pass {pass_number} "
+				f"({session.status} → Generated), 4 artefacts generated, "
+				f"{deferred_count} decisions Deferred for next pass"
 			)
 			existing = session.error_log or ""
 			separator = "\n\n" if existing else ""
@@ -731,12 +882,17 @@ def generate_all(session_name: str) -> dict[str, Any]:
 			"failed": None,
 			"skipped": [],
 			"deferred_count": deferred_count,
+			"pass_number": pass_number,
 		}
 
-	# Mid-sequence failure → back to Reviewing with error captured.
+	# Mid-sequence failure → back to pre-generate status with error captured.
+	# Item 8.5 Stage 3: rollback target depends on the entry status.
+	# Reviewing entry → rollback to Reviewing. Partial Submitted entry →
+	# rollback to Partial Submitted (don't lose the "Pass N-1 was submitted"
+	# state).
 	ts = frappe.utils.now_datetime().isoformat(timespec="seconds")
 	block_lines = [
-		f"[{ts}] generate_all partial failure:",
+		f"[{ts}] generate_all partial failure (Pass {pass_number}):",
 		f"  succeeded: {[s['name'] for s in succeeded]}",
 		f"  failed: {failed['name']} — {failed['error']}",
 		f"  skipped: {skipped}",
@@ -745,7 +901,15 @@ def generate_all(session_name: str) -> dict[str, Any]:
 	existing = session.error_log or ""
 	separator = "\n\n" if existing else ""
 	session.error_log = f"{existing}{separator}{block}"
-	session.status = _STATUS_REVIEWING
+	# If we were on a fresh Pass 2+ start (Partial Submitted), rollback
+	# to Partial Submitted (the immediate prior-state before generate_all).
+	# Otherwise (Pass 1 or intra-pass retry), rollback to Reviewing.
+	rollback_status = (
+		_STATUS_PARTIAL_SUBMITTED
+		if (pass_number > 1 and fresh_pass)
+		else _STATUS_REVIEWING
+	)
+	session.status = rollback_status
 	session.save(ignore_permissions=True)
 	frappe.db.commit()
 
@@ -754,7 +918,70 @@ def generate_all(session_name: str) -> dict[str, Any]:
 		"succeeded": succeeded,
 		"failed": failed,
 		"skipped": skipped,
+		"pass_number": pass_number,
 	}
+
+
+def _upsert_migration_pass_row(
+	session: Any,
+	pass_number: int,
+	deferred_count: int,
+) -> None:
+	"""Insert or update a Migration Pass row for ``pass_number``.
+
+	Reads artefact links from session-level fields (which each generator
+	just populated). Counts MDs stamped with ``generated_in_pass=pass_number``
+	to populate ``decisions_included_count``.
+
+	If a Draft/Failed row for ``pass_number`` exists, updates it in place
+	(intra-pass regeneration). Otherwise appends a new Draft row.
+	"""
+	from rgi_migration.generators.pass_tracking import find_draft_pass_row
+
+	included_count = frappe.db.count(
+		"Mapping Decision",
+		{
+			"session": session.name,
+			"generated_in_pass": pass_number,
+		},
+	)
+
+	# Student count — Students CSV writes session.student_ledger_file;
+	# parser stamps session.student_ledger_count once at parse time and
+	# it represents total students across all passes. For Pass 1 it
+	# equals this pass's contribution; for Pass N>=2 the Students CSV
+	# is regenerated with the same student rows, so still equals total.
+	# (Students bypass the mapper — they're parser-flagged and always
+	# included verbatim.)
+	student_count = int(getattr(session, "student_ledger_count", 0) or 0)
+
+	row = find_draft_pass_row(session, pass_number)
+	fields = {
+		"pass_number": pass_number,
+		"pass_status": "Draft",
+		"generated_at": frappe.utils.now_datetime(),
+		"submitted_at": None,
+		"main_je_name": getattr(session, "generated_je_draft", None),
+		"advance_je_name": getattr(session, "generated_advance_je", None),
+		"oit_file_url": getattr(session, "generated_oit_file", None),
+		"students_file_url": getattr(session, "student_ledger_file", None),
+		"reference_id_main": getattr(session, "generated_je_reference", None),
+		"reference_id_advance": getattr(
+			session, "generated_advance_je_reference", None,
+		),
+		"decisions_included_count": included_count,
+		"decisions_deferred_count": deferred_count,
+		"student_decisions_count": student_count,
+		"temp_opening_contribution": (
+			getattr(session, "temp_opening_amount", 0) or 0
+		),
+	}
+	if row is not None:
+		# Update existing Draft/Failed row in place.
+		for k, v in fields.items():
+			setattr(row, k, v)
+	else:
+		session.append("migration_passes", fields)
 
 
 # ---------------------------------------------------------------------------
@@ -800,6 +1027,8 @@ def mark_submitted(session_name: str) -> dict[str, Any]:
 	Returns ``{"status": "ok"}`` on success; raises
 	``frappe.ValidationError`` on guard failures.
 	"""
+	from rgi_migration.generators.pass_tracking import find_draft_pass_row
+
 	session = frappe.get_doc("Tally Migration Session", session_name)
 
 	if session.status not in _MARK_SUBMITTED_ALLOWED_FROM:
@@ -809,12 +1038,33 @@ def mark_submitted(session_name: str) -> dict[str, Any]:
 			f"{sorted(_MARK_SUBMITTED_ALLOWED_FROM)}."
 		)
 
+	# Item 8.5 Stage 3 Q-E: validate only the CURRENT pass's JEs. Prior
+	# passes were verified at their own mark_submitted and are
+	# immutable (per Q-L — post-Submit immutability, reviewer uses
+	# ERPNext Amend for corrections).
+	#
+	# Finding the current pass: the session is in Generated state,
+	# so there must be exactly one Draft Migration Pass row. That's
+	# the one we're submitting.
+	from rgi_migration.generators.pass_tracking import (
+		determine_current_pass_number,
+	)
+	current_pass_number = determine_current_pass_number(session)
+	current_pass_row = find_draft_pass_row(session, current_pass_number)
+	if current_pass_row is None:
+		frappe.throw(
+			f"Session {session_name!r} has no Draft Migration Pass row "
+			f"matching pass_number={current_pass_number}. Cannot mark "
+			f"Submitted. (This indicates a state inconsistency — "
+			f"typically means generate_all did not complete successfully.)"
+		)
+
 	unsubmitted: list[str] = []
 	for field_name, je_label in (
-		("generated_je_draft", "Main Opening JE"),
-		("generated_advance_je", "Advance JE"),
+		("main_je_name", f"Pass {current_pass_number} Main Opening JE"),
+		("advance_je_name", f"Pass {current_pass_number} Advance JE"),
 	):
-		je_name = getattr(session, field_name, None)
+		je_name = getattr(current_pass_row, field_name, None)
 		if not je_name:
 			# Generator may not have produced this artefact (e.g. no
 			# advance-Dr vendors → no advance_je). Skip silently.
@@ -836,9 +1086,29 @@ def mark_submitted(session_name: str) -> dict[str, Any]:
 			+ "\n\nSubmit each JE from its ERPNext Desk page, then try again."
 		)
 
-	session.status = _STATUS_SUBMITTED
-	session.completed_at = frappe.utils.now_datetime()
+	# Lock the current pass row.
+	now = frappe.utils.now_datetime()
+	current_pass_row.pass_status = "Submitted"
+	current_pass_row.submitted_at = now
+
+	# Item 8.5 Stage 3 Q-D: target session status depends on deferred_count.
+	# deferred_count > 0 → Partial Submitted (more passes to come).
+	# deferred_count == 0 → Submitted (terminal, migration complete).
+	deferred_count = frappe.db.count(
+		"Mapping Decision",
+		{"session": session_name, "review_action": "Deferred"},
+	)
+	if deferred_count > 0:
+		session.status = _STATUS_PARTIAL_SUBMITTED
+	else:
+		session.status = _STATUS_SUBMITTED
+		session.completed_at = now
 	session.save(ignore_permissions=True)
 	frappe.db.commit()
 
-	return {"status": "ok", "session_status": _STATUS_SUBMITTED}
+	return {
+		"status": "ok",
+		"session_status": session.status,
+		"pass_number": current_pass_number,
+		"deferred_count": deferred_count,
+	}

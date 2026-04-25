@@ -82,10 +82,11 @@ class TestMarkSubmittedDialog:
 class TestGenerateAllDeferredLog:
     def test_log_line_format(self) -> None:
         src = SESSION_PY.read_text(encoding="utf-8")
-        # Grep-able format per Q9 resolution:
-        # "generate_all: completed Reviewing → Generated, 4 artefacts
-        #  generated, K decisions Deferred for next pass"
-        assert "generate_all: completed Reviewing" in src
+        # Grep-able format per Q9 resolution (Stage 2) + Stage 3 Q-D
+        # pass-aware variant: "generate_all: completed Pass {N}
+        # ({status} → Generated), 4 artefacts generated, K decisions
+        # Deferred for next pass".
+        assert "generate_all: completed Pass" in src
         assert "Deferred for next pass" in src
 
     def test_deferred_count_in_return_dict(self) -> None:

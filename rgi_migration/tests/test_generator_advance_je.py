@@ -155,14 +155,12 @@ def test_net_cr_supplier_produces_zero_lines() -> None:
     payload = build_advance_je_payload(
         decisions=decisions, supplier_index=supplier_index, **_BUILD_KW,
     )
-    # No supplier lines → only the (zero-valued) balancer row.
-    assert payload.supplier_count == 0
-    # The balancer row still exists but with Dr=0 and Cr=0 since there's
-    # nothing to balance. Still deterministic structure.
-    assert payload.row_count == 1
-    assert payload.rows[0]["account"] == "Temporary Opening - CACSPU"
-    assert payload.rows[0]["debit_in_account_currency"] == 0.0
-    assert payload.rows[0]["credit_in_account_currency"] == 0.0
+    # Item 8.5 Stage 3 Phase C bug fix: empty-payload guard.
+    # Previously this returned a payload with supplier_count=0 and a
+    # 0/0 balancer row — but Frappe rejects 0/0 rows on insert. The
+    # build function now returns None and the caller skips JE creation.
+    # See docs/mapper_design_notes.md §5 (Generator empty-payload guard).
+    assert payload is None
 
 
 # --- 5. Net-zero supplier → zero lines, no refusal -------------------------
@@ -182,7 +180,9 @@ def test_net_zero_supplier_silently_skipped_no_refusal() -> None:
     payload = build_advance_je_payload(
         decisions=decisions, supplier_index=supplier_index, **_BUILD_KW,
     )
-    assert payload.supplier_count == 0
+    # Same Stage 3 fix applies: zero net-Dr lines → returns None
+    # (skip JE creation rather than emit a 0/0 balancer Frappe rejects).
+    assert payload is None
 
 
 # --- 6. Balancer math: Dr total == Cr total --------------------------------
