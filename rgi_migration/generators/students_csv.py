@@ -319,7 +319,13 @@ def generate_students_csv(session_name: str) -> str:
         raise StudentsCSVGenerationError(
             f"Session {session_name} has no tb_date set."
         )
-    source_path = session.source_file_server_path or session.source_file
+    # Resolve to absolute filesystem path. Lane A (server_path) is
+    # already absolute; Lane B (Attach upload) is a Frappe URL that
+    # must be translated. See parse_and_map.resolve_session_source_path.
+    from rgi_migration.session.parse_and_map import (
+        resolve_session_source_path,
+    )
+    source_path = resolve_session_source_path(session)
     if not source_path:
         raise StudentsCSVGenerationError(
             f"Session {session_name} has no source file path "

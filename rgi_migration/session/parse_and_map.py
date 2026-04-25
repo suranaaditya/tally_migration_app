@@ -385,6 +385,65 @@ def require_generator_status(session: Any, generator_name: str) -> None:
         )
 
 
+def resolve_session_source_path(session: Any) -> str:
+    """Resolve a Tally Migration Session's source file to an absolute filesystem path.
+
+    Two upload lanes per ``docs/slim_tally_export.md``:
+
+    * **Lane A** (>50 MB, manual server-side placement): the user types
+      the absolute server path into ``source_file_server_path``. Used
+      verbatim — assumed to be a filesystem path the parser can open
+      directly.
+    * **Lane B** (<=50 MB, browser Attach upload): Frappe stores the
+      file under ``sites/<site>/private/files/`` (or ``public/files/``
+      for non-private uploads) and writes a URL like
+      ``/private/files/GHRCACS PUNE_slim.xml`` into ``source_file``.
+      That URL is NOT a filesystem path; passing it directly to
+      ``Path(...).read_bytes()`` raises ``FileNotFoundError``.
+
+    For Lane B, we resolve via the File DocType's ``get_full_path()``
+    (Frappe's canonical translation). If the File doc lookup fails for
+    any reason, we fall back to a string-mangling translation against
+    ``frappe.utils.get_site_path``.
+
+    Returns ``""`` if neither field is populated. Callers must throw a
+    user-friendly error in that case (the parser would otherwise raise
+    on an empty path).
+    """
+    import frappe
+
+    server_path = getattr(session, "source_file_server_path", None)
+    if server_path:
+        return str(server_path)
+
+    file_url = getattr(session, "source_file", None)
+    if not file_url:
+        return ""
+
+    # Lane B — resolve attach URL to filesystem path via the File doc.
+    # This is the canonical Frappe API; it handles edge cases like
+    # site-relative storage paths and attached-doctype permissions.
+    file_name = frappe.db.get_value("File", {"file_url": file_url}, "name")
+    if file_name:
+        try:
+            return frappe.get_doc("File", file_name).get_full_path()
+        except Exception:  # noqa: BLE001 — fall through to string mangling
+            pass
+
+    # Fallback — translate the URL by hand against the site root.
+    # Useful when the File doc has been deleted but the URL is still
+    # set on the session (defensive; should not normally happen).
+    if file_url.startswith("/private/files/"):
+        return frappe.utils.get_site_path(
+            "private", "files", file_url[len("/private/files/"):],
+        )
+    if file_url.startswith("/files/"):
+        return frappe.utils.get_site_path(
+            "public", "files", file_url[len("/files/"):],
+        )
+    return file_url
+
+
 def load_decisions_from_session(
     session_name: str,
 ) -> tuple[list[MappedDecision], dict[tuple[str, str], Ledger]]:

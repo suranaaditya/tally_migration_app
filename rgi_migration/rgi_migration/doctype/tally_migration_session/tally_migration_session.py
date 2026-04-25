@@ -205,7 +205,14 @@ def run_mapper(session_name: str) -> dict[str, Any]:
 			f"Abbreviation {session.company_abbr!r}) does not exist."
 		)
 
-	source_path = session.source_file_server_path or session.source_file
+	# Resolve to an absolute filesystem path. Lane A (server_path) is
+	# already absolute; Lane B (Attach upload) is a Frappe URL like
+	# /private/files/foo.xml that must be translated to the site's
+	# private/files dir. See parse_and_map.resolve_session_source_path.
+	from rgi_migration.session.parse_and_map import (
+		resolve_session_source_path,
+	)
+	source_path = resolve_session_source_path(session)
 	if not source_path:
 		frappe.throw(
 			f"Session {session_name!r} has no source file "
