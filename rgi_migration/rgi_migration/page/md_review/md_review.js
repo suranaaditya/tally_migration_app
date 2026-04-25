@@ -656,7 +656,17 @@ class MasterPane {
         const net_amount = MasterPane._format_amount(decision.net_amount);
         const net_side = decision.net_side || "—";
         const tally_name = decision.tally_name || "";
-        const proposed_account = decision.proposed_account || "";
+        // Production bug fix 2026-04-25: PROPOSED ACCOUNT column should
+        // reflect the account this MD will actually post to. For
+        // mapper-proposed MDs (tier1_*), proposed_account is set and
+        // final_account mirrors it on Approve. For reviewer-rescued
+        // unmapped MDs, proposed_account stays NULL and only
+        // final_account carries the choice. Prefer final_account when
+        // populated so reviewer rescue work shows up immediately
+        // post-save without a manual proposed_account edit.
+        const proposed_account = (
+            decision.final_account || decision.proposed_account || ""
+        );
         const tier_label = decision.tier || "";
 
         // Item 8.5 Stage 3 Q-L: pass-immutability lock decoration.

@@ -710,6 +710,38 @@ class TestPhaseDExtensionS3LockIcon:
         # Cursor: help on the glyph for hover-tooltip affordance
         assert "cursor: help" in src
 
+    def test_default_decision_fields_includes_final_account(self) -> None:
+        """Production bug 2026-04-25: reviewer rescues an unmapped MD
+        by setting Final Account + Approve & Next. Master pane PROPOSED
+        ACCOUNT column read decision.proposed_account (still NULL for
+        unmapped MDs) → cell appeared blank post-save. Workaround:
+        manually populate proposed_account via Edit-in-Full-Form.
+
+        Fix: master pane's render now prefers final_account over
+        proposed_account in the display. For that to work, final_account
+        MUST be in the get_session_decisions response."""
+        from rgi_migration.rgi_migration.page.md_review.query import (
+            DEFAULT_DECISION_FIELDS,
+        )
+        assert "final_account" in DEFAULT_DECISION_FIELDS, (
+            "final_account must be in DEFAULT_DECISION_FIELDS so the "
+            "master pane render can show the reviewer's rescued account "
+            "for unmapped MDs."
+        )
+
+    def test_master_pane_render_prefers_final_account(self) -> None:
+        """Render contract: PROPOSED ACCOUNT column must show
+        final_account when populated, falling back to proposed_account."""
+        src = MD_REVIEW_JS.read_text(encoding="utf-8")
+        assert (
+            "decision.final_account || decision.proposed_account"
+            in src
+        ), (
+            "_render_row must prefer final_account over proposed_account "
+            "in the PROPOSED ACCOUNT column so reviewer rescue work on "
+            "unmapped MDs is visible immediately post-save."
+        )
+
     def test_default_decision_fields_includes_generated_in_pass(self) -> None:
         """Item 8.5 Stage 3 Phase D extension bug: master pane's
         DEFAULT_DECISION_FIELDS must include generated_in_pass; otherwise

@@ -49,6 +49,15 @@ DEFAULT_DECISION_FIELDS: list[str] = [
     # icons never render even when the server's _decision_locked_pass
     # would refuse a write to that decision.
     "generated_in_pass",
+    # Production bug 2026-04-25: when reviewer rescues an unmapped MD
+    # by setting Final Account + Approve & Next, save_decision writes
+    # final_account but proposed_account stays NULL. Master pane's
+    # PROPOSED ACCOUNT column read decision.proposed_account → empty.
+    # Reviewer manually editing proposed_account via "Edit in Full
+    # Form" was the workaround. _render_row now prefers final_account
+    # over proposed_account in the display; this field must be in the
+    # query response for that to work.
+    "final_account",
 ]
 
 
