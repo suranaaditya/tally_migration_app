@@ -189,11 +189,13 @@ def test_both_sided_single_ledger_nets_correctly() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_empty_input_refuses_with_q1_informational_message() -> None:
-    """Q1: empty tb.student_ledgers → build_student_rows returns [] at
-    pure core, refuse_if_empty raises informational refusal at entry
-    level naming GHRILS per RGI sec 5.4. Single test covers both
-    aspects of the authorized 'Empty input' scenario."""
+def test_empty_input_pure_helper_still_raises() -> None:
+    """The ``refuse_if_empty`` pure helper retains its original raise
+    behavior — kept for backwards compatibility with any external
+    caller that wants the explicit refusal message. The Frappe
+    wrapper ``generate_students_csv`` no longer calls it as of the
+    2026-04-25 GHREMFN hotfix; see ``test_generate_students_csv_
+    skips_silently_on_empty`` below for the new contract."""
     rows = build_student_rows([])
     assert rows == []
     with pytest.raises(StudentsCSVGenerationError) as exc:
@@ -203,6 +205,39 @@ def test_empty_input_refuses_with_q1_informational_message() -> None:
     assert "No non-zero student balances" in msg
     assert "GHRILS" in msg
     assert "No Phase 2 needed" in msg
+
+
+def test_generate_students_csv_skips_silently_on_empty() -> None:
+    """Item 8.5 hotfix 2026-04-25 (GHREMFN session): Society / Foundation
+    / Hospital / branch-office entities legitimately have no student
+    receivables. The Frappe wrapper ``generate_students_csv`` must
+    short-circuit on zero non-zero student rows by returning the empty
+    string sentinel (same pattern as the account-side and supplier-side
+    empty-payload guards). Static-string check — full Frappe exercise
+    happens at integration time."""
+    from pathlib import Path
+
+    src = (
+        Path(__file__).resolve().parents[1]
+        / "generators" / "students_csv.py"
+    ).read_text(encoding="utf-8")
+    # The wrapper must NOT call refuse_if_empty on empty rows; instead
+    # it should short-circuit with a "no students" log + return "".
+    assert "if not rows:" in src
+    assert "no CSV emitted" in src
+    # Comment string is split across lines in the f-string; check the
+    # individual fragments rather than the joined output.
+    assert "Foundations" in src
+    assert "Hospitals" in src
+    # Must not call refuse_if_empty in the wrapper code path
+    # (the call was the bug — kept the pure helper for back-compat).
+    wrapper_idx = src.index("def generate_students_csv")
+    wrapper_body = src[wrapper_idx:]
+    assert "refuse_if_empty(rows, session_name)" not in wrapper_body, (
+        "generate_students_csv must NOT call refuse_if_empty on the "
+        "wrapper path — empty student data is legitimate for non-"
+        "college entities."
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -363,8 +363,46 @@ def generate_students_csv(session_name: str) -> str:
     # --- 5. Build rows ---
     rows = build_student_rows(tb.student_ledgers)
 
-    # --- 6. Q1 refusal ---
-    refuse_if_empty(rows, session_name)
+    # --- 6. Empty-payload short-circuit (Item 8.5 Stage 3 hotfix
+    # 2026-04-25, GHREMFN session): Society / Foundation / Hospital
+    # / branch-office entities legitimately have no student
+    # receivables. The original refuse_if_empty was defensive against
+    # a college-session-with-no-students bug, but operationally many
+    # entities have zero students by design (per RGI §5.4 — Society
+    # entities don't carry student ledgers; receivables sit on their
+    # college subsidiaries). Skip Students CSV creation silently;
+    # log the event for audit. Return "" sentinel so generate_all
+    # treats this as success-no-artefact (same pattern as the
+    # account-side and supplier-side empty-payload guards).
+    if not rows:
+        ts = _iso_now()
+        log_line = (
+            f"[{ts}] students-csv: 0 non-zero student balances for "
+            f"session {session_name} (parsed {len(tb.student_ledgers)} "
+            f"raw student ledgers, all zero-net or no student ledgers "
+            f"present); no CSV emitted. This is the expected state for "
+            f"entities without student receivables (Societies, "
+            f"Foundations, Hospitals, branch offices)."
+        )
+        # Clear any prior file pointer so the Migration Pass row's
+        # students_file_url lands as None for this pass.
+        if session.student_ledger_file:
+            prior_url = session.student_ledger_file
+            prior_file_name = frappe.db.get_value(
+                "File", {"file_url": prior_url}, "name",
+            )
+            if prior_file_name:
+                frappe.delete_doc("File", prior_file_name, force=1)
+            session.student_ledger_file = None
+        _append_error_log(session, log_line)
+        session.save(ignore_permissions=True)
+        frappe.db.commit()
+        LOG.info(
+            "Skipped Students CSV creation for session %s — no "
+            "non-zero student balances (empty-payload guard).",
+            session_name,
+        )
+        return ""
 
     # --- 7. Idempotency ---
     deletion_log_line: str | None = None
