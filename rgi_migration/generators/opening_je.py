@@ -284,7 +284,26 @@ def _format_contribution_line(c: JEContribution, *, combined: bool) -> str:
 
 
 def _group_by_account(contributions: list[JEContribution]) -> list[JERow]:
-    """Sum contributions per ERPNext account, preserving first-seen order."""
+    """Sum contributions per ERPNext account, netting to a single side.
+
+    Production hotfix 2026-04-25 (GHRCEMPU): when multiple Tally
+    ledgers map to the same ERPNext account with mixed Dr/Cr sides
+    — or a single both-sided Tally ledger — the per-account total
+    must NET to a single side before insertion. Frappe Journal
+    Entry's validator rejects rows with both ``debit > 0`` and
+    ``credit > 0`` ("You cannot credit and debit same account at
+    the same time"). Tally's gross-Dr/gross-Cr split on a single
+    ledger is a source-side accounting nuance; ERPNext models
+    opening positions as a single net Dr or net Cr per account, so
+    netting is the correct translation.
+
+    Net-zero aggregations (Dr exactly equals Cr) are skipped — a
+    0/0 row is also rejected by Frappe and carries no information.
+    The contributions still appear in the audit trail via the
+    JE's ``user_remark`` field on adjacent rows when applicable
+    (defensive: net-zero is uncommon, surfaced only when offsetting
+    Tally lots happen to map to the same target account).
+    """
     order: list[str] = []
     buckets: dict[str, list[JEContribution]] = {}
     for c in contributions:
@@ -300,10 +319,26 @@ def _group_by_account(contributions: list[JEContribution]) -> list[JERow]:
         remark = "\n".join(
             _format_contribution_line(c, combined=combined) for c in group
         )
+        total_dr = sum(c.opening_dr for c in group)
+        total_cr = sum(c.opening_cr for c in group)
+        # Net to a single side. delta > 0 → net Dr position;
+        # delta < 0 → net Cr position; delta == 0 → skip the row.
+        delta = total_dr - total_cr
+        if abs(delta) < 0.005:
+            # Net-zero — Frappe rejects 0/0 rows. Skip; the
+            # offsetting Tally lots cancel out for opening-balance
+            # purposes. The mapper-side audit (matched_rule, tier)
+            # remains in the contributions list for downstream
+            # diagnostics.
+            continue
+        if delta > 0:
+            debit, credit = round(delta, 2), 0.0
+        else:
+            debit, credit = 0.0, round(-delta, 2)
         rows.append(JERow(
             account=account,
-            debit=sum(c.opening_dr for c in group),
-            credit=sum(c.opening_cr for c in group),
+            debit=debit,
+            credit=credit,
             user_remark=remark,
         ))
     return rows

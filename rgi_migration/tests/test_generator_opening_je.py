@@ -228,8 +228,15 @@ def test_single_ledger_row_has_no_combined_suffix() -> None:
     assert "via tier1_exact/exact" in cash_row["user_remark"]
 
 
-def test_both_sided_ledger_preserves_dr_and_cr_on_same_row() -> None:
-    """A ledger with both opening_dr and opening_cr keeps both on the JE row."""
+def test_both_sided_ledger_nets_to_single_side() -> None:
+    """A ledger with both opening_dr and opening_cr nets to a single side.
+
+    Production hotfix 2026-04-25 (GHRCEMPU): Frappe Journal Entry
+    rejects rows with both debit AND credit populated ("You cannot
+    credit and debit same account at the same time"). Tally's
+    gross-Dr/gross-Cr lots on a single ledger collapse to ERPNext's
+    net opening position before insertion.
+    """
     ledgers = [
         _ledger("Sundry Party", root_type="Asset",
                 opening_dr=150.0, opening_cr=40.0, tally_id="1"),
@@ -241,8 +248,65 @@ def test_both_sided_ledger_preserves_dr_and_cr_on_same_row() -> None:
     ]
     payload = build_je_payload(tb=_tb(ledgers), decisions=decisions, **_BUILD_KW)
     party_row = next(r for r in payload.rows if r["account"] == "Sundry Party - CACSPU")
-    assert party_row["debit_in_account_currency"] == 150.0
-    assert party_row["credit_in_account_currency"] == 40.0
+    # Net Dr 110 (150 - 40); Cr side cleared to 0 so Frappe accepts.
+    assert party_row["debit_in_account_currency"] == 110.0
+    assert party_row["credit_in_account_currency"] == 0.0
+
+
+def test_multiple_ledgers_same_account_mixed_sides_net() -> None:
+    """Multiple Tally ledgers mapped to the same ERPNext account with
+    OPPOSITE sides (Dr-only and Cr-only) net to a single side. Triggered
+    on GHRCEMPU when reviewer mapped two Inventory ledgers to the same
+    Material Inventory account.
+    """
+    ledgers = [
+        _ledger("Inv Lot A", root_type="Asset",
+                opening_dr=500.0, tally_id="1"),
+        _ledger("Inv Lot B", root_type="Asset",
+                opening_cr=200.0, tally_id="2"),
+    ]
+    decisions = [
+        _decision("Inv Lot A", tier="tier1_exact",
+                  proposed_account="Material Inventory - CACSPU",
+                  tally_id="1", opening_dr=500.0),
+        _decision("Inv Lot B", tier="tier1_exact",
+                  proposed_account="Material Inventory - CACSPU",
+                  tally_id="2", opening_cr=200.0),
+    ]
+    payload = build_je_payload(tb=_tb(ledgers), decisions=decisions, **_BUILD_KW)
+    inv_row = next(r for r in payload.rows
+                   if r["account"] == "Material Inventory - CACSPU")
+    # Net Dr 300 (500 - 200); Frappe-acceptable single side.
+    assert inv_row["debit_in_account_currency"] == 300.0
+    assert inv_row["credit_in_account_currency"] == 0.0
+
+
+def test_aggregation_to_net_zero_skips_row() -> None:
+    """Two contributions with offsetting balances net to zero — the
+    row is skipped (Frappe rejects 0/0 rows). Pure-data audit lives
+    in mapper output; ERPNext JE captures only non-trivial positions.
+    """
+    ledgers = [
+        _ledger("Offset A", root_type="Asset",
+                opening_dr=100.0, tally_id="1"),
+        _ledger("Offset B", root_type="Asset",
+                opening_cr=100.0, tally_id="2"),
+    ]
+    decisions = [
+        _decision("Offset A", tier="tier1_exact",
+                  proposed_account="Suspense - CACSPU",
+                  tally_id="1", opening_dr=100.0),
+        _decision("Offset B", tier="tier1_exact",
+                  proposed_account="Suspense - CACSPU",
+                  tally_id="2", opening_cr=100.0),
+    ]
+    payload = build_je_payload(tb=_tb(ledgers), decisions=decisions, **_BUILD_KW)
+    # The 0/0 Suspense row was skipped; only Temp Opening balancer remains
+    accounts = [r["account"] for r in payload.rows]
+    assert "Suspense - CACSPU" not in accounts, (
+        "Net-zero aggregation must skip the row to satisfy Frappe's "
+        "no-zero-rows JE validator."
+    )
 
 
 # ---------------------------------------------------------------------------
