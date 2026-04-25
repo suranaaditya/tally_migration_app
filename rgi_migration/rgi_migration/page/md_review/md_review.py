@@ -198,8 +198,16 @@ def save_decision(decision_name, review_action, final_account, reviewer_notes):
     # save_decision itself writes are snapshotted; other fields can't
     # be mutated via this endpoint so there's nothing else to revert.
     snapshot = {k: current.get(k) for k in SAVE_DECISION_FIELDS}
+    # Item 8.5 Stage 2: reserve placeholders for SCR/ACR sync payload.
+    # Populated AFTER the sync step runs; if sync skips or fails, the
+    # placeholders remain empty lists and undo_decision's restore path
+    # becomes a no-op on the CR side.
+    snapshot["_cr_scr_snapshot"] = []
+    snapshot["_cr_acr_snapshot"] = []
     cache_key = f"mdr_undo:{frappe.session.user}:{decision_name}"
-    frappe.cache().set_value(cache_key, json.dumps(snapshot, default=str), expires_in_sec=10)
+    frappe.cache().set_value(
+        cache_key, json.dumps(snapshot, default=str), expires_in_sec=10,
+    )
 
     updates = apply_decision_save(
         current=current,
@@ -218,6 +226,25 @@ def save_decision(decision_name, review_action, final_account, reviewer_notes):
     # 'Supplier Creation Requested' (e.g., via Reject / Defer), clean
     # up any orphan Pending SCR row on the session.
     _cleanup_pending_scr_on_transition(decision_doc, previous_review_action)
+
+    # Item 8.5 Stage 2: mirror the MD's Deferred-transition onto any
+    # linked SCR / ACR child rows so the Process SCR / ACR dialogs
+    # don't keep showing Deferred rows as actionable. The sync helper
+    # returns prior-status snapshots which we merge into the undo
+    # cache entry — undo_decision restores both MD state and SCR/ACR
+    # statuses atomically.
+    from rgi_migration.rgi_migration.page.md_review.creation_request_sync import (
+        sync_creation_requests_for_decision,
+    )
+    cr_sync_snapshot = sync_creation_requests_for_decision(decision_doc)
+    if cr_sync_snapshot["scr_snapshot"] or cr_sync_snapshot["acr_snapshot"]:
+        # Update the cache entry in-place with the post-sync payload.
+        # Keeps the 10-second TTL fresh (negligible drift).
+        snapshot["_cr_scr_snapshot"] = cr_sync_snapshot["scr_snapshot"]
+        snapshot["_cr_acr_snapshot"] = cr_sync_snapshot["acr_snapshot"]
+        frappe.cache().set_value(
+            cache_key, json.dumps(snapshot, default=str), expires_in_sec=10,
+        )
 
     return decision_doc.as_dict()
 
@@ -1697,11 +1724,60 @@ def undo_decision(decision_name):
     session_doc.check_permission("read")
 
     current = decision_doc.as_dict()
-    restored = apply_decision_undo(current=current, snapshot=snapshot)
+    # apply_decision_undo iterates SAVE_DECISION_FIELDS only — the
+    # Stage 2 _cr_* payload keys are invisible to it, so pass the
+    # snapshot minus those keys to keep the pure function Stage-2-
+    # unaware. The CR restoration happens after the MD save below.
+    md_snapshot = {
+        k: v for k, v in snapshot.items()
+        if not k.startswith("_cr_")
+    }
+    restored = apply_decision_undo(current=current, snapshot=md_snapshot)
 
     for field, value in restored.items():
         decision_doc.set(field, value)
     decision_doc.save()
+
+    # Item 8.5 Stage 2: restore SCR / ACR child-row statuses.
+    #
+    # Two-step hybrid:
+    #
+    # 1. **Snapshot restore** — write back whatever prior_status the
+    #    original save captured. This preserves rare prior states like
+    #    Failed that the default un-defer fallback would collapse to
+    #    Pending. Q3 resolution mandates this.
+    #
+    # 2. **Re-sync** — run the sync helper again on the now-restored
+    #    MD. Handles the multi-parent case where a snapshot from an
+    #    older save has empty CR lists but current parent state (after
+    #    the restore) implies a transition the helper should perform.
+    #    Without this step, undoing MD-A after MD-B was also deferred
+    #    would leave the SCR at Deferred despite MD-A being non-
+    #    Deferred post-restore.
+    #
+    # Step 2 never undoes Step 1: the sync helper idempotently
+    # compares current state to the Q4 rule, transitioning only when
+    # the rule demands it. A row at Failed (just restored in Step 1)
+    # stays at Failed after Step 2 unless all parents are still
+    # Deferred, in which case the row should sync forward again
+    # (legitimate — the save-initiated transition is about current
+    # state, not historical).
+    from rgi_migration.rgi_migration.page.md_review.creation_request_sync import (
+        restore_creation_requests_from_snapshot,
+        sync_creation_requests_for_decision,
+    )
+    scr_snap = snapshot.get("_cr_scr_snapshot") or []
+    acr_snap = snapshot.get("_cr_acr_snapshot") or []
+    if scr_snap or acr_snap:
+        restore_creation_requests_from_snapshot(
+            session_name=decision_doc.session,
+            scr_snapshot=scr_snap,
+            acr_snapshot=acr_snap,
+        )
+    # Always re-sync, even when no snapshot — the MD's review_action
+    # just changed and other SCR/ACR rows linking to it may need
+    # recomputation under the multi-parent Q4 rule.
+    sync_creation_requests_for_decision(decision_doc)
 
     # Single-use — invalidate immediately so a second undo raises.
     # Also blocks a stale snapshot from a parallel reviewer's save

@@ -26,7 +26,7 @@
    "fieldtype": "Select",
    "in_list_view": 1,
    "label": "Status",
-   "options": "Pending\nCreated\nSkipped\nFailed",
+   "options": "Pending\nCreated\nSkipped\nFailed\nDeferred",
    "reqd": 1
   },
   {

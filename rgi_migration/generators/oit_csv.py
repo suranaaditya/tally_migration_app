@@ -147,6 +147,15 @@ def _aggregate_per_supplier(
             continue
         if not d.proposed_supplier:
             continue
+        # Item 8.5 Stage 2: reviewer-Rejected and reviewer-Deferred
+        # decisions drop out of the aggregation the same way they
+        # drop out of the refusal gate. Prior to Stage 2, the
+        # refusal gate filtered review_action but the aggregator did
+        # not — a latent leak where Rejected resolved-supplier rows
+        # would still contribute an OIT row. Fixed symmetrically for
+        # Rejected and Deferred here.
+        if getattr(d, "review_action", None) in ("Rejected", "Deferred"):
+            continue
         bucket = agg.setdefault(d.proposed_supplier, _SupplierAggregate())
         bucket.cr += d.opening_cr
         bucket.dr += d.opening_dr
@@ -188,10 +197,15 @@ def _enforce_preflight(
     # == "Rejected") means no Supplier should be created + no OIT row
     # contributed. Such rows are effectively dropped from the OIT
     # pipeline.
+    #
+    # Item 8.5 Stage 2: Deferred decisions behave identically to
+    # Rejected at this gate — the row stays on record for a future
+    # pass but doesn't block Pass 1. See creation_request_sync.py for
+    # how the SCR child row follows the MD's Deferred transition.
     pending_count = sum(
         1 for d in decisions
         if d.tier == "pending_supplier_creation"
-        and getattr(d, "review_action", None) != "Rejected"
+        and getattr(d, "review_action", None) not in ("Rejected", "Deferred")
     )
     issues = _collect_supplier_issues(aggregated, supplier_index)
 

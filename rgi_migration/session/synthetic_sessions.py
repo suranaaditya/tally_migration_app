@@ -279,6 +279,105 @@ def create_synthetic_session(
     return session_doc.name
 
 
+def add_synthetic_pending_scr(
+    session_name: str,
+    *,
+    supplier_name_suffix: str = "",
+    detected_balance: float = 100.0,
+    tier: str = "pending_supplier_creation",
+) -> tuple[str, str]:
+    """Insert one pending_supplier_creation Mapping Decision + its paired
+    SCR child row on an existing synthetic session.
+
+    Item 8.5 Stage 2 test fixture. Returns ``(md_name, scr_row_name)``.
+
+    Mirrors the shape of real SCR creation (status="Pending", linked
+    via ``source_decisions``) so the Deferred-sync path can be exercised
+    end-to-end against the same data layout the review UI produces.
+    """
+    import frappe
+
+    suffix = supplier_name_suffix or frappe.generate_hash(length=4).upper()
+    vendor_name = f"SYNTHETIC Vendor {suffix}-VX{suffix[:4]}"
+    md = frappe.get_doc({
+        "doctype": "Mapping Decision",
+        "session": session_name,
+        "tally_name": vendor_name,
+        "tally_id": f"VX{suffix[:4]}",
+        "tally_parent_chain": "SYNTHETIC > Sundry Creditors",
+        "tally_root_type": "Liability",
+        "opening_dr": 0.0,
+        "opening_cr": detected_balance,
+        "net_amount": detected_balance,
+        "net_side": "Cr",
+        "tier": tier,
+        "new_supplier_name": f"SYNTHETIC Vendor {suffix}",
+        "review_action": "Pending",
+    }).insert(ignore_permissions=True)
+
+    session_doc = frappe.get_doc("Tally Migration Session", session_name)
+    session_doc.append("supplier_creation_requests", {
+        "source_decisions": md.name,
+        "proposed_supplier_name": f"SYNTHETIC Vendor {suffix}",
+        "tally_vendor_name": vendor_name,
+        "detected_balance": detected_balance,
+        "status": "Pending",
+    })
+    session_doc.save(ignore_permissions=True)
+    session_doc.reload()
+    scr_row_name = session_doc.supplier_creation_requests[-1].name
+    frappe.db.commit()
+    return md.name, scr_row_name
+
+
+def add_synthetic_pending_acr(
+    session_name: str,
+    *,
+    account_name_suffix: str = "",
+    tier: str = "pending_account_creation",
+) -> tuple[str, str]:
+    """Insert one pending_account_creation Mapping Decision + paired
+    ACR child row. Mirror of :func:`add_synthetic_pending_scr`.
+
+    Returns ``(md_name, acr_row_name)``.
+    """
+    import frappe
+
+    suffix = account_name_suffix or frappe.generate_hash(length=4).upper()
+    ledger_name = f"SYNTHETIC Account {suffix}"
+    md = frappe.get_doc({
+        "doctype": "Mapping Decision",
+        "session": session_name,
+        "tally_name": ledger_name,
+        "tally_id": f"ACC{suffix[:4]}",
+        "tally_parent_chain": "SYNTHETIC > Current Assets",
+        "tally_root_type": "Asset",
+        "opening_dr": 50.0,
+        "opening_cr": 0.0,
+        "net_amount": -50.0,
+        "net_side": "Dr",
+        "tier": tier,
+        "new_account_name": f"SYNTHETIC Account {suffix}",
+        "new_account_root_type": "Asset",
+        "new_account_is_group": 0,
+        "review_action": "Pending",
+    }).insert(ignore_permissions=True)
+
+    session_doc = frappe.get_doc("Tally Migration Session", session_name)
+    session_doc.append("account_creation_requests", {
+        "source_decisions": md.name,
+        "proposed_account_name": f"SYNTHETIC Account {suffix}",
+        "proposed_parent": "Current Assets",
+        "proposed_root_type": "Asset",
+        "status": "Pending",
+    })
+    session_doc.save(ignore_permissions=True)
+    session_doc.reload()
+    acr_row_name = session_doc.account_creation_requests[-1].name
+    frappe.db.commit()
+    return md.name, acr_row_name
+
+
 def teardown_synthetic_session(session_name: str) -> dict[str, int]:
     """Delete a synthetic session and every artefact it touched.
 

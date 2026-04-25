@@ -147,35 +147,67 @@ frappe.ui.form.on("Tally Migration Session", {
         // Submitted the session is frozen.
         if (status === "Generated") {
             frm.add_custom_button("Mark Submitted", () => {
-                const confirm_html = `
+                // Item 8.5 Stage 2: fetch Deferred count server-side
+                // so the confirm dialog can surface a specific warning
+                // when unresolved decisions remain. The count is small
+                // (a single SQL COUNT), so the round-trip is cheap.
+                frappe.call({
+                    method: "frappe.client.get_count",
+                    args: {
+                        doctype: "Mapping Decision",
+                        filters: {
+                            session: frm.doc.name,
+                            review_action: "Deferred",
+                        },
+                    },
+                    callback: (count_resp) => {
+                        const deferred_count =
+                            (count_resp && count_resp.message) || 0;
+                        const deferred_item = deferred_count > 0
+                            ? `<li><strong>⚠️ ${__(
+                                "This session has {0} Deferred decisions which were NOT included in this pass's artefacts. These decisions remain unresolved and will need to be addressed before the migration is complete. Confirm you understand.",
+                                [deferred_count]
+                              )}</strong></li>`
+                            : "";
+                        const confirm_html = `
                     <p><strong>${__("Mark Submitted finalizes this session. Before confirming, verify:")}</strong></p>
                     <ul>
                         <li>${__("Main Opening JE and Advance JE are Submitted in ERPNext (this is checked automatically)")}</li>
                         <li>${__("OIT CSV has been imported via ERPNext's Opening Invoice Tool and those invoices are Submitted")}</li>
                         <li>${__("Students CSV has been handed off to dux_voucher processing")}</li>
                         <li>${__("Temporary Opening account balance in ERPNext GL nets to zero")}</li>
+                        ${deferred_item}
                     </ul>
                     <p>${__("Once marked Submitted, this session is frozen and cannot be regenerated.")}</p>
                     <p><strong>${__("Proceed?")}</strong></p>
                 `;
-                frappe.confirm(confirm_html, () => {
-                    frappe.call({
-                        method:
-                            "rgi_migration.rgi_migration.doctype.tally_migration_session" +
-                            ".tally_migration_session.mark_submitted",
-                        args: { session_name: frm.doc.name },
-                        freeze: true,
-                        freeze_message: __("Finalizing session..."),
-                        callback: (r) => {
-                            if (r && r.message && r.message.status === "ok") {
-                                frappe.show_alert({
-                                    message: __("Session marked Submitted. Workflow complete."),
-                                    indicator: "green",
-                                }, 7);
-                                frm.reload_doc();
-                            }
-                        },
-                    });
+                        _mark_submitted_confirm(frm, confirm_html);
+                    },
+                });
+            });
+        }
+
+        // Helper for mark_submitted's confirm + RPC flow. Extracted so
+        // the Deferred-count fetch above can call it cleanly once the
+        // count comes back.
+        function _mark_submitted_confirm(frm, confirm_html) {
+            frappe.confirm(confirm_html, () => {
+                frappe.call({
+                    method:
+                        "rgi_migration.rgi_migration.doctype.tally_migration_session" +
+                        ".tally_migration_session.mark_submitted",
+                    args: { session_name: frm.doc.name },
+                    freeze: true,
+                    freeze_message: __("Finalizing session..."),
+                    callback: (r) => {
+                        if (r && r.message && r.message.status === "ok") {
+                            frappe.show_alert({
+                                message: __("Session marked Submitted. Workflow complete."),
+                                indicator: "green",
+                            }, 7);
+                            frm.reload_doc();
+                        }
+                    },
                 });
             });
         }

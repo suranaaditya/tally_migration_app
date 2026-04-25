@@ -159,9 +159,13 @@ def _select_contributions(
             # group_refused or anti_pattern_blocked row is not expected
             # from the workflow and stays a refusal (defensive: those
             # are mapper-structural, not reviewer-dismissible).
+            # Item 8.5 Stage 2: Deferred decisions silent-skip the
+            # refusal gate the same way Rejected ones do. Deferred
+            # means "come back to this in a future pass"; the row
+            # stays on record but doesn't block Pass 1 generation.
             if (
                 d.tier in {"unmapped", "pending_account_creation"}
-                and getattr(d, "review_action", None) == "Rejected"
+                and getattr(d, "review_action", None) in ("Rejected", "Deferred")
             ):
                 continue
             refusals.append(d)

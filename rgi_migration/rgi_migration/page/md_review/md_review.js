@@ -258,7 +258,12 @@ class MasterPane {
         "Approved": "done",
         "Manual Override": "done",
         "Rejected": "muted",
-        "Deferred": "muted",
+        // Item 8.5 Stage 2 — distinct amber state for Deferred so
+        // reviewers can scan the master pane and see "I'll come back
+        // to this" rows separately from "never post this" Rejected
+        // rows. Pending filter still excludes them (they're not
+        // actionable this pass) but the visual is legible at a glance.
+        "Deferred": "deferred",
         "Skipped": "muted",
         "Excluded (P&L)": "muted",
     };
@@ -2265,7 +2270,19 @@ class DetailPane {
 
         this._loading_controls = true;
         try {
-            this.section4_controls.review_action.set_value(target_review_action);
+            // Item 8.5 Stage 2 fix: await set_value. In Frappe 15+,
+            // Control.set_value is Promise-returning (the model-update
+            // path is async via parse_val → validate → set_model_value).
+            // Without awaiting, saveDecision's subsequent get_value()
+            // reads the PRE-set value and we RPC with the wrong
+            // review_action — observed on bench as a press-d that
+            // saved review_action="Pending" instead of "Deferred".
+            // Pre-Stage-2 this same latent race affected `r` (Reject)
+            // and `c` (Request Creation) but went unnoticed because
+            // auto-advance masks post-save detail re-renders.
+            await this.section4_controls.review_action.set_value(
+                target_review_action
+            );
         } finally {
             this._loading_controls = false;
         }

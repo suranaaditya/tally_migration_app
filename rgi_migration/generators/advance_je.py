@@ -120,6 +120,11 @@ def _aggregate_per_supplier(
             continue
         if not d.proposed_supplier:
             continue
+        # Item 8.5 Stage 2: reviewer-Rejected and reviewer-Deferred
+        # drop out of the aggregation. Fixes a latent Rejected leak
+        # (symmetric with oit_csv._aggregate_per_supplier).
+        if getattr(d, "review_action", None) in ("Rejected", "Deferred"):
+            continue
         bucket = agg.setdefault(d.proposed_supplier, _SupplierAggregate())
         bucket.dr += d.opening_dr
         bucket.cr += d.opening_cr
@@ -153,10 +158,14 @@ def _enforce_preflight(
     # refusal gate. Parallel to oit_csv._enforce_preflight — tier stays
     # mapper-authoritative; review_action=Rejected means drop from the
     # advance-JE pipeline.
+    #
+    # Item 8.5 Stage 2: Deferred decisions behave identically to
+    # Rejected at this gate — "come back later" intent, dropped from
+    # Pass 1.
     pending_count = sum(
         1 for d in decisions
         if d.tier == "pending_supplier_creation"
-        and getattr(d, "review_action", None) != "Rejected"
+        and getattr(d, "review_action", None) not in ("Rejected", "Deferred")
     )
     issues = _collect_supplier_issues(aggregated, supplier_index)
 

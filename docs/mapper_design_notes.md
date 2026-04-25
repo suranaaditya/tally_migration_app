@@ -1001,6 +1001,166 @@ Implications:
    fresh sessions; they will not catch this class of regression.
    Surface it via a smoke-test checklist, not a pytest assertion.
 
+### Multi-save hybrid undo — snapshot-restore plus re-sync
+
+Surfaced during Item 8.5 Stage 2 Phase C Probe 9b.
+
+When an MD's save triggers side-effect state on a related record
+(e.g. the SCR/ACR sync flipping a linked CR row's status to
+Deferred), the naive undo design is: cache the pre-save state of
+both the MD and the side-effect record, restore both on undo. This
+works for single-parent scenarios.
+
+It fails for **multi-parent** scenarios. Consider:
+
+* MD-A's defer → no SCR transition (mixed parents still include
+  non-Deferred MD-B). MD-A's undo cache has an empty CR snapshot.
+* Later, MD-B's defer → SCR transitions to Deferred (all parents
+  now Deferred). MD-B's undo cache captures prior-status=Pending.
+* User undoes MD-A (not MD-B). MD-A's restore path finds an empty
+  CR snapshot and no-ops on the SCR side. But current state
+  (MD-A=Pending, MD-B=Deferred) implies a non-all-Deferred parent
+  chain — the SCR should revert to Pending per the sync rule.
+
+**Fix: hybrid two-step on undo.** Step 1 restores from snapshot
+(preserves rare prior states like `Failed`). Step 2 calls the sync
+helper again on the now-restored MD (recomputes based on current
+parent state). The helper is idempotent — it only transitions when
+the rule demands it, so Step 2 never undoes Step 1.
+
+Reference: `undo_decision` in
+`rgi_migration/rgi_migration/page/md_review/md_review.py`. Apply
+this idiom to any future undo path where the saved MD triggers
+state on related records with multiple-parent dependency.
+
+### Terminal-status protection in sync helpers
+
+Surfaced during Item 8.5 Stage 2 Phase B while writing
+`compute_sync_target`.
+
+When a sync helper computes a target status for a related record
+based on parent-state rules, it MUST carry a short-list of terminal
+statuses that are never transitioned away from. On SCR/ACR rows:
+
+* `Created` — a Supplier/Account was actually created in ERPNext.
+  Moving this back to Deferred would contradict the audit trail
+  (the underlying row exists in a production table).
+* `Skipped` — reviewer explicitly refused creation. Same permanence.
+
+`Failed` is **deliberately NOT terminal** — it means "create
+attempt errored, retryable", which should legitimately move to
+Deferred when parents defer and back when they un-defer.
+
+Pattern: declare a module-level frozenset of terminal statuses,
+check it at the top of the compute function, return None (no-op)
+when current_status is in the set. Reference:
+`_TERMINAL_STATUSES = frozenset({"Created", "Skipped"})` in
+`rgi_migration/rgi_migration/page/md_review/creation_request_sync.py`.
+
+### Frappe cache TTL is maximum age, not guaranteed eviction
+
+Surfaced during Item 8.5 Stage 2 Phase C Probe 7.
+
+`frappe.cache().set_value(key, value, expires_in_sec=10)` sets a
+maximum lifetime. The cache backend (Redis on this bench) is free
+to hold the entry longer than 10 seconds if nothing evicts it —
+TTL expiry is when the backend becomes **allowed** to evict, not
+guaranteed. Observed: cache entry still readable after 12 seconds.
+
+Implication for the md-review Undo window: the 10-second TTL is
+a **UI-visibility guarantee** (reviewer sees "Too late to undo"
+after 10s because `undoLastSave()` enforces the timer client-side),
+not a strict backend-eviction guarantee. Do not design features
+that rely on cache entries being gone after their nominal TTL.
+
+If strict eviction matters for a future path, pair the cache write
+with an explicit `frappe.cache().delete_value(key)` on whatever
+event semantically ends the entry's lifetime.
+
+### Rejected-aggregation latent leak in generators
+
+Surfaced during Item 8.5 Stage 2 Phase B code review.
+
+Generators `oit_csv` and `advance_je` had a refusal-gate predicate
+that excluded `review_action=Rejected` from the `pending_count` sum
+but DID NOT exclude Rejected from `_aggregate_per_supplier`. A
+Rejected resolved-supplier row (e.g. tier1_supplier_exact with a
+net-Cr balance) would therefore skip the refusal gate AND still
+contribute to the OIT CSV or Advance JE output — contradicting the
+reviewer's intent.
+
+Stage 2 fixed this symmetrically for `Rejected` and `Deferred` in
+both `_aggregate_per_supplier` implementations. Reference: diff
+in `rgi_migration/generators/{oit_csv,advance_je}.py`.
+
+Phase C Probe 11 (backwards-data correctness audit) confirmed zero
+real sessions were affected — the only Submitted sessions on the
+bench were synthetic test sessions created this phase, and none
+contained Rejected resolved-supplier rows. The latent bug was
+dormant across all pre-Stage-2 work; no artefact contamination.
+
+Rule for future generators: if a predicate excludes a
+`review_action` value from a refusal count, it MUST also exclude
+that value from any aggregation path that produces output. The two
+must be symmetric. Add a test asserting both semantics (contribution
+exclusion AND refusal-count exclusion) per predicate change.
+
+### Frappe 15+ `Control.set_value` is Promise-returning
+
+Surfaced during Item 8.5 Stage 2 Phase D browser walkthrough.
+
+In Frappe 15 and later, `frappe.ui.form.Control.set_value(value)`
+returns a Promise. The internal update path is asynchronous
+(parse_val → validate → set_model_value → set_input_value, each
+of which may yield). Code that calls `set_value(x)` synchronously
+followed by `get_value()` reads the PRE-set value — the Promise
+hasn't resolved yet.
+
+Reference case: `_saveWithAction` in
+`rgi_migration/rgi_migration/page/md_review/md_review.js` called
+`this.section4_controls.review_action.set_value(target)` without
+awaiting, then immediately called `saveDecision()` which read
+`get_value()`. Observed on bench: pressing `d` (Defer shortcut)
+issued `save_decision` RPC with `review_action="Pending"` instead
+of `"Deferred"`. The save succeeded with the wrong payload; the
+auto-advance to the next row hid the failure.
+
+This was a **pre-existing latent bug** affecting the `r` (Reject),
+`c` (Request Creation), and newly-added `d` (Defer) shortcuts
+throughout all of Item 1 and onward. It went unnoticed because
+auto-advance moves the reviewer past the affected row before they
+notice the save didn't take.
+
+**Fix: always await `Control.set_value`.** Regression test
+`test_set_value_is_awaited` in `test_stage2_ui_wiring.py` pins
+this invariant. Apply the same await pattern to any future
+`_on_section4_change`-style auto-flip (currently unawaited; lower
+risk because the save is human-initiated separately, not
+synchronously after the set).
+
+### Concurrent bench-console + browser edits race
+
+Surfaced during Item 8.5 Stage 2 Phase D (observational only,
+not diagnosed).
+
+Running `save_decision` from a bench console while a reviewer's
+browser is open on the same session can produce transiently
+inconsistent state (MD at one value, CR at another). Symptoms in
+the observed case: a reset script's loop printed output for only
+one MD, while the CR rows showed Pending and one MD remained
+Deferred. Likely cause: interleaved saves between the console
+script and a stale browser form's auto-save path.
+
+Not a bug, a discipline note: **do not run
+bench-console-initiated `save_decision` / `undo_decision` calls
+on a session that has an open reviewer browser session against
+the same MDs.** Either drain the browser (close the tab, reload)
+or do console-only work on a separate synthetic session.
+
+No further diagnostic time committed; flagged for awareness. If
+this surfaces during real CACSPU migration (e.g. ops scripts
+running concurrent with reviewer work), escalate.
+
 ---
 
 ## 6. Supplier matching (Tier-1)

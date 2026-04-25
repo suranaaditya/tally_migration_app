@@ -704,6 +704,25 @@ def generate_all(session_name: str) -> dict[str, Any]:
 	session.reload()
 	if failed is None:
 		session.status = _STATUS_GENERATED
+
+		# Item 8.5 Stage 2: log Deferred-count as provenance when non-
+		# zero. Grep-able format — Stage 3's delta-gen audit reads
+		# this to understand Pass 1's scope.
+		deferred_count = frappe.db.count(
+			"Mapping Decision",
+			{"session": session_name, "review_action": "Deferred"},
+		)
+		if deferred_count:
+			ts = frappe.utils.now_datetime().isoformat(timespec="seconds")
+			log_line = (
+				f"[{ts}] generate_all: completed Reviewing → Generated, "
+				f"4 artefacts generated, {deferred_count} decisions "
+				f"Deferred for next pass"
+			)
+			existing = session.error_log or ""
+			separator = "\n\n" if existing else ""
+			session.error_log = f"{existing}{separator}{log_line}"
+
 		session.save(ignore_permissions=True)
 		frappe.db.commit()
 		return {
@@ -711,6 +730,7 @@ def generate_all(session_name: str) -> dict[str, Any]:
 			"succeeded": succeeded,
 			"failed": None,
 			"skipped": [],
+			"deferred_count": deferred_count,
 		}
 
 	# Mid-sequence failure → back to Reviewing with error captured.

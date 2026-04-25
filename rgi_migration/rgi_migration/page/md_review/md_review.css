@@ -344,6 +344,8 @@
 .mapping-decision-review-app .indicator-dot.blocking  { background: var(--red-500, #e24c4c); }
 .mapping-decision-review-app .indicator-dot.done      { background: var(--green-500, #28a745); }
 .mapping-decision-review-app .indicator-dot.muted     { background: var(--gray-400, #8d99a6); }
+/* Item 8.5 Stage 2 — distinct amber for Deferred (come-back-later) */
+.mapping-decision-review-app .indicator-dot.deferred  { background: var(--yellow-500, #f0c000); }
 
 
 /* --- Tier chip (column 6) ------------------------------------------------- */
