@@ -116,7 +116,20 @@ def _aggregate_per_supplier(
 ) -> dict[str, _SupplierAggregate]:
     agg: dict[str, _SupplierAggregate] = {}
     for d in decisions:
-        if d.tier not in _SUPPLIER_RESOLVED_TIERS:
+        # Production hotfix 2026-04-25 — supplier-side reviewer rescue
+        # (mirror of opening_je's account-side rescue). A
+        # tier=pending_supplier_creation MD that the reviewer Approved
+        # with a final_supplier picked carries proposed_supplier (via
+        # decision_from_doc_row's final_supplier fallback). Treat as
+        # resolved-supplier contribution. Mapper tier stays
+        # authoritative for audit; rescue is signalled by
+        # review_action + final_supplier.
+        is_rescued = (
+            d.tier == "pending_supplier_creation"
+            and getattr(d, "review_action", None) in ("Approved", "Manual Override")
+            and d.proposed_supplier
+        )
+        if d.tier not in _SUPPLIER_RESOLVED_TIERS and not is_rescued:
             continue
         if not d.proposed_supplier:
             continue
@@ -162,10 +175,18 @@ def _enforce_preflight(
     # Item 8.5 Stage 2: Deferred decisions behave identically to
     # Rejected at this gate — "come back later" intent, dropped from
     # Pass 1.
+    # Production hotfix 2026-04-25: also exclude reviewer-rescued MDs
+    # (Approved/Manual Override with final_supplier). They contribute
+    # via the rescue path in _aggregate_per_supplier and are not
+    # operationally pending creation.
     pending_count = sum(
         1 for d in decisions
         if d.tier == "pending_supplier_creation"
         and getattr(d, "review_action", None) not in ("Rejected", "Deferred")
+        and not (
+            getattr(d, "review_action", None) in ("Approved", "Manual Override")
+            and d.proposed_supplier
+        )
     )
     issues = _collect_supplier_issues(aggregated, supplier_index)
 

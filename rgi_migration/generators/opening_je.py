@@ -168,6 +168,43 @@ def _select_contributions(
                 and getattr(d, "review_action", None) in ("Rejected", "Deferred")
             ):
                 continue
+
+            # Production hotfix 2026-04-25 — generator-side reviewer
+            # rescue. The mapper had no rule for this ledger (or
+            # required a new account) but the reviewer picked an
+            # existing final_account and Approved (or Manual Override)
+            # the decision. Treat as a contribution rather than a
+            # refusal. Keeps the persisted tier as mapper-authoritative
+            # audit truth ("mapper had nothing"); the rescue is
+            # signalled by review_action + final_account.
+            #
+            # MappedDecision.proposed_account already prefers
+            # final_account over the mapper's proposed_account at
+            # decision_from_doc_row time, so d.proposed_account here
+            # carries the reviewer's choice when set. See
+            # parse_and_map.decision_from_doc_row.
+            #
+            # Scoped to refusal tiers where reviewer rescue is
+            # operationally legitimate: unmapped (mapper had no rule),
+            # pending_account_creation (reviewer found an existing
+            # account instead of creating new), group_refused
+            # (reviewer picked a leaf in lieu of the parent group),
+            # anti_pattern_blocked (Manual Override explicitly).
+            if (
+                getattr(d, "review_action", None) in ("Approved", "Manual Override")
+                and d.proposed_account
+            ):
+                contributions.append(JEContribution(
+                    tally_name=d.tally_name,
+                    tally_id=d.tally_id,
+                    erpnext_account=d.proposed_account,
+                    opening_dr=ledger.opening_dr,
+                    opening_cr=ledger.opening_cr,
+                    tier=d.tier,
+                    matched_rule=d.matched_rule,
+                ))
+                continue
+
             refusals.append(d)
             continue
         if d.tier not in _ELIGIBLE_TIERS:

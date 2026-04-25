@@ -143,7 +143,20 @@ def _aggregate_per_supplier(
     """
     agg: dict[str, _SupplierAggregate] = {}
     for d in decisions:
-        if d.tier not in _SUPPLIER_RESOLVED_TIERS:
+        # Production hotfix 2026-04-25 — supplier-side reviewer rescue.
+        # Rescued tier=pending_supplier_creation MDs (reviewer picked
+        # an existing Supplier instead of creating new) get
+        # final_supplier set, which decision_from_doc_row promotes onto
+        # MappedDecision.proposed_supplier. Treat these as resolved-
+        # supplier contributions even though the persisted tier is
+        # pending_supplier_creation. Mirror of the account-side rescue
+        # in opening_je._select_contributions.
+        is_rescued = (
+            d.tier == "pending_supplier_creation"
+            and getattr(d, "review_action", None) in ("Approved", "Manual Override")
+            and d.proposed_supplier
+        )
+        if d.tier not in _SUPPLIER_RESOLVED_TIERS and not is_rescued:
             continue
         if not d.proposed_supplier:
             continue
@@ -202,10 +215,18 @@ def _enforce_preflight(
     # Rejected at this gate — the row stays on record for a future
     # pass but doesn't block Pass 1. See creation_request_sync.py for
     # how the SCR child row follows the MD's Deferred transition.
+    # Production hotfix 2026-04-25: also exclude reviewer-rescued MDs
+    # (Approved/Manual Override with final_supplier set). Those are
+    # contributed via the rescue path in _aggregate_per_supplier; they
+    # are NOT pending creation operationally despite the tier label.
     pending_count = sum(
         1 for d in decisions
         if d.tier == "pending_supplier_creation"
         and getattr(d, "review_action", None) not in ("Rejected", "Deferred")
+        and not (
+            getattr(d, "review_action", None) in ("Approved", "Manual Override")
+            and d.proposed_supplier
+        )
     )
     issues = _collect_supplier_issues(aggregated, supplier_index)
 
