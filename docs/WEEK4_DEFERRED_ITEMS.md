@@ -359,40 +359,6 @@ Bundle required before 59-entity production rollout:
   recipe — see "Phase C deployment playbook" section above)
 
 
-### Generator zero-balancer guard — exactly-balanced contributions
-
-**Surfaced:** Item 8.5 Stage 3 Phase D walkthrough B2 (2026-04-25).
-Synthetic session with 4 account-side contributions that summed
-exactly Dr=Cr produced a Temporary Opening balancer row with
-`debit=0, credit=0`, which Frappe Journal Entry validation rejects:
-`Row 3: Both Debit and Credit values cannot be zero`.
-
-**Status:** Same class as the empty-payload guard (already shipped
-in Phase C, see `mapper_design_notes.md §5 → Generator empty-payload
-guard`). The empty-payload fix handles `not contributions`. A
-non-empty contributions list whose Dr-total exactly equals Cr-total
-slips through that guard but produces the same Frappe-rejected
-zero-balancer row.
-
-**Unblocked workaround:** Phase D walkthrough adjusted the synthetic
-session to ensure Dr ≠ Cr after Deferred markings (one Dr-row + one
-Cr-row deferred instead of two Dr-rows). Real CACSPU data rarely
-hits this — Tally rounding usually leaves a residual — but the latent
-edge remains.
-
-**Trigger to revisit:** First real entity that crashes with
-"Row N: Both Debit and Credit values cannot be zero" on a generator
-that has contributions. Or proactively before 59-entity rollout.
-
-**Fix shape:** in `build_je_payload`, after computing the balancer,
-include the row only if `balancer.debit > 0 OR balancer.credit > 0`.
-Same pattern for any future balancer-based generator. `_assert_balanced`
-already passes when totals are equal (delta=0 ≤ tolerance), so the JE
-is structurally fine without the zero-row.
-
-**Estimated work:** ~1 hour (3-line generator change + 2 tests).
-
-
 ### Approve & Next button semantic — saves dropdown value, doesn't hardcode Approved
 
 **Surfaced:** Item 8.5 Stage 3 Phase D walkthrough B6 (2026-04-25).

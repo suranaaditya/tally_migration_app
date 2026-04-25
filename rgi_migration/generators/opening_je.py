@@ -448,7 +448,20 @@ def build_je_payload(
     rows = _group_by_account(contributions)
     temp_opening_account = f"Temporary Opening - {abbr}"
     balancer = _balancer_row(rows, temp_opening_account, reference_id)
-    rows_with_balancer = rows + [balancer]
+    # Production hotfix 2026-04-25 (GHRCEMPUMCA): if the contributions
+    # exactly balance (sum of Dr == sum of Cr), the balancer row comes
+    # out as Dr=0, Cr=0. Frappe rejects 0/0 rows on Journal Entry
+    # insert ("Both Debit and Credit values cannot be zero"). This is a
+    # rare but legitimate case — entities whose Tally trial balance is
+    # already perfectly balanced (no rounding residuals, no orphan
+    # ledgers) need NO Temporary Opening row at all because the JE is
+    # self-balancing without it. Skip the balancer row when it carries
+    # zero on both sides; the post-balancer assertion still passes
+    # because rows already balance (delta = 0 < tolerance).
+    if balancer.debit > 0 or balancer.credit > 0:
+        rows_with_balancer = rows + [balancer]
+    else:
+        rows_with_balancer = rows
     _assert_balanced(rows_with_balancer)
 
     header = {

@@ -117,7 +117,14 @@ _BUILD_KW = dict(
 
 
 def test_simple_two_ledger_je_balances_via_temp_opening() -> None:
-    """Cash Dr 100 + Share Capital Cr 100 → 3 rows (incl. balancer), Dr=Cr."""
+    """Cash Dr 100 + Share Capital Cr 100 → exactly balanced → 2 rows
+    (NO balancer; Temp Opening row skipped per the 2026-04-25
+    zero-balancer-skip fix). The JE is self-balancing via the two
+    contribution rows. Frappe rejects 0/0 rows so the balancer must
+    be omitted when the residual is zero. See
+    test_exactly_balanced_contributions_skip_temp_opening_row for the
+    explicit fix coverage.
+    """
     ledgers = [
         _ledger("Cash", root_type="Asset", opening_dr=100.0, tally_id="1"),
         _ledger("Share Capital", root_type="Equity", opening_cr=100.0, tally_id="2"),
@@ -135,14 +142,11 @@ def test_simple_two_ledger_je_balances_via_temp_opening() -> None:
     accounts = [r["account"] for r in payload.rows]
     assert "Cash - CACSPU" in accounts
     assert "Share Capital - CACSPU" in accounts
-    assert "Temporary Opening - CACSPU" in accounts
-    # Exactly balanced, so Temp Opening row has zero on both sides.
-    temp_row = next(r for r in payload.rows if r["account"] == "Temporary Opening - CACSPU")
-    assert temp_row["debit_in_account_currency"] == 0.0
-    assert temp_row["credit_in_account_currency"] == 0.0
+    # Exactly balanced → balancer skipped (Frappe rejects 0/0 rows).
+    assert "Temporary Opening - CACSPU" not in accounts
     assert payload.temp_opening_amount == 0.0
     assert payload.contributions_count == 2
-    assert payload.row_count == 3
+    assert payload.row_count == 2  # 2 contribution rows, no balancer
 
 
 def test_dr_heavy_residual_absorbed_as_credit_on_temp_opening() -> None:
@@ -279,6 +283,77 @@ def test_multiple_ledgers_same_account_mixed_sides_net() -> None:
     # Net Dr 300 (500 - 200); Frappe-acceptable single side.
     assert inv_row["debit_in_account_currency"] == 300.0
     assert inv_row["credit_in_account_currency"] == 0.0
+
+
+def test_exactly_balanced_contributions_skip_temp_opening_row() -> None:
+    """Production hotfix 2026-04-25 (GHRCEMPUMCA session): when the
+    contributing rows sum to a perfect Dr=Cr balance, the Temporary
+    Opening balancer row would be 0/0. Frappe rejects 0/0 JE rows
+    ("Both Debit and Credit values cannot be zero" — typically
+    surfaces as the LAST row of the JE since the balancer is
+    appended last). Skip the balancer entirely; the JE is
+    self-balancing without it.
+    """
+    ledgers = [
+        _ledger("Cash", root_type="Asset",
+                opening_dr=1000.0, tally_id="1"),
+        _ledger("Share Capital", root_type="Equity",
+                opening_cr=1000.0, tally_id="2"),
+    ]
+    decisions = [
+        _decision("Cash", tier="tier1_exact",
+                  proposed_account="Cash - CACSPU",
+                  tally_id="1", opening_dr=1000.0),
+        _decision("Share Capital", tier="tier1_exact",
+                  proposed_account="Share Capital - CACSPU",
+                  tally_id="2", opening_cr=1000.0,
+                  tally_root_type="Equity"),
+    ]
+    payload = build_je_payload(tb=_tb(ledgers), decisions=decisions, **_BUILD_KW)
+    accounts = [r["account"] for r in payload.rows]
+    # No Temporary Opening row — exact balance, no residual to absorb.
+    assert "Temporary Opening - CACSPU" not in accounts, (
+        "Exactly-balanced contributions must skip the 0/0 balancer row "
+        "to satisfy Frappe's no-zero-rows JE validator."
+    )
+    # The contribution rows themselves are present and balanced
+    assert "Cash - CACSPU" in accounts
+    assert "Share Capital - CACSPU" in accounts
+    total_dr = sum(r["debit_in_account_currency"] for r in payload.rows)
+    total_cr = sum(r["credit_in_account_currency"] for r in payload.rows)
+    assert total_dr == total_cr == 1000.0
+    assert payload.temp_opening_amount == 0.0
+
+
+def test_imbalanced_contributions_still_emit_temp_opening_row() -> None:
+    """Regression: when contributions don't perfectly balance, the
+    Temporary Opening row MUST appear with the residual. Confirms the
+    skip-on-zero guard doesn't accidentally skip the balancer when it
+    carries a non-zero residual."""
+    ledgers = [
+        _ledger("Cash", root_type="Asset",
+                opening_dr=1500.0, tally_id="1"),
+        _ledger("Share Capital", root_type="Equity",
+                opening_cr=1000.0, tally_id="2"),
+    ]
+    decisions = [
+        _decision("Cash", tier="tier1_exact",
+                  proposed_account="Cash - CACSPU",
+                  tally_id="1", opening_dr=1500.0),
+        _decision("Share Capital", tier="tier1_exact",
+                  proposed_account="Share Capital - CACSPU",
+                  tally_id="2", opening_cr=1000.0,
+                  tally_root_type="Equity"),
+    ]
+    payload = build_je_payload(tb=_tb(ledgers), decisions=decisions, **_BUILD_KW)
+    accounts = [r["account"] for r in payload.rows]
+    assert "Temporary Opening - CACSPU" in accounts
+    temp_row = next(r for r in payload.rows
+                    if r["account"] == "Temporary Opening - CACSPU")
+    # Dr 1500 - Cr 1000 = 500 residual on Dr side; balancer absorbs
+    # by posting 500 on Cr side of Temp Opening.
+    assert temp_row["credit_in_account_currency"] == 500.0
+    assert temp_row["debit_in_account_currency"] == 0.0
 
 
 def test_aggregation_to_net_zero_skips_row() -> None:
